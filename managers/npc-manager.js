@@ -202,7 +202,7 @@ class NPCManager {
     const dmgPerTier = mapNpcDef.dmgPerTier ?? 0.08;
     const newMax = Math.floor(npc.baseHp * (1 + tier * hpPerTier));
     npc.cannonCount = Math.min(20, 1 + tier);
-    const dmgTier   = Math.min(tier, 300);
+    const dmgTier   = Math.min(tier, 250);
     npc.cannonDmg   = Math.round(npc.baseDmg * (1 + dmgTier * dmgPerTier));
 
     if (newMax !== npc.maxHp) {
