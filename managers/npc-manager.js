@@ -174,7 +174,7 @@ class NPCManager {
   _rescaleBoss(boss, kills) {
     if (boss._scaledForKills === kills) return;
     const bossDef  = (this.mapDefs[boss.mapLevel || this.zoneLevel] || {}).boss || {};
-    const tier     = Math.floor(kills / 10);
+    const tier     = Math.min(Math.floor(kills / 10), 300);
     const hpScale  = 1 + tier * (bossDef.hpPerTier  || 0);
     const dmgScale = 1 + tier * (bossDef.dmgPerTier  || 0);
     const rarities = bossDef.rarities || [];
@@ -197,13 +197,13 @@ class NPCManager {
     if (npc._scaledForKills === kills) return;
     
     const mapNpcDef = (this.mapDefs[npc.mapLevel || this.zoneLevel] || {}).npc || {};
-    const tier = Math.floor(kills / 10);
+    const tier    = Math.floor(kills / 10);
+    const capTier = Math.min(tier, 300);
     const hpPerTier  = mapNpcDef.hpPerTier  ?? 0.05;
     const dmgPerTier = mapNpcDef.dmgPerTier ?? 0.08;
-    const newMax = Math.floor(npc.baseHp * (1 + tier * hpPerTier));
-    npc.cannonCount = Math.min(20, 1 + tier);
-    const dmgTier   = Math.min(tier, 250);
-    npc.cannonDmg   = Math.round(npc.baseDmg * (1 + dmgTier * dmgPerTier));
+    const newMax = Math.floor(npc.baseHp * (1 + capTier * hpPerTier));
+    npc.cannonCount = Math.min(20, 1 + capTier);
+    npc.cannonDmg   = Math.round(npc.baseDmg * (1 + capTier * dmgPerTier));
 
     if (newMax !== npc.maxHp) {
       const frac = npc.maxHp > 0 ? npc.hp / npc.maxHp : 1;
