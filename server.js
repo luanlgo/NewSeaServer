@@ -3910,10 +3910,11 @@ async function shutdown() {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || process.env.VITE_PORT || 3001;
+const HOST = process.env.HOST || process.env.VITE_HOST_URL || '0.0.0.0';
 
 // Sobe o servidor imediatamente — /api/constants não precisa de banco
-server.listen(PORT, () => console.log(`\n⚓  Sea of Code on http://localhost:${PORT}\n`));
+server.listen(PORT, HOST, () => console.log(`\n⚓  Sea of Code on http://${HOST}:${PORT}\n`));
 
 // Conecta ao banco em background (WebSocket/jogo só funcionam depois)
 db.init().then(() => {
