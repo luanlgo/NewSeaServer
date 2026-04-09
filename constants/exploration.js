@@ -40,9 +40,9 @@ const FRAGMENT_EXPLORE_DROPS = EXPLORATION_REWARDS;
 
 // ── BONUS_MAPS — mapas bônus desbloqueáveis via fragmentos ────────────────────
 const BONUS_MAPS = [
-  { id: 'bonus_map_1', name: 'Baía dos Naufragados',      icon: '🏴‍☠️', requiredFragments: 30 },
-  { id: 'bonus_map_2', name: 'Fortaleza do Esquecimento', icon: '🏰',  requiredFragments: 40 },
-  { id: 'bonus_map_3', name: 'Abismo dos Afundados',      icon: '🌊',  requiredFragments: 50 },
+  { id: 'bonus_map_1', name: 'Baía dos Naufragados',      icon: '🏴‍☠️', pieceId: 'mapa_naufrago',  requiredPieces: 30 },
+  { id: 'bonus_map_2', name: 'Fortaleza do Esquecimento', icon: '🏰',  pieceId: 'mapa_fortaleza', requiredPieces: 40 },
+  { id: 'bonus_map_3', name: 'Abismo dos Afundados',      icon: '🌊',  pieceId: 'mapa_abismo',    requiredPieces: 50 },
 ];
 
 // ── WORLD_BOSS_DEF — boss mundial que surge após N bosses de zona mortos ──────

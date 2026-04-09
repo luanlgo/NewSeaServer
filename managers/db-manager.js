@@ -145,6 +145,10 @@ class DBManager {
              bonus_maps_unlocked=$26,
              cannon_research_level=$27, ship_material_level=$28,
              map_pieces=$29, rare_ships=$30,
+             hp=$31,
+             current_ammo=$32,
+             bank_gold=$33,
+             bank_unlocked=$34,
              last_seen=NOW()
          WHERE name=$1`,
         [
@@ -178,6 +182,10 @@ class DBManager {
           player.shipMaterialLevel   || 0,
           JSON.stringify(player.mapPieces  || {}),
           JSON.stringify(player.rareShips  || []),
+          player.hp != null ? player.hp : (player.maxHp || 100),
+          player.currentAmmo || 'bala_ferro',
+          player.bankGold    || 0,
+          player.bankUnlocked ? true : false,
         ]
       );
       
@@ -240,6 +248,10 @@ class DBManager {
       'ALTER TABLE players ADD COLUMN IF NOT EXISTS ship_material_level INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE players ADD COLUMN IF NOT EXISTS map_pieces JSONB NOT NULL DEFAULT \'{}\'',
       'ALTER TABLE players ADD COLUMN IF NOT EXISTS rare_ships JSONB DEFAULT \'[]\'',
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS hp INTEGER NOT NULL DEFAULT 100',
+      "ALTER TABLE players ADD COLUMN IF NOT EXISTS current_ammo TEXT NOT NULL DEFAULT 'bala_ferro'",
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS bank_gold INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS bank_unlocked BOOLEAN NOT NULL DEFAULT FALSE',
     ];
     
     for (const sql of columns) {
@@ -309,6 +321,10 @@ class DBManager {
       bonusMapsUnlocked:   row.bonus_maps_unlocked  || [],
       mapPieces:           row.map_pieces           || {},
       rareShips:           row.rare_ships           || [],
+      hp:                  row.hp != null ? row.hp : 100,
+      currentAmmo:         row.current_ammo || 'bala_ferro',
+      bankGold:            row.bank_gold    || 0,
+      bankUnlocked:        row.bank_unlocked || false,
       cannonResearchLevel: row.cannon_research_level || 0,
       shipMaterialLevel:   row.ship_material_level  || 0,
     };
@@ -334,7 +350,7 @@ class DBManager {
     const talents_arr  = [], island_up   = [], cannon_up  = [];
     const iron_plates  = [], gold_dust   = [], gunpowder_arr = [];
     const bonus_maps   = [], cannon_res  = [], ship_mat   = [];
-    const map_pieces_arr = [], rare_ships_arr = [];
+    const map_pieces_arr = [], rare_ships_arr = [], hp_arr = [], current_ammo_arr = [], bank_gold_arr = [], bank_unlocked_arr = [];
 
     for (const p of playersToSave) {
       const inventory = p.inventory || {};
@@ -372,6 +388,10 @@ class DBManager {
       ship_mat.push(p.shipMaterialLevel      || 0);
       map_pieces_arr.push(JSON.stringify(p.mapPieces || {}));
       rare_ships_arr.push(JSON.stringify(p.rareShips || []));
+      hp_arr.push(p.hp != null ? p.hp : (p.maxHp || 100));
+      current_ammo_arr.push(p.currentAmmo || 'bala_ferro');
+      bank_gold_arr.push(p.bankGold || 0);
+      bank_unlocked_arr.push(p.bankUnlocked ? true : false);
     }
 
     try {
@@ -407,6 +427,10 @@ class DBManager {
            ship_material_level  = v.ship_mat::integer,
            map_pieces           = v.map_pieces::jsonb,
            rare_ships           = v.rare_ships::jsonb,
+           hp                   = v.hp::integer,
+           current_ammo         = v.current_ammo,
+           bank_gold            = v.bank_gold::integer,
+           bank_unlocked        = v.bank_unlocked::boolean,
            last_seen            = NOW()
          FROM (
            SELECT
@@ -439,7 +463,11 @@ class DBManager {
              UNNEST($27::text[])   AS cannon_res,
              UNNEST($28::text[])   AS ship_mat,
              UNNEST($29::text[])   AS map_pieces,
-             UNNEST($30::text[])   AS rare_ships
+             UNNEST($30::text[])   AS rare_ships,
+             UNNEST($31::text[])   AS hp,
+             UNNEST($32::text[])   AS current_ammo,
+             UNNEST($33::text[])   AS bank_gold,
+             UNNEST($34::text[])   AS bank_unlocked
          ) AS v
          WHERE players.name = v.name`,
         [
@@ -473,6 +501,10 @@ class DBManager {
           ship_mat.map(String),
           map_pieces_arr,
           rare_ships_arr,
+          hp_arr.map(String),
+          current_ammo_arr,
+          bank_gold_arr.map(String),
+          bank_unlocked_arr.map(String),
         ]
       );
       console.log(`💾 Batch save: ${playersToSave.length} players in ${Date.now() - start}ms`);

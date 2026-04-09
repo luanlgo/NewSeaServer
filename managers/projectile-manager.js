@@ -6,7 +6,7 @@ const {
   PROJECTILE_SPEED, PROJECTILE_LIFETIME, HIT_RADIUS,
   AMMO_DEFS, PIRATE_DEFS, GOLD_DROP_MIN, GOLD_DROP_MAX,
   FRAGMENT_DROP_NPC, RELIC_DEFS, RELIC_RARITIES,
-  SHOW_LOG, CANNON_DEFS
+  SHOW_LOG, CANNON_DEFS, MAP_DEFS,
 } = require('../constants');
 
 // ownedIds: Set de relicIds que o jogador já possui (para evitar duplicatas)
@@ -43,12 +43,16 @@ class ProjectileManager {
     this.bossManager2 = bossManager;
     this.bossManager3 = bossManager; // will be updated by server when map3 manager exists
     this.mapDefs = mapDefs || {};
-    
+
+    // ── Registros dinâmicos (substituem as vars hardcoded por mapa) ───────────
+    this.bossManagers  = new Map(); // mapLevel → BossManager
+    this.killCounters  = new Map(); // mapLevel → totalKills (int)
+
     this.projectiles = new Map();
     this._hitBatch = new Map();
     this._lifesteals = new Map();
     this._respawnTimers = new Map(); // Rastrear timers de respawn
-    
+
     this.totalNpcKills = 0;
     this.totalNpcKills2 = 0;
     this.totalNpcKills3 = 0;
@@ -259,6 +263,20 @@ class ProjectileManager {
       }
     }
 
+    // ── Pólvora: consome 1 por salvo, concede +10% dano ──────────────────────
+    let gunpowderMult = 1.0;
+    if (!shooter.isNPC && (shooter.gunpowder || 0) > 0) {
+      shooter.gunpowder -= 1;
+      gunpowderMult = 1.10;
+      // Inform client of new gunpowder stock
+      sendTo(shooter.ws, {
+        type:      'currency_update',
+        gold:      shooter.gold,
+        dobroes:   shooter.dobroes,
+        gunpowder: shooter.gunpowder,
+      });
+    }
+
     // Fire each shot — collect into batch, send ONE message
     const spawnedProjs = [];
     shots.forEach(cid => {
@@ -281,7 +299,7 @@ class ProjectileManager {
         impactZ = targetZ + rz;
       }
 
-      const proj = this.spawn(shooter, impactX, impactZ, ls, shooter.damageMultiplier, shooter.cannonDamage || 0);
+      const proj = this.spawn(shooter, impactX, impactZ, ls, (shooter.damageMultiplier || 1.0) * gunpowderMult, shooter.cannonDamage || 0);
       spawnedProjs.push({
         id:       proj.id,
         ownerId:  proj.ownerId,
@@ -402,6 +420,7 @@ class ProjectileManager {
     if (!batch) {
       batch = {
         target, isNPC,
+        ownerIsNPC: !!proj.ownerIsNPC,
         totalDmg: 0, hasCrit: false,
         effects: new Set(), // 'slow','fire','bleed','stun'
         killerProj: null,  // proj that caused death (for kill logic)
@@ -587,10 +606,22 @@ class ProjectileManager {
 
       // ONE hit update per target — filtrado por mapa
       const _hitMapLvl = target.mapLevel || 1;
+
+      // Roubo de ouro: projétil NPC contra jogador em mapa com goldStealRatio
+      let goldStolen = 0;
+      if (!isNPC && batch.ownerIsNPC) {
+        const goldStealRatio = (MAP_DEFS[_hitMapLvl] || {}).goldStealRatio || 0;
+        if (goldStealRatio > 0 && totalDmg > 0) {
+          goldStolen = Math.max(1, Math.floor(totalDmg * goldStealRatio));
+          target.gold = Math.max(0, (target.gold || 0) - goldStolen);
+        }
+      }
+
       this._broadcastToMap(_hitMapLvl, {
         type: 'hit', targetId, targetIsNPC: isNPC,
         hp: target.hp, maxHp: target.maxHp,
         dmg: totalDmg, x: target.x, z: target.z,
+        goldStolen,
       });
 
       // ONE status_effect per effect type per target
@@ -628,8 +659,9 @@ class ProjectileManager {
             } else {
               // Zone Boss: broadcast filtrado por mapa + notificar zone + world boss managers
               this._broadcastToMap(_bossMapLvl, { type: 'entity_dead', id: targetId, isNPC: true, isBoss: true, killerId: proj.ownerId });
-              const bossMgr = _bossMapLvl === 6 ? this.bossManager6 : _bossMapLvl === 3 ? this.bossManager3 : _bossMapLvl === 2 ? this.bossManager2 : this.bossManager;
-              bossMgr.onBossDead(target, proj.ownerId);
+              const bossMgr = this.bossManagers.get(_bossMapLvl)
+                           || ((_bossMapLvl === 6 ? this.bossManager6 : _bossMapLvl === 3 ? this.bossManager3 : _bossMapLvl === 2 ? this.bossManager2 : this.bossManager));
+              if (bossMgr) bossMgr.onBossDead(target, proj.ownerId);
               if (this.worldBossManager) this.worldBossManager.onZoneBossDead(target, proj.ownerId);
             }
 
@@ -663,69 +695,48 @@ class ProjectileManager {
               kr.fragments += FRAGMENT_DROP_NPC;
               killerRewards.set(killer.id, kr);
             }
-            // ===== Boss spawn accounting/logging for projectile kills =====
+            // ===== Boss spawn accounting — dinâmico por mapa =====
             try {
               const mapLvl = target.mapLevel || 1;
-              if (mapLvl === 3) {
-                this.totalNpcKills3 = (this.totalNpcKills3 || 0) + 1;
-                const kts3 = this.mapDefs[mapLvl]?.boss?.killsToSpawn ?? 10;
-                console.log(`[boss-debug] (proj) map3 kill=${this.totalNpcKills3} kts=${kts3} bossAlive=${!!this.bossManager3?.bossAlive}`);
-                if ((this.totalNpcKills3 % kts3) === 0 && !this.bossManager3?.bossAlive) {
-                  const rarity = this.bossManager3.rollPendingRarity();
-                  console.log(`[boss-debug] (proj) boss_incoming map=3 totalKills=${this.totalNpcKills3} kts=${kts3} rarity=${rarity}`);
-                  broadcast(this.wss, { type: 'boss_incoming', mapLevel: 3, rarity });
-                  const dotKills3 = killer ? killer.npcKills : 0;
-                  const timerId3 = setTimeout(() => {
-                    this._respawnTimers.delete(`boss_3`);
-                    this.bossManager3.spawn(dotKills3);
+              const kts    = this.mapDefs[mapLvl]?.boss?.killsToSpawn ?? 0;
+              if (kts > 0) {
+                // killCounters é o registro dinâmico; também atualiza aliases legados
+                const prev = this.killCounters.get(mapLvl) || 0;
+                const kills = prev + 1;
+                this.killCounters.set(mapLvl, kills);
+                // Aliases legados (para compatibilidade com getMapKills em server.js)
+                if (mapLvl === 1) this.totalNpcKills  = kills;
+                else if (mapLvl === 2) this.totalNpcKills2 = kills;
+                else if (mapLvl === 3) this.totalNpcKills3 = kills;
+
+                // Resolve boss manager: registro dinâmico primeiro, depois aliases legados
+                const bm = this.bossManagers.get(mapLvl)
+                        || (mapLvl === 6 ? this.bossManager6
+                          : mapLvl === 3 ? this.bossManager3
+                          : mapLvl === 2 ? this.bossManager2
+                          : this.bossManager);
+
+                console.log(`[boss-debug] (proj) map=${mapLvl} kill=${kills} kts=${kts} bossAlive=${!!bm?.bossAlive}`);
+
+                if (bm && (kills % kts) === 0 && !bm.bossAlive) {
+                  const rarity = bm.rollPendingRarity();
+                  console.log(`[boss-debug] (proj) boss_incoming map=${mapLvl} totalKills=${kills} kts=${kts} rarity=${rarity}`);
+                  broadcast(this.wss, { type: 'boss_incoming', mapLevel: mapLvl, rarity });
+                  const dotKills = killer ? killer.npcKills : 0;
+                  const timerKey = `boss_${mapLvl}`;
+                  const old = this._respawnTimers.get(timerKey);
+                  if (old) clearTimeout(old);
+                  const timerId = setTimeout(() => {
+                    this._respawnTimers.delete(timerKey);
+                    bm.spawn(dotKills);
                   }, 2000);
-                  console.log(`[boss-debug] (proj) scheduled spawn timer=${timerId3} for map=3 (dotKills=${dotKills3})`);
-                  const old3 = this._respawnTimers.get(`boss_3`);
-                  if (old3) clearTimeout(old3);
-                  this._respawnTimers.set(`boss_3`, timerId3);
+                  console.log(`[boss-debug] (proj) scheduled spawn timer=${timerId} for map=${mapLvl}`);
+                  this._respawnTimers.set(timerKey, timerId);
                 }
-              } else if (mapLvl === 2) {
-                this.totalNpcKills2 = (this.totalNpcKills2 || 0) + 1;
-                const kts2 = this.mapDefs[mapLvl]?.boss?.killsToSpawn ?? 10;
-                console.log(`[boss-debug] (proj) map2 kill=${this.totalNpcKills2} kts=${kts2} bossAlive=${!!this.bossManager2?.bossAlive}`);
-                if ((this.totalNpcKills2 % kts2) === 0 && !this.bossManager2?.bossAlive) {
-                  const rarity = this.bossManager2.rollPendingRarity();
-                  console.log(`[boss-debug] (proj) boss_incoming map=2 totalKills=${this.totalNpcKills2} kts=${kts2} rarity=${rarity}`);
-                  broadcast(this.wss, { type: 'boss_incoming', mapLevel: 2, rarity });
-                  const dotKills2 = killer ? killer.npcKills : 0;
-                  const timerId2 = setTimeout(() => {
-                    this._respawnTimers.delete(`boss_2`);
-                    this.bossManager2.spawn(dotKills2);
-                  }, 2000);
-                  console.log(`[boss-debug] (proj) scheduled spawn timer=${timerId2} for map=2 (dotKills=${dotKills2})`);
-                  const old2 = this._respawnTimers.get(`boss_2`);
-                  if (old2) clearTimeout(old2);
-                  this._respawnTimers.set(`boss_2`, timerId2);
-                }
-              } else {
-                this.totalNpcKills = (this.totalNpcKills || 0) + 1;
-                const kts1 = this.mapDefs[mapLvl]?.boss?.killsToSpawn ?? 10;
-                console.log(`[boss-debug] (proj) map1 kill=${this.totalNpcKills} kts=${kts1} bossAlive=${!!this.bossManager?.bossAlive}`);
-                if ((this.totalNpcKills % kts1) === 0 && !this.bossManager?.bossAlive) {
-                  const rarity = this.bossManager.rollPendingRarity();
-                  console.log(`[boss-debug] (proj) boss_incoming map=1 totalKills=${this.totalNpcKills} kts=${kts1} rarity=${rarity}`);
-                  broadcast(this.wss, { type: 'boss_incoming', mapLevel: 1, rarity });
-                  const dotKills1 = killer ? killer.npcKills : 0;
-                  const timerId1 = setTimeout(() => {
-                    this._respawnTimers.delete(`boss_1`);
-                    this.bossManager.spawn(dotKills1);
-                  }, 2000);
-                  console.log(`[boss-debug] (proj) scheduled spawn timer=${timerId1} for map=1 (dotKills=${dotKills1})`);
-                  const old1 = this._respawnTimers.get(`boss_1`);
-                  if (old1) clearTimeout(old1);
-                  this._respawnTimers.set(`boss_1`, timerId1);
-                }
+
+                // Broadcast kill progress
+                broadcast(this.wss, { type: 'boss_progress', current: kills % kts, needed: kts, mapLevel: mapLvl, bossAlive: !!bm?.bossAlive });
               }
-              // Broadcast kill progress toward boss to all clients (client filters by mapLevel)
-              const _bpKts = this.mapDefs[mapLvl]?.boss?.killsToSpawn ?? 10;
-              const _bpTot = mapLvl === 3 ? this.totalNpcKills3 : mapLvl === 2 ? this.totalNpcKills2 : this.totalNpcKills;
-              const _bpAlive = mapLvl === 3 ? !!this.bossManager3?.bossAlive : mapLvl === 2 ? !!this.bossManager2?.bossAlive : !!this.bossManager?.bossAlive;
-              broadcast(this.wss, { type: 'boss_progress', current: _bpTot % _bpKts, needed: _bpKts, mapLevel: mapLvl, bossAlive: _bpAlive });
             } catch (err) {
               console.error('[boss-debug] spawn error:', err && err.message ? err.message : err);
             }

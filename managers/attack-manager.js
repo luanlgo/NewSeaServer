@@ -12,7 +12,7 @@
 'use strict';
 
 const { dist2D } = require('../utils/helpers');
-const { ATTACK_DEFS } = require('../constants');
+const { ATTACK_DEFS, MAP_DEFS } = require('../constants');
 
 class AttackManager {
   /**
@@ -170,6 +170,8 @@ class AttackManager {
     const hits = [];
     const mapPlayers = allPlayers.filter(p => p.mapLevel === mapLevel && !p.dead);
 
+    const goldStealRatio = (MAP_DEFS[mapLevel] || {}).goldStealRatio || 0;
+
     for (const p of mapPlayers) {
       if (this._isHit(p, attack, targetX, targetZ, npc)) {
         let dmg = Math.max(1, Math.floor((npc.cannonDmg || 1) * attack.damageMult));
@@ -185,7 +187,15 @@ class AttackManager {
         }
         p.hp = Math.max(0, p.hp - dmg);
         p.lastCombatTime = Date.now();
-        hits.push({ id: p.id, hp: p.hp, dmg });
+
+        // Roubo de ouro (goldStealRatio definido no MAP_DEFS do mapa)
+        let goldStolen = 0;
+        if (goldStealRatio > 0 && dmg > 0) {
+          goldStolen = Math.max(1, Math.floor(dmg * goldStealRatio));
+          p.gold     = Math.max(0, (p.gold || 0) - goldStolen);
+        }
+
+        hits.push({ id: p.id, hp: p.hp, dmg, goldStolen });
 
         // Verifica morte do jogador
         if (p.hp <= 0 && !p.dead) {
@@ -199,14 +209,33 @@ class AttackManager {
           }, mapLevel, /* urgent */ true);
         }
 
-        // Aplica efeitos (debuffs) ao jogador
+        // Aplica efeitos (debuffs + pull) ao jogador
         if (attack.effects?.length) {
           if (!p.activeDebuffs) p.activeDebuffs = [];
           const now = Date.now();
           for (const eff of attack.effects) {
-            // Remove debuff do mesmo tipo se já existe
-            p.activeDebuffs = p.activeDebuffs.filter(d => d.type !== eff.type);
-            p.activeDebuffs.push({ type: eff.type, value: eff.value, expiresAt: now + eff.duration });
+            if (eff.type === 'pull') {
+              // Puxa o jogador em direção ao NPC até pullDistance unidades de distância
+              const pullDist = eff.pullDistance || 60;
+              const ddx = npc.x - p.x;
+              const ddz = npc.z - p.z;
+              const d   = Math.sqrt(ddx * ddx + ddz * ddz) || 1;
+              if (d > pullDist) {
+                p.x = npc.x - (ddx / d) * pullDist;
+                p.z = npc.z - (ddz / d) * pullDist;
+              }
+              this.addEvent({
+                type:     'player_pulled',
+                playerId: p.id,
+                npcId:    npc.id,
+                toX:      p.x,
+                toZ:      p.z,
+              }, mapLevel);
+            } else {
+              // Remove debuff do mesmo tipo se já existe, depois aplica
+              p.activeDebuffs = p.activeDebuffs.filter(d => d.type !== eff.type);
+              p.activeDebuffs.push({ type: eff.type, value: eff.value, expiresAt: now + eff.duration });
+            }
           }
         }
       }

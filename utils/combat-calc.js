@@ -46,10 +46,11 @@ function calcProjectileDamage({
  * @returns {number}
  */
 function calcKillGold({ baseGold, dropBonus = 0, killTier = 0, goldPerTier = 0.01, talentGoldBonus = 0 }) {
+  const cappedTier = Math.min(killTier, 500);
   return Math.floor(
     baseGold
     * (1 + dropBonus)
-    * (1 + killTier * goldPerTier)
+    * (1 + cappedTier * goldPerTier)
     * (1 + talentGoldBonus)
   );
 }
@@ -64,7 +65,8 @@ function calcKillGold({ baseGold, dropBonus = 0, killTier = 0, goldPerTier = 0.0
  * @returns {number}
  */
 function calcKillXp({ xpPerKill, killTier = 0, talentXpBonus = 0 }) {
-  return Math.floor(xpPerKill * (1 + killTier * 0.01) * (1 + talentXpBonus));
+  const cappedTier = Math.min(killTier, 500);
+  return Math.floor(xpPerKill * (1 + cappedTier * 0.01) * (1 + talentXpBonus));
 }
 
 /**

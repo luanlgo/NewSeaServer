@@ -110,7 +110,15 @@ class NPCManager {
 
       relicDropChance:  npcDef.relicDropChance || 0, // chance de drop de relíquia ao morrer
 
-      // Sistema de ataques
+      // Flag de sistema de ataque:
+      //   usesCannons=true  → dispara projéteis via fireInterval (navios piratas)
+      //   usesCannons=false → usa ATTACK_DEFS via attackManager (monstros)
+      usesCannons:      npcDef.usesCannons  || false,
+      cannonRange:      npcDef.cannonRange  || 100,
+      fireInterval:     npcDef.fireInterval || 3000,
+      _nextCannonShot:  0,
+
+      // Sistema de ataques ATTACK_DEFS (apenas para usesCannons=false)
       attacks:          npcDef.attacks || [],   // IDs dos ataques disponíveis
       _attackCooldowns: {},                      // { attackId: timestampExpiry }
       _currentCast:     null,                   // ID do ataque em cast
@@ -174,9 +182,11 @@ class NPCManager {
   _rescaleBoss(boss, kills) {
     if (boss._scaledForKills === kills) return;
     const bossDef  = (this.mapDefs[boss.mapLevel || this.zoneLevel] || {}).boss || {};
-    const tier     = Math.min(Math.floor(kills / 10), 300);
-    const hpScale  = 1 + tier * (bossDef.hpPerTier  || 0);
-    const dmgScale = 1 + tier * (bossDef.dmgPerTier  || 0);
+    const tier     = Math.floor(kills / 10);
+    const hpTier   = Math.min(tier, 300);
+    const dmgTier  = Math.min(tier, 250);
+    const hpScale  = 1 + hpTier  * (bossDef.hpPerTier  || 0);
+    const dmgScale = 1 + dmgTier * (bossDef.dmgPerTier  || 0);
     const rarities = bossDef.rarities || [];
     const rarityDef = rarities.find(r => r.id === boss.rarity) || { hpMult: 1 };
     const newMax   = Math.round((bossDef.baseHp || 600) * hpScale * (rarityDef.hpMult || 1));
@@ -198,12 +208,16 @@ class NPCManager {
     
     const mapNpcDef = (this.mapDefs[npc.mapLevel || this.zoneLevel] || {}).npc || {};
     const tier    = Math.floor(kills / 10);
-    const capTier = Math.min(tier, 300);
+    const hpTier  = Math.min(tier, 300);
+    const dmgTier = Math.min(tier, 250);
     const hpPerTier  = mapNpcDef.hpPerTier  ?? 0.05;
     const dmgPerTier = mapNpcDef.dmgPerTier ?? 0.08;
-    const newMax = Math.floor(npc.baseHp * (1 + capTier * hpPerTier));
-    npc.cannonCount = Math.min(20, 1 + capTier);
-    npc.cannonDmg   = Math.round(npc.baseDmg * (1 + capTier * dmgPerTier));
+    const newMax = Math.floor(npc.baseHp * (1 + hpTier * hpPerTier));
+    // Para NPCs com canhões: usa count do MAP_DEFS como base + tier
+    // Para monstros (ATTACK_DEFS): cannonCount não é usado, linear de 1
+    const baseCannonCount = npc.usesCannons ? (mapNpcDef.cannonCount || 1) : 1;
+    npc.cannonCount = Math.min(20, baseCannonCount + dmgTier);
+    npc.cannonDmg   = Math.round(npc.baseDmg * (1 + dmgTier * dmgPerTier));
 
     if (newMax !== npc.maxHp) {
       const frac = npc.maxHp > 0 ? npc.hp / npc.maxHp : 1;
@@ -325,7 +339,7 @@ class NPCManager {
 
       // Boss regeneration
       if (npc.isBoss && npc.hp < npc.maxHp) {
-        const bossMapDef = ((this.mapDefs[npc.mapLevel] || MAP_DEFS[npc.mapLevel || 1] || MAP_DEFS[1]).boss) || {};
+        const bossMapDef = (MAP_DEFS[npc.mapLevel || 1] || MAP_DEFS[1]).boss || {};
         const wbDef = npc.isWorldBoss ? WORLD_BOSS_DEF[0] : null;
         const regenDelay = (wbDef || bossMapDef).regenDelay || 20000;
         const regenPerSec = (wbDef || bossMapDef).regenPerSec || 0;
@@ -374,7 +388,7 @@ class NPCManager {
         npc.x += Math.sin(npc.rotation) * npc.speed * dt * 30;
         npc.z += Math.cos(npc.rotation) * npc.speed * dt * 30;
         {
-          const ms = ((this.mapDefs[npc.mapLevel] || MAP_DEFS[npc.mapLevel])?.size ?? 1200);
+          const ms = (MAP_DEFS[npc.mapLevel] && MAP_DEFS[npc.mapLevel].size);
           npc.x = clamp(npc.x, -ms / 2, ms / 2);
           npc.z = clamp(npc.z, -ms / 2, ms / 2);
         }
@@ -396,18 +410,21 @@ class NPCManager {
         return;
       }
 
-      // Island security zone (Map 3): skip target if player is within securyRadius
+      // Island security zone: skip target if player is within securyRadius of any safe island
       let nearestForCombat = nearest;
       let nearestDistForCombat = nearestDist;
-      if ((npc.mapLevel || 1) === 3 && nearest && !npc.isBoss) {
-        const mktSec = MAP_DEFS[3]?.market;
-        if (mktSec) {
-          const secR = mktSec.securyRadius || 300;
-          const pdx = nearest.x - (mktSec.center?.x || 0);
-          const pdz = nearest.z - (mktSec.center?.z || 0);
-          if (pdx * pdx + pdz * pdz < secR * secR) {
-            nearestForCombat = null; // player in safe zone — don't engage
-          }
+      if (nearest && !npc.isBoss) {
+        const _mapDef = MAP_DEFS[npc.mapLevel || 1] || {};
+        const _safeIsland = _mapDef.banking || _mapDef.market;
+        if (_safeIsland?.securyRadius) {
+          const _sc = _safeIsland.center || { x: 0, z: 0 };
+          const _pdx = nearest.x - _sc.x;
+          const _pdz = nearest.z - _sc.z;
+          const _secR = _safeIsland.securyRadius;
+          const _inSafe = _safeIsland.islandShape === 'square'
+            ? Math.abs(_pdx) <= _secR && Math.abs(_pdz) <= _secR
+            : (_pdx * _pdx + _pdz * _pdz) < _secR * _secR;
+          if (_inSafe) nearestForCombat = null; // player in safe zone — don't engage
         }
       }
 
@@ -449,11 +466,33 @@ class NPCManager {
         if (nearestForCombat && nearestDistForCombat < engageRange) {
           npc.targetId = nearestForCombat.id;
 
-          if (this.attackManager) {
+          if (npc.usesCannons) {
+            // ── Navios piratas: disparo de canhão via fireInterval ─────────────
+            if (nearestDistForCombat <= npc.cannonRange) {
+              const fireNow = Date.now();
+              if (fireNow >= npc._nextCannonShot) {
+                npc._nextCannonShot = fireNow + npc.fireInterval;
+                const count   = npc.cannonCount || 1;
+                const baseAng = Math.atan2(nearestForCombat.x - npc.x, nearestForCombat.z - npc.z);
+                for (let ci = 0; ci < count; ci++) {
+                  const ang = baseAng + (Math.random() - 0.5) * 0.3;
+                  // Projétil vai em direção ao alvo, limitado pelo cannonRange
+                  const projDist = Math.min(nearestDistForCombat + 20, npc.cannonRange);
+                  this.projectileManager.spawn(
+                    npc,
+                    npc.x + Math.sin(ang) * projDist,
+                    npc.z + Math.cos(ang) * projDist,
+                    0, 1.0, npc.cannonDmg || 0
+                  );
+                }
+              }
+            }
+          } else if (this.attackManager) {
+            // ── Monstros: sistema ATTACK_DEFS (telegraph + AoE) ──────────────
             this.attackManager.tryAttack(npc, nearestForCombat, [...players.values()], this.zoneLevel);
           }
 
-          // Ao usar um ataque (cast), o navio desacelera para concentrar a mira
+          // Ao usar um ataque (cast de monstro), o NPC desacelera para concentrar a mira
           if (npc._currentCast) {
             npc.speed = Math.max(0, npc.speed - 0.08);
           } else {
@@ -477,7 +516,7 @@ class NPCManager {
       npc.z += Math.cos(npc.rotation) * npc.speed * dt * 30;
 
       {
-        const ms = ((this.mapDefs[npc.mapLevel] || MAP_DEFS[npc.mapLevel])?.size ?? 1200);
+        const ms = (MAP_DEFS[npc.mapLevel] && MAP_DEFS[npc.mapLevel].size);
         if (Math.abs(npc.x) > ms / 2 || Math.abs(npc.z) > ms / 2) {
           npc.rotation += Math.PI + rand(-0.5, 0.5);
         }
@@ -533,10 +572,11 @@ class NPCManager {
       npcHullColor: n.npcHullColor,
       npcSailColor: n.npcSailColor,
       npcFlagColor: n.npcFlagColor,
-      npcModel: n.npcModel || null,
-      npcScale: n.npcScale,
-      npcYOffset: n.npcYOffset,
+      npcModel:     n.npcModel || null,
+      npcScale:     n.npcScale,
+      npcYOffset:   n.npcYOffset,
       npcRotOffset: n.npcRotOffset,
+      usesCannons:  n.usesCannons || false,
     }));
   }
 

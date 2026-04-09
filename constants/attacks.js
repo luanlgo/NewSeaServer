@@ -286,6 +286,23 @@ const ATTACK_DEFS = {
     telegraph: { color: 0xff5522 },
   },
 
+  // ── Linguada do Mímico — linha longa que puxa o jogador até o NPC ────────
+  mimic_tongue_lash: {
+    id: 'mimic_tongue_lash',
+    name: 'Linguada do Mímico',
+    rangeMin: 60,
+    rangeMax: 420,
+    castTime: 1400,
+    cooldown: 9000,
+    damageMult: 0.7,
+    shape: 'line', length: 420, width: 28,
+    weight: 8,
+    telegraph: { color: 0xd4a017 },   // dourado — temático do mímico
+    effects: [
+      { type: 'pull', pullDistance: 55 },  // arrasta o jogador para 55u do NPC
+    ],
+  },
+
   // ── AoE — Linha ────────────────────────────────────────────────────────────
   deep_surge: {
     id: 'deep_surge', 

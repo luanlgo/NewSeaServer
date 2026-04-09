@@ -38,6 +38,8 @@ class PlayerManager {
       // Recursos
       gold: 100,
       dobroes: 0,
+      bankGold: 0,
+      bankUnlocked: false,
 
       // Inventário - usar objetos com limites
       inventory: {
@@ -247,51 +249,45 @@ class PlayerManager {
       // Cannon cooldown
       this._processCannonCooldown(player, dt, now);
 
-      // Island/structure avoidance — colisão física com ilhas e torres
+      // Island/structure avoidance — colisão física com ilhas e torres (dinâmico)
       const _mapLvl = player.mapLevel || 1;
-
-      // Mapa 3: ilha do mercado
-      if (_mapLvl === 3) {
-        const market = MAP_DEFS[3]?.market;
-        if (market) {
-          const cx = market.center?.x || 0;
-          const cz = market.center?.z || 0;
-          const iRad = (market.islandRadius || 100) + 6;
+      const _mapDef = MAP_DEFS[_mapLvl];
+      if (_mapDef) {
+        // Ilhas com islandRadius + center (market, lighthouse, banking, etc.)
+        for (const val of Object.values(_mapDef)) {
+          if (!val || typeof val !== 'object' || !val.islandRadius || !val.center) continue;
+          const cx = val.center.x || 0;
+          const cz = val.center.z || 0;
+          const r  = val.islandRadius + 6;
           const dx = player.x - cx;
           const dz = player.z - cz;
-          const dist2 = dx * dx + dz * dz;
-          if (dist2 < iRad * iRad && dist2 > 0) {
-            const dist = Math.sqrt(dist2);
-            player.x = cx + (dx / dist) * iRad;
-            player.z = cz + (dz / dist) * iRad;
+
+          if (val.islandShape === 'square') {
+            // AABB: empurra pelo eixo de menor penetração
+            if (Math.abs(dx) < r && Math.abs(dz) < r) {
+              const penX = r - Math.abs(dx);
+              const penZ = r - Math.abs(dz);
+              if (penX < penZ) {
+                player.x = cx + Math.sign(dx || 1) * r;
+              } else {
+                player.z = cz + Math.sign(dz || 1) * r;
+              }
+            }
+          } else {
+            // Círculo
+            const dist2 = dx * dx + dz * dz;
+            if (dist2 < r * r && dist2 > 0) {
+              const dist = Math.sqrt(dist2);
+              player.x = cx + (dx / dist) * r;
+              player.z = cz + (dz / dist) * r;
+            }
           }
         }
-      }
-
-      // Mapa 4: ilha do farol
-      if (_mapLvl === 4) {
-        const lh = MAP_DEFS[4]?.lighthouse;
-        if (lh) {
-          const cx = lh.center?.x || 0;
-          const cz = lh.center?.z || 0;
-          const iRad = (lh.islandRadius || 80) + 6;
-          const dx = player.x - cx;
-          const dz = player.z - cz;
-          const dist2 = dx * dx + dz * dz;
-          if (dist2 < iRad * iRad && dist2 > 0) {
-            const dist = Math.sqrt(dist2);
-            player.x = cx + (dx / dist) * iRad;
-            player.z = cz + (dz / dist) * iRad;
-          }
-        }
-      }
-
-      // Mapa 5: torre de treino (colisão por raio do corpo da torre)
-      if (_mapLvl === 5) {
-        const tr = MAP_DEFS[5]?.training;
-        if (tr) {
-          const cx = tr.dummy?.x ?? 0;
-          const cz = tr.dummy?.z ?? -120;
+        // Torre de treino: usa dummy.x/z + collisionRadius (estrutura diferente)
+        if (_mapDef.training?.dummy !== undefined) {
+          const tr = _mapDef.training;
+          const cx = tr.dummy.x ?? 0;
+          const cz = tr.dummy.z ?? -120;
           const iRad = (tr.collisionRadius || 18) + 6;
           const dx = player.x - cx;
           const dz = player.z - cz;

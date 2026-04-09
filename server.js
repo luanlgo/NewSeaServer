@@ -21,9 +21,6 @@ const WorldBossManager  = require('./managers/world-boss-manager');
 const ProjectileManager = require('./managers/projectile-manager');
 const AttackManager     = require('./managers/attack-manager');
 
-let map1EmptySince = null;
-let map2EmptySince = null;
-let map3EmptySince = null;
 
 const compression = require('compression');
 const app    = express();
@@ -106,6 +103,7 @@ const {
   EXPLORATION_REWARDS,
   FRAGMENT_DROP_NPC,
   BONUS_MAPS,
+  BONUS_MAP_LEVELS,
   CANNON_RESEARCH_COSTS,
   SHIP_UPGRADE_DEFS,
   RELIC_DEFS,
@@ -117,11 +115,10 @@ const {
   TALENT_COST_TIERS,
   TALENT_XP_BASE,
   TALENT_XP_GROWTH,
-  BONUS_DUNGEON_DEFS,
   BONUS_NPC_DEFS,
+  BONUS_DUNGEON_DEFS,
   rollBonusShip,
-  BONUS_DUNGEON_MAP_CONFIGS,
-  DUNGEON_MAP_DEFS,
+  computeWaveRewards,
 } = require('./constants');
 const {
   calcXpRequired:     _calcXpRequired,
@@ -298,102 +295,85 @@ const attackManager = new AttackManager(addEvent, projectileManager);
 // 3. NPC managers (need projectileManager + attackManager for broadcasting)
 let   npcManager  = new NPCManager(projectileManager, MAP_DEFS, 1, attackManager); // map 1 NPCs (let — pode ser recriado)
 let   npcManager2 = new NPCManager(projectileManager, MAP_DEFS, 2, attackManager); // map 2 NPCs (let — pode ser recriado)
-let   npcManager3 = null; // will be created when map 3 is entered
-let   npcManager4 = null; // will be created when map 4 is entered
-let   npcManager6 = null; // will be created when map 6 is entered (npc: null — boss-only map)
-let bossManager6 = null; // boss manager for map 6
-// ── Dungeon instance managers (one per dungeon zone, created on first entry) ──
-let npcManagerDungeon1 = null; // mapLevel 10 — Baía dos Naufragados
-let npcManagerDungeon2 = null; // mapLevel 11 — Fortaleza do Esquecimento
-let npcManagerDungeon3 = null; // mapLevel 12 — Abismo dos Afundados
+// Maps 3+ são criados sob demanda via regularManagers (elimina npcManager3/4/6 hardcoded)
+const regularManagers = new Map(); // mapLevel (3-6) → { npc: NPCManager, boss: BossManager|null }
+// Mapas bônus (7+) — mesma lógica, managers separados para dungeon complete detection
+const bonusNpcManagers = new Map(); // mapLevel → NPCManager
 
-// No início do server.js, junto com as outras variáveis globais
-const eventBuffer = {
-  map1: [], map2: [], map3: [], map4: [], map6: [],
-  map10: [], map11: [], map12: [], // dungeon zones
-  global: []
-};
+// Event buffer dinâmico — chave = mapLevel (int) ou 0 = global
+const eventBuffer = new Map();
+eventBuffer.set(0, []); // global
 
 let lastBroadcastFlush = Date.now();
 const BROADCAST_INTERVAL = parseInt(process.env.BROADCAST_INTERVAL || process.env.VITE_BROADCAST_INTERVAL) || 48;
 
 function addEvent(event, mapLevel = null, urgent = false) {
   if (urgent) {
-    // Evento urgente: flush imediato só desse evento
-    const events = [event];
     players.forEach(player => {
       if (mapLevel === null || (player.mapLevel || 1) === mapLevel) {
-        sendTo(player.ws, { type: 'events', events });
+        sendTo(player.ws, { type: 'events', events: [event] });
       }
     });
     return;
   }
-
-  if (mapLevel === null || mapLevel === undefined) {
-    // Evento global - vai para todos
-    eventBuffer.global.push(event);
-  } else {
-    // Evento específico de mapa
-    const key = `map${mapLevel}`;
-    if (eventBuffer[key]) {
-      eventBuffer[key].push(event);
-    }
-  }
+  const key = (mapLevel === null || mapLevel === undefined) ? 0 : mapLevel;
+  if (!eventBuffer.has(key)) eventBuffer.set(key, []);
+  eventBuffer.get(key).push(event);
 }
 
 function flushEvents() {
   const now = Date.now();
-  
-  // Só flush se passou o intervalo OU se algum buffer estiver muito grande
+  const MAX_BUFFER_SIZE = 50;
   if (now - lastBroadcastFlush < BROADCAST_INTERVAL) {
-    // Verifica se algum buffer estourou o limite máximo
-    const MAX_BUFFER_SIZE = 50;
-    if (Object.values(eventBuffer).every(buf => buf.length < MAX_BUFFER_SIZE)) {
-      return;
-    }
+    let anyLarge = false;
+    eventBuffer.forEach(buf => { if (buf.length >= MAX_BUFFER_SIZE) anyLarge = true; });
+    if (!anyLarge) return;
   }
-  
   lastBroadcastFlush = now;
-  
-  // Agrupa eventos por mapa
+
+  const globalEvents = eventBuffer.get(0) || [];
   players.forEach(player => {
-    const mapLevel = player.mapLevel || 1;
-    const events = [
-      ...eventBuffer.global,
-      ...(eventBuffer[`map${mapLevel}`] || [])
-    ];
-    
-    if (events.length > 0) {
-      sendTo(player.ws, { type: 'events', events });
-    }
+    const lvl = player.mapLevel || 1;
+    const events = [...globalEvents, ...(eventBuffer.get(lvl) || [])];
+    if (events.length > 0) sendTo(player.ws, { type: 'events', events });
   });
-  
-  // Limpa buffers
-  eventBuffer.map1 = [];
-  eventBuffer.map2 = [];
-  eventBuffer.map3 = [];
-  eventBuffer.map4 = [];
-  eventBuffer.map6 = [];
-  eventBuffer.global = [];
+
+  // Limpa todos os buffers
+  eventBuffer.forEach((_, k) => eventBuffer.set(k, []));
 }
 
-// 3. Proxy that merges both NPC maps (safe now — npcManager exists)
+// 3. Proxy dinâmico — agrega todos os managers (regular + bônus)
 const allNpcs = new Proxy({}, {
   get(_, prop) {
-    if (prop === 'get')     return id => npcManager.npcs.get(id) || npcManager2.npcs.get(id) || (npcManager3 && npcManager3.npcs.get(id)) || (npcManager4 && npcManager4.npcs.get(id)) || (npcManager6 && npcManager6.npcs.get(id)) || (npcManagerDungeon1 && npcManagerDungeon1.npcs.get(id)) || (npcManagerDungeon2 && npcManagerDungeon2.npcs.get(id)) || (npcManagerDungeon3 && npcManagerDungeon3.npcs.get(id));
-    if (prop === 'has')     return id => npcManager.npcs.has(id) || npcManager2.npcs.has(id) || (npcManager3 && npcManager3.npcs.has(id)) || (npcManager4 && npcManager4.npcs.has(id)) || (npcManager6 && npcManager6.npcs.has(id)) || (npcManagerDungeon1 && npcManagerDungeon1.npcs.has(id)) || (npcManagerDungeon2 && npcManagerDungeon2.npcs.has(id)) || (npcManagerDungeon3 && npcManagerDungeon3.npcs.has(id));
-    if (prop === 'values')  return () => {
+    if (prop === 'get') return id => {
+      let r = npcManager.npcs.get(id) || npcManager2.npcs.get(id);
+      if (r) return r;
+      for (const { npc } of regularManagers.values()) { const n = npc?.npcs.get(id); if (n) return n; }
+      for (const m of bonusNpcManagers.values())      { const n = m.npcs.get(id); if (n) return n; }
+    };
+    if (prop === 'has') return id => {
+      if (npcManager.npcs.has(id) || npcManager2.npcs.has(id)) return true;
+      for (const { npc } of regularManagers.values()) { if (npc?.npcs.has(id)) return true; }
+      for (const m of bonusNpcManagers.values())      { if (m.npcs.has(id)) return true; }
+      return false;
+    };
+    if (prop === 'values') return () => {
       const arr = [...npcManager.npcs.values(), ...npcManager2.npcs.values()];
-      if (npcManager3 && !npcManager3.destroyed) arr.push(...npcManager3.npcs.values());
-      if (npcManager4 && !npcManager4.destroyed) arr.push(...npcManager4.npcs.values());
-      if (npcManager6 && !npcManager6.destroyed) arr.push(...npcManager6.npcs.values());
-      if (npcManagerDungeon1) arr.push(...npcManagerDungeon1.npcs.values());
-      if (npcManagerDungeon2) arr.push(...npcManagerDungeon2.npcs.values());
-      if (npcManagerDungeon3) arr.push(...npcManagerDungeon3.npcs.values());
+      for (const { npc } of regularManagers.values()) { if (npc && !npc.destroyed) arr.push(...npc.npcs.values()); }
+      for (const m of bonusNpcManagers.values())      { if (!m.destroyed) arr.push(...m.npcs.values()); }
       return arr[Symbol.iterator]();
     };
-    if (prop === 'forEach') return cb => { npcManager.npcs.forEach(cb); npcManager2.npcs.forEach(cb); if (npcManager3 && !npcManager3.destroyed) npcManager3.npcs.forEach(cb); if (npcManager4 && !npcManager4.destroyed) npcManager4.npcs.forEach(cb); if (npcManager6 && !npcManager6.destroyed) npcManager6.npcs.forEach(cb); if (npcManagerDungeon1) npcManagerDungeon1.npcs.forEach(cb); if (npcManagerDungeon2) npcManagerDungeon2.npcs.forEach(cb); if (npcManagerDungeon3) npcManagerDungeon3.npcs.forEach(cb); };
-    if (prop === 'delete')  return id => npcManager.npcs.delete(id) || npcManager2.npcs.delete(id) || (npcManager3 && npcManager3.npcs.delete(id)) || (npcManager4 && npcManager4.npcs.delete(id)) || (npcManager6 && npcManager6.npcs.delete(id)) || (npcManagerDungeon1 && npcManagerDungeon1.npcs.delete(id)) || (npcManagerDungeon2 && npcManagerDungeon2.npcs.delete(id)) || (npcManagerDungeon3 && npcManagerDungeon3.npcs.delete(id));
+    if (prop === 'forEach') return cb => {
+      npcManager.npcs.forEach(cb); npcManager2.npcs.forEach(cb);
+      for (const { npc } of regularManagers.values()) { if (npc && !npc.destroyed) npc.npcs.forEach(cb); }
+      for (const m of bonusNpcManagers.values())      { if (!m.destroyed) m.npcs.forEach(cb); }
+    };
+    if (prop === 'delete') return id => {
+      if (npcManager.npcs.delete(id) || npcManager2.npcs.delete(id)) return true;
+      for (const { npc } of regularManagers.values()) { if (npc?.npcs.delete(id)) return true; }
+      for (const m of bonusNpcManagers.values())      { if (m.npcs.delete(id)) return true; }
+      return false;
+    };
     return undefined;
   }
 });
@@ -401,7 +381,8 @@ const allNpcs = new Proxy({}, {
 // 4. Boss managers (one per map zone)
 let   bossManager  = new BossManager(wss, players, npcs, 1); // let — pode ser recriado
 let   bossManager2 = new BossManager(wss, players, null, 2); // let — pode ser recriado
-let   bossManager3 = null; // will be created when map 3 is entered
+// bossManager3 alias mantido para compatibilidade com código legado (usado via projectileManager.bossManagers)
+let   bossManager3 = null;
 
 // 5. Wire everything into projectileManager
 projectileManager.npcs          = allNpcs;
@@ -416,13 +397,6 @@ bossManager2.npcs = npcManager2.npcs;
 // 6. World Boss Manager — tracks total zone-boss kills and spawns the World Boss
 const worldBossManager = new WorldBossManager(wss, players, [npcManager, npcManager2]);
 projectileManager.worldBossManager = worldBossManager;
-
-// 7. Dungeon boss kill callback — dispara handleDungeonComplete quando projétil mata o boss
-projectileManager.onDungeonBossKilled = (killer, npc) => {
-  if (!killer) return;
-  handleDungeonComplete(killer, npc);
-  _scheduleDungeonNpcRespawn(npc.dungeonId);
-};
 
 // ── Callbacks de Missões Diárias ─────────────────────────────────────────────
 // Nomes dos monstros do recife (um por mapa 1-3)
@@ -518,6 +492,10 @@ function _setupMissionCallbacks(pmgr, bmgr, bmgr2) {
   if (bmgr2) { bmgr2._onBossKill = bossCb; bmgr2._onBossAssist = bossAssistCb; }
 }
 _setupMissionCallbacks(projectileManager, bossManager, bossManager2);
+
+// Registra bossManagers iniciais no projectileManager dinâmico
+projectileManager.bossManagers.set(1, bossManager);
+projectileManager.bossManagers.set(2, bossManager2);
 
 // Recalc sail speed bonus from equipped sails
 function _recalcSails(player) {
@@ -787,7 +765,7 @@ setInterval(() => {
         p.mapLevel = _retMap;
         p.x = (_retMap === 4) ? (_retSize / 2) - 80 : 0;
         p.z = 0;
-        if (_retMap === 3) ensureMap3Managers();
+        ensureManagersForMap(_retMap);
         db.save(p, true).catch(e => console.error('Save error:', e));
         sendTo(p.ws, {
           type: 'map_transition', toLevel: _retMap,
@@ -836,7 +814,7 @@ setInterval(() => {
   // ── Data-driven border detection based on sideMap ───────────────────────────
   players.forEach(p => {
     if (p.dead) return;
-    if (p.afkTraining || p.mapLevel === 5) return; // AFK: sem transição por borda
+    if (p.afkTraining || MAP_DEFS[p.mapLevel]?.isTrainingMap) return; // AFK: sem transição por borda
 
     const level = p.mapLevel || 1;
     const mapDef = MAP_DEFS[level];
@@ -892,7 +870,9 @@ setInterval(() => {
       if (!targetDef) { trans.block(); break; }
 
       // Gate de XP: apenas em direção 'norte' quando mapDef.xpToAdvance está definido
-      if (dir === 'norte' && mapDef.xpToAdvance) {
+      // E apenas se o mapa destino também é de progressão (xpRequired > 0)
+      // Mapas utilitários (ex: Ilha do Banco com xpRequired: 0) nunca são bloqueados
+      if (dir === 'norte' && mapDef.xpToAdvance && (targetDef.xpRequired || 0) > 0) {
         const xp = p.mapXp || 0;
         if (xp < mapDef.xpToAdvance) {
           trans.block();
@@ -909,8 +889,16 @@ setInterval(() => {
       const targetSize = targetDef.size;
       if (trans.spawnAxis === 'z') {
         p.z = trans.spawnValue(targetSize);
+        // Escala o X proporcionalmente para o novo mapa (evita canto em mapas de tamanho diferente)
+        if (mapSize && targetSize && mapSize !== targetSize) {
+          p.x = (p.x / (mapSize / 2)) * (targetSize / 2);
+        }
       } else {
         p.x = trans.spawnValue(targetSize);
+        // Escala o Z proporcionalmente para o novo mapa
+        if (mapSize && targetSize && mapSize !== targetSize) {
+          p.z = (p.z / (mapSize / 2)) * (targetSize / 2);
+        }
       }
 
       p.mapLevel = targetLevel;
@@ -955,23 +943,31 @@ setInterval(() => {
     }
   });
 
-  // Only update map NPCs that have players in their zone
-  const map1Players = new Map([...players].filter(([,p]) => (p.mapLevel||1) === 1));
-  const map2Players = new Map([...players].filter(([,p]) => (p.mapLevel||1) === 2));
-  const map3Players = new Map([...players].filter(([,p]) => (p.mapLevel||1) === 3));
-  if (!npcManager.destroyed)   npcManager.update(dt, map1Players);
-  if (!npcManager2.destroyed)  npcManager2.update(dt, map2Players);
-  if (npcManager3 && !npcManager3.destroyed) npcManager3.update(dt, map3Players);
-  const map4Players = new Map([...players].filter(([,p]) => (p.mapLevel||1) === 4));
-  if (npcManager4 && !npcManager4.destroyed) npcManager4.update(dt, map4Players);
-  const map6Players = new Map([...players].filter(([,p]) => (p.mapLevel||1) === 6));
-  if (npcManager6 && !npcManager6.destroyed) npcManager6.update(dt, map6Players);
-  const mapD1Players = new Map([...players].filter(([,p]) => p.mapLevel === 10));
-  if (npcManagerDungeon1) npcManagerDungeon1.update(dt, mapD1Players);
-  const mapD2Players = new Map([...players].filter(([,p]) => p.mapLevel === 11));
-  if (npcManagerDungeon2) npcManagerDungeon2.update(dt, mapD2Players);
-  const mapD3Players = new Map([...players].filter(([,p]) => p.mapLevel === 12));
-  if (npcManagerDungeon3) npcManagerDungeon3.update(dt, mapD3Players);
+  // Update NPC managers — mapas 1 e 2 always active, resto dinâmico
+  const _playersForMap = lvl => new Map([...players].filter(([,p]) => (p.mapLevel||1) === lvl));
+  if (!npcManager.destroyed)  npcManager.update(dt,  _playersForMap(1));
+  if (!npcManager2.destroyed) npcManager2.update(dt, _playersForMap(2));
+  for (const [lvl, { npc }] of regularManagers) {
+    if (npc && !npc.destroyed) npc.update(dt, _playersForMap(lvl));
+  }
+  // Mapas bônus (7/8/9)
+  for (const [lvl, mgr] of bonusNpcManagers) {
+    if (!mgr.destroyed) {
+      const bonusPlayers = new Map([...players].filter(([,p]) => p.mapLevel === lvl));
+      mgr.update(dt, bonusPlayers);
+      // ── Bonus dungeon complete: todos os NPCs mortos ──────────────────────
+      if (!mgr._dungeonComplete && mgr.npcs.size > 0) {
+        const allDead = [...mgr.npcs.values()].every(n => n.dead);
+        if (allDead) {
+          mgr._dungeonComplete = true;
+          const mapDef = MAP_DEFS[lvl] || {};
+          for (const [, p] of bonusPlayers) {
+            sendBonusDungeonComplete(p, lvl, mapDef);
+          }
+        }
+      }
+    }
+  }
   projectileManager.update(dt);
 
   // ── World Boss: auto-destruição após expireDelay sem tomar dano ──────────
@@ -1105,37 +1101,19 @@ setInterval(() => {
                 worldBossManager.onWorldBossDead(npc, p.id);
               } else {
                 const _aBossLvl = npc.mapLevel || 1;
-              const aBossMgr = _aBossLvl === 3 ? bossManager3 : _aBossLvl === 2 ? bossManager2 : bossManager;
-                aBossMgr.onBossDead(npc, p.id);
+              const aBossMgr = projectileManager.bossManagers.get(_aBossLvl)
+                            || (_aBossLvl === 2 ? bossManager2 : bossManager);
+                if (aBossMgr) aBossMgr.onBossDead(npc, p.id);
                 worldBossManager.onZoneBossDead(npc, p.id);
               }
               projectileManager.npcs.delete(npc.id);
-            } else if (npc.isDungeonBoss) {
-              addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: p.id, goldDrop: 0 }, npc.mapLevel);
-              projectileManager.npcs.delete(npc.id);
-              handleDungeonComplete(p, npc);
-              _scheduleDungeonNpcRespawn(npc.dungeonId);
             } else {
               const rewards = projectileManager.grantNpcKillRewards(p, npc);
               addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: p.id, goldDrop: rewards.goldDrop }, npc.mapLevel);
               const _nLvlA = npc.mapLevel || 1;
-              const aMgr = _nLvlA === 4 ? npcManager4 : _nLvlA === 3 ? npcManager3 : _nLvlA === 2 ? npcManager2 : npcManager;
+              const aMgr = (_nLvlA === 1 ? npcManager : _nLvlA === 2 ? npcManager2 : getMapManager(_nLvlA));
               aMgr && aMgr.respawnScaled(npc.id, p.npcKills || 0, _nLvlA);
-              // Boss spawn accounting (aura kill)
-              { const _bpLvlA = _nLvlA;
-                if (_bpLvlA === 3) projectileManager.totalNpcKills3 = (projectileManager.totalNpcKills3||0)+1;
-                else if (_bpLvlA === 2) projectileManager.totalNpcKills2 = (projectileManager.totalNpcKills2||0)+1;
-                else projectileManager.totalNpcKills = (projectileManager.totalNpcKills||0)+1;
-                const _bpKtsA = MAP_DEFS[_bpLvlA]?.boss?.killsToSpawn ?? 10;
-                const _bpTotA = _bpLvlA===3 ? projectileManager.totalNpcKills3 : _bpLvlA===2 ? projectileManager.totalNpcKills2 : projectileManager.totalNpcKills;
-                const _bpBmgrA = _bpLvlA===3 ? bossManager3 : _bpLvlA===2 ? bossManager2 : bossManager;
-                if ((_bpTotA % _bpKtsA) === 0 && _bpBmgrA && !_bpBmgrA.bossAlive) {
-                  const rarity = _bpBmgrA.rollPendingRarity();
-                  addEvent({ type:'boss_incoming', rarity, mapLevel:_bpLvlA }, npc.mapLevel);
-                  setTimeout(() => _bpBmgrA.spawn(p.npcKills||0), 2000);
-                }
-                addEvent({ type:'boss_progress', current:_bpTotA%_bpKtsA, needed:_bpKtsA, mapLevel:_bpLvlA, bossAlive:!!_bpBmgrA?.bossAlive }, _bpLvlA);
-              }
+              _npcKillBossAccounting(_nLvlA, p.npcKills || 0);
               db.save(p).catch(e => console.error('Save error:', e));
               const curMapDef = MAP_DEFS[p.mapLevel];
               sendTo(p.ws, {
@@ -1218,7 +1196,8 @@ setInterval(() => {
           if (e.isBoss) {
             addEvent({ type: 'entity_dead', id: e.id, isNPC: true, isBoss: true, killerId: dot.ownerId }, e.mapLevel);
             const _dotBossLvl = e.mapLevel || 1;
-            const dotBossMgr = _dotBossLvl === 3 ? bossManager3 : _dotBossLvl === 2 ? bossManager2 : bossManager;
+            const dotBossMgr = projectileManager.bossManagers.get(_dotBossLvl)
+                            || (_dotBossLvl === 2 ? bossManager2 : bossManager);
             dotBossMgr.onBossDead(e, dot.ownerId);
             projectileManager.npcs.delete(e.id);
           } else {
@@ -1229,8 +1208,9 @@ setInterval(() => {
             const baseGold  = Math.floor(Math.random() * (dotGoldMax - dotGoldMin + 1) + dotGoldMin);
             if (killer) {
               killer.npcKills = (killer.npcKills || 0) + 1;
-              const tier = Math.floor(killer.npcKills / 10);
-              const gold = Math.floor(baseGold * (1 + (killer.dropBonus||0)) * (1 + tier*0.01));
+              const tier        = Math.floor(killer.npcKills / 10);
+              const rewardTier  = Math.min(tier, 500);
+              const gold = Math.floor(baseGold * (1 + (killer.dropBonus||0)) * (1 + rewardTier*0.01));
               killer.gold += gold;
               // Dobrao drop
               if ((dotNpcDef.dobraoChance || 0) > 0 && Math.random() < dotNpcDef.dobraoChance) {
@@ -1239,7 +1219,7 @@ setInterval(() => {
               }
               // XP grant on DOT kill — use e.mapLevel (NPC zone), not killer.mapLevel
               const dotXpMapDef = MAP_DEFS[e.mapLevel || 1] || MAP_DEFS[1];
-              const xpGained = Math.floor((dotXpMapDef.npc?.xpPerKill || 12) * (1 + tier * 0.01));
+              const xpGained = Math.floor((dotXpMapDef.npc?.xpPerKill || 12) * (1 + rewardTier * 0.01));
               killer.mapXp = (killer.mapXp || 0) + xpGained;
               // XP is lifetime total — never reset, mapLevel only changes at border
               const xpNeeded = (MAP_DEFS[killer.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
@@ -1259,61 +1239,30 @@ setInterval(() => {
             }
             addEvent({ type: 'entity_dead', id: e.id, isNPC: true, goldDrop: baseGold, killerId: dot.ownerId }, e.mapLevel);
             const dotNpcLevel = e.mapLevel || 1;
-            if (dotNpcLevel === 3) {
-              if (!npcManager3 || npcManager3.destroyed) ensureMap3Managers();
-            }
-            let dotMgr;
-            if (dotNpcLevel === 4) dotMgr = npcManager4;
-            else if (dotNpcLevel === 3) dotMgr = npcManager3;
-            else if (dotNpcLevel === 2) dotMgr = npcManager2;
-            else dotMgr = npcManager;
+            ensureManagersForMap(dotNpcLevel);
+            const dotMgr = dotNpcLevel === 1 ? npcManager
+                         : dotNpcLevel === 2 ? npcManager2
+                         : getMapManager(dotNpcLevel);
             dotMgr && dotMgr.respawnScaled(e.id, killer ? (killer.npcKills||0) : 0, dotNpcLevel);
-            // Boss spawn trigger — works for all map zones
-            if (dotNpcLevel === 3) {
-              projectileManager.totalNpcKills3 = (projectileManager.totalNpcKills3 || 0) + 1;
-              const kts3 = MAP_DEFS[dotNpcLevel]?.boss?.killsToSpawn ?? 10;
-              console.log(`[boss-debug] map3 kill=${projectileManager.totalNpcKills3} kts=${kts3} bossAlive=${!!bossManager3?.bossAlive}`);
-              if ((projectileManager.totalNpcKills3 % kts3) === 0 && !bossManager3.bossAlive) {
-                const rarity = bossManager3.rollPendingRarity();
-                addEvent({ type: 'boss_incoming', rarity, mapLevel: 3 }, dotNpcLevel);
-                const dotKills3 = killer ? (killer.npcKills || 0) : 0;
-                const timerId3 = setTimeout(() => bossManager3.spawn(dotKills3), 2000);
-                console.log(`[boss-debug] scheduled spawn timer=${timerId3} for map=3 (dotKills=${dotKills3})`);
+            // Boss spawn trigger — dinâmico para todos os mapas
+            const _dotKts = MAP_DEFS[dotNpcLevel]?.boss?.killsToSpawn ?? 0;
+            if (_dotKts > 0) {
+              const _dotTot = (projectileManager.killCounters.get(dotNpcLevel) || 0) + 1;
+              projectileManager.killCounters.set(dotNpcLevel, _dotTot);
+              if (dotNpcLevel === 1) projectileManager.totalNpcKills  = _dotTot;
+              else if (dotNpcLevel === 2) projectileManager.totalNpcKills2 = _dotTot;
+              else if (dotNpcLevel === 3) projectileManager.totalNpcKills3 = _dotTot;
+              const _dotBm = projectileManager.bossManagers.get(dotNpcLevel)
+                          || (dotNpcLevel === 2 ? bossManager2 : bossManager);
+              console.log(`[boss-debug] (dot) map=${dotNpcLevel} kill=${_dotTot} kts=${_dotKts} bossAlive=${!!_dotBm?.bossAlive}`);
+              if (_dotBm && (_dotTot % _dotKts) === 0 && !_dotBm.bossAlive) {
+                const rarity = _dotBm.rollPendingRarity();
+                addEvent({ type: 'boss_incoming', rarity, mapLevel: dotNpcLevel }, dotNpcLevel);
+                const dotKills = killer ? (killer.npcKills || 0) : 0;
+                const tid = setTimeout(() => _dotBm.spawn(dotKills), 2000);
+                console.log(`[boss-debug] (dot) scheduled spawn timer=${tid} for map=${dotNpcLevel}`);
               }
-            } else if (dotNpcLevel === 2) {
-              projectileManager.totalNpcKills2 = (projectileManager.totalNpcKills2 || 0) + 1;
-              const kts2 = MAP_DEFS[dotNpcLevel]?.boss?.killsToSpawn ?? 10;
-              console.log(`[boss-debug] map2 kill=${projectileManager.totalNpcKills2} kts=${kts2} bossAlive=${!!bossManager2?.bossAlive}`);
-              if ((projectileManager.totalNpcKills2 % kts2) === 0 && !bossManager2.bossAlive) {
-                const rarity = bossManager2.rollPendingRarity();
-                addEvent({ type: 'boss_incoming', rarity, mapLevel: 2 }, dotNpcLevel);
-                const dotKills2 = killer ? (killer.npcKills || 0) : 0;
-                const timerId2 = setTimeout(() => bossManager2.spawn(dotKills2), 2000);
-                console.log(`[boss-debug] scheduled spawn timer=${timerId2} for map=2 (dotKills=${dotKills2})`);
-              }
-            } else {
-              projectileManager.totalNpcKills++;
-              const kts1 = MAP_DEFS[dotNpcLevel]?.boss?.killsToSpawn ?? 10;
-              console.log(`[boss-debug] map1 kill=${projectileManager.totalNpcKills} kts=${kts1} bossAlive=${!!bossManager?.bossAlive}`);
-              if ((projectileManager.totalNpcKills % kts1) === 0 && !bossManager.bossAlive) {
-                const rarity = bossManager.rollPendingRarity();
-                addEvent({ type: 'boss_incoming', rarity, mapLevel: 1 }, dotNpcLevel);
-                const dotKills1 = killer ? (killer.npcKills || 0) : 0;
-                const timerId1 = setTimeout(() => bossManager.spawn(dotKills1), 2000);
-                console.log(`[boss-debug] scheduled spawn timer=${timerId1} for map=1 (dotKills=${dotKills1})`);
-              }
-            }
-            // Broadcast boss kill progress (DOT path) — client filters by mapLevel
-            {
-              const _bpKts = (MAP_DEFS[dotNpcLevel]?.boss?.killsToSpawn) ?? 10;
-              const _bpTot = dotNpcLevel === 3 ? projectileManager.totalNpcKills3
-                           : dotNpcLevel === 2 ? projectileManager.totalNpcKills2
-                           : projectileManager.totalNpcKills;
-              const _bpAlive = dotNpcLevel === 3 ? !!bossManager3?.bossAlive
-                             : dotNpcLevel === 2 ? !!bossManager2?.bossAlive
-                             : !!bossManager?.bossAlive;
-              
-              addEvent({ type: 'boss_progress', current: _bpTot % _bpKts, needed: _bpKts, mapLevel: dotNpcLevel, bossAlive: _bpAlive }, dotNpcLevel);
+              addEvent({ type: 'boss_progress', current: _dotTot % _dotKts, needed: _dotKts, mapLevel: dotNpcLevel, bossAlive: !!_dotBm?.bossAlive }, dotNpcLevel);
             }
           }
         } else {
@@ -1350,18 +1299,24 @@ setInterval(() => {
     // Send per-player: only NPCs and boss from their zone
     // Exclude zone bosses from NPC snapshots (sent via bossSnap), mas mantém world boss
     // pois ele vive no npcManager e precisa de todos os campos (isWorldBoss, npcScale, etc.)
-    const allNpcSnap1  = npcManager.destroyed  ? [] : npcManager.snapshot().filter(n => !n.isBoss || n.isWorldBoss);
-    const allNpcSnap2  = npcManager2.destroyed ? [] : npcManager2.snapshot().filter(n => !n.isBoss || n.isWorldBoss);
-    const allNpcSnap3  = npcManager3 && !npcManager3.destroyed ? npcManager3.snapshot().filter(n => !n.isBoss || n.isWorldBoss) : [];
-    const allNpcSnap4  = npcManager4 && !npcManager4.destroyed ? npcManager4.snapshot().filter(n => !n.isBoss || n.isWorldBoss) : [];
-    const allNpcSnapD1 = npcManagerDungeon1 ? npcManagerDungeon1.snapshot() : [];
-    const allNpcSnapD2 = npcManagerDungeon2 ? npcManagerDungeon2.snapshot() : [];
-    const allNpcSnapD3 = npcManagerDungeon3 ? npcManagerDungeon3.snapshot() : [];
-    const playerSnap   = playerManager.snapshot();
+    // NPC snapshots — dinâmico para todos os mapas
+    const npcSnapByZone = new Map();
+    const _snapMgr = (mgr, lvl) => {
+      if (mgr && !mgr.destroyed) npcSnapByZone.set(lvl, mgr.snapshot().filter(n => !n.isBoss || n.isWorldBoss));
+    };
+    _snapMgr(npcManager,  1);
+    _snapMgr(npcManager2, 2);
+    for (const [lvl, { npc }] of regularManagers) { _snapMgr(npc, lvl); }
+    for (const [lvl, mgr] of bonusNpcManagers)    { _snapMgr(mgr, lvl); }
 
-    // Boss snapshot includes mapLevel for client-side filtering (both zones)
+    const playerSnap  = playerManager.snapshot();
+
+    // Boss snapshot — dinâmico: percorre todos os bossManagers registrados
     const bossSnap = [];
-    [bossManager, bossManager2, bossManager3, bossManager6].forEach(mgr => {
+    const _allBossManagers = [bossManager, bossManager2,
+      ...regularManagers.values().map ? [...regularManagers.values()].map(e => e.boss) : []];
+    // Usa o Map dinâmico como fonte canônica
+    projectileManager.bossManagers.forEach(mgr => {
       if (!mgr || !mgr.npcs) return; // Verificação segura
       
       mgr.npcs.forEach(b => {
@@ -1408,15 +1363,9 @@ setInterval(() => {
       bossesByZone.get(z).push(b);
     }
 
-    const allNpcSnap6 = npcManager6 && !npcManager6.destroyed ? npcManager6.snapshot().filter(n => !n.isBoss || n.isWorldBoss) : [];
-    const npcSnapByZone = [null, allNpcSnap1, allNpcSnap2, allNpcSnap3, allNpcSnap4, null, allNpcSnap6];
-    npcSnapByZone[10] = allNpcSnapD1;
-    npcSnapByZone[11] = allNpcSnapD2;
-    npcSnapByZone[12] = allNpcSnapD3;
-
     players.forEach(p => {
       const zone    = p.mapLevel || 1;
-      const myNpcs  = npcSnapByZone[zone] || [];
+      const myNpcs  = npcSnapByZone.get(zone) || [];
       const myBoss  = bossesByZone.get(zone) || [];
       const myPlayers = playersByZone.get(zone) || [];
       sendTo(p.ws, {
@@ -1427,69 +1376,34 @@ setInterval(() => {
     });
   }
 
-  // ── Limpeza de mapas vazios (a cada minuto) ────────────────────────────
+  // ── Limpeza de mapas vazios (a cada minuto) — dinâmico ───────────────────
   if (!global._lastMapCleanup || now - global._lastMapCleanup > 60000) {
     global._lastMapCleanup = now;
-    
-    const playersInMap1 = [...players.values()].filter(p => (p.mapLevel || 1) === 1).length;
-    const playersInMap2 = [...players.values()].filter(p => (p.mapLevel || 1) === 2).length;
-    const playersInMap3 = [...players.values()].filter(p => (p.mapLevel || 1) === 3).length;
-    
-    // Mapa 2 vazio há mais de 5 minutos
-    if (playersInMap2 === 0) {
-      if (!map2EmptySince) map2EmptySince = now;
-      if (now - map2EmptySince > 300000) { // 5 minutos
-        console.log('🗑️ Destruindo managers do Mapa 2 (vazio)');
-        if (npcManager2 && !npcManager2.destroyed) {
-          npcManager2.destroy();
-          npcManager2.destroyed = true;
-        }
-        if (bossManager2 && !bossManager2.destroyed) {
-          bossManager2.destroy();
-          bossManager2.destroyed = true;
-        }
-        map2EmptySince = null;
+    if (!global._mapEmptySince) global._mapEmptySince = new Map();
+
+    // Mapas 1 e 2 têm lógica especial (mapa 1 só destrói se mapa 2 tem jogadores)
+    const pInMap1 = [...players.values()].filter(p => (p.mapLevel||1) === 1).length;
+    const pInMap2 = [...players.values()].filter(p => (p.mapLevel||1) === 2).length;
+    const destroy = (lvl, npc, boss) => {
+      console.log(`🗑️ Destruindo managers do Mapa ${lvl} (vazio)`);
+      if (npc  && !npc.destroyed)  { npc.destroy();  npc.destroyed  = true; }
+      if (boss && !boss.destroyed) { boss.destroy(); boss.destroyed = true; }
+      global._mapEmptySince.delete(lvl);
+    };
+    const checkEmpty = (lvl, count, npc, boss, condition = true) => {
+      if (count === 0 && condition) {
+        if (!global._mapEmptySince.has(lvl)) global._mapEmptySince.set(lvl, now);
+        if (now - global._mapEmptySince.get(lvl) > 300000) destroy(lvl, npc, boss);
+      } else {
+        global._mapEmptySince.delete(lvl);
       }
-    } else {
-      map2EmptySince = null;
-    }
-    
-    // Mapa 1 vazio (só destruir se houver jogadores no mapa 2)
-    if (playersInMap1 === 0 && playersInMap2 > 0) {
-      if (!map1EmptySince) map1EmptySince = now;
-      if (now - map1EmptySince > 300000) {
-        console.log('🗑️ Destruindo managers do Mapa 1 (vazio)');
-        if (npcManager && !npcManager.destroyed) {
-          npcManager.destroy();
-          npcManager.destroyed = true;
-        }
-        if (bossManager && !bossManager.destroyed) {
-          bossManager.destroy();
-          bossManager.destroyed = true;
-        }
-        map1EmptySince = null;
-      }
-    } else {
-      map1EmptySince = null;
-    }
-    
-    // Mapa 3 vazio (sem dependência de 1/2)
-    if (playersInMap3 === 0) {
-      if (!map3EmptySince) map3EmptySince = now;
-      if (now - map3EmptySince > 300000) {
-        console.log('🗑️ Destruindo managers do Mapa 3 (vazio)');
-        if (npcManager3 && !npcManager3.destroyed) {
-          npcManager3.destroy();
-          npcManager3.destroyed = true;
-        }
-        if (bossManager3 && !bossManager3.destroyed) {
-          bossManager3.destroy();
-          bossManager3.destroyed = true;
-        }
-        map3EmptySince = null;
-      }
-    } else {
-      map3EmptySince = null;
+    };
+    checkEmpty(1, pInMap1, npcManager, bossManager, pInMap2 > 0);
+    checkEmpty(2, pInMap2, npcManager2, bossManager2);
+    // Maps 3+ via regularManagers — todos dinâmicos
+    for (const [lvl, { npc, boss }] of regularManagers) {
+      const pCount = [...players.values()].filter(p => (p.mapLevel||1) === lvl).length;
+      checkEmpty(lvl, pCount, npc, boss);
     }
   }
 
@@ -1514,200 +1428,170 @@ setInterval(() => {
 
 // ── Helpers para gerenciamento dinâmico de mapas ──────────────────────────────
 function getMapManager(level) {
-  if (level === 12) return npcManagerDungeon3;
-  if (level === 11) return npcManagerDungeon2;
-  if (level === 10) return npcManagerDungeon1;
-  if (level === 6) return npcManager6;
-  if (level === 4) return npcManager4;
-  if (level === 3) return npcManager3;
+  if (level >= 7) {
+    // isBonusMap (7/8/9) → bonusNpcManagers; mapas regulares altos (10+) → regularManagers
+    if (MAP_DEFS[level]?.isBonusMap) return bonusNpcManagers.get(level) || null;
+    return regularManagers.get(level)?.npc || null;
+  }
+  if (level === 1) return npcManager;
   if (level === 2) return npcManager2;
-  return npcManager;
+  return regularManagers.get(level)?.npc || null;
+}
+
+function ensureBonusMapManager(level) {
+  const existing = bonusNpcManagers.get(level);
+  if (existing && !existing.destroyed) return existing;
+  const mgr = new NPCManager(projectileManager, MAP_DEFS, level, attackManager);
+  mgr.destroyed = false;
+  bonusNpcManagers.set(level, mgr);
+  _rewireProjectileManager();
+  return mgr;
 }
 
 function getMapKills(level) {
-  if (level === 3) return projectileManager.totalNpcKills3 || 0;
-  if (level === 2) return projectileManager.totalNpcKills2 || 0;
-  return projectileManager.totalNpcKills || 0;
+  // killCounters é o registro dinâmico; aliases legados para maps 1-3
+  return projectileManager.killCounters.get(level)
+      || (level === 3 ? projectileManager.totalNpcKills3
+        : level === 2 ? projectileManager.totalNpcKills2
+        : projectileManager.totalNpcKills)
+      || 0;
 }
 
 function getMapBossAlive(level) {
-  if (level === 6) return !!bossManager6?.bossAlive;
-  if (level === 3) return !!bossManager3?.bossAlive;
+  // bossManagers dinâmico primeiro, aliases legados como fallback
+  const bm = projectileManager.bossManagers.get(level);
+  if (bm) return !!bm.bossAlive;
   if (level === 2) return !!bossManager2?.bossAlive;
-  return !!bossManager?.bossAlive;
+  if (level === 1) return !!bossManager?.bossAlive;
+  return !!(regularManagers.get(level)?.boss?.bossAlive);
+}
+
+// ── Contabiliza kill de NPC normal e dispara boss se threshold atingido ───────
+function _npcKillBossAccounting(mapLvl, killerKills) {
+  const kts = MAP_DEFS[mapLvl]?.boss?.killsToSpawn ?? 0;
+  if (kts <= 0) return; // mapa sem boss (ex: training map)
+
+  // Atualiza contador dinâmico + aliases legados
+  const tot = (projectileManager.killCounters.get(mapLvl) || 0) + 1;
+  projectileManager.killCounters.set(mapLvl, tot);
+  if (mapLvl === 1) projectileManager.totalNpcKills  = tot;
+  else if (mapLvl === 2) projectileManager.totalNpcKills2 = tot;
+  else if (mapLvl === 3) projectileManager.totalNpcKills3 = tot;
+
+  // Resolve boss manager dinamicamente
+  const bm = projectileManager.bossManagers.get(mapLvl)
+           || (mapLvl === 2 ? bossManager2 : mapLvl === 1 ? bossManager : null);
+
+  if (bm && (tot % kts) === 0 && !bm.bossAlive) {
+    const rarity = bm.rollPendingRarity?.() ?? null;
+    addEvent({ type: 'boss_incoming', rarity, mapLevel: mapLvl }, mapLvl);
+    setTimeout(() => { if (bm && !bm.bossAlive) bm.spawn(killerKills); }, 2000);
+  }
+  addEvent({
+    type: 'boss_progress',
+    current:   tot % kts,
+    needed:    kts,
+    mapLevel:  mapLvl,
+    bossAlive: !!(bm?.bossAlive),
+  }, mapLvl);
+}
+
+// ── Garante manager para QUALQUER mapa regular (3-6 e futuros) ───────────────
+function ensureRegularManager(level) {
+  const existing = regularManagers.get(level);
+  if (existing && !existing.npc.destroyed) return existing;
+
+  console.log(`🔄 Criando managers do Mapa ${level}`);
+  const npc  = new NPCManager(projectileManager, MAP_DEFS, level, attackManager);
+  npc.destroyed = false;
+
+  const mapDef = MAP_DEFS[level] || {};
+  let boss = null;
+  if (mapDef.boss) {
+    boss = new BossManager(wss, players, npc.npcs, level);
+    boss.destroyed = false;
+    boss._onBossKill   = (killer)      => progressDailyMission(killer,      'bossKills',   1);
+    boss._onBossAssist = (participant) => progressDailyMission(participant, 'bossAssists', 1);
+
+    // Mapa 6 — boss com respawn por timer, não por kills
+    if (level === 6) {
+      boss._onBossKill = (killer) => {
+        progressDailyMission(killer, 'bossKills', 1);
+        if (boss._respawnTimer) clearTimeout(boss._respawnTimer);
+        const delay = mapDef.boss.respawnDelay || 3600000;
+        const mins  = Math.round(delay / 60000);
+        addEvent({ type: 'boss_respawn_scheduled', mapLevel: level, respawnAt: Date.now() + delay, delayMs: delay }, level);
+        console.log(`👻 Boss do Mapa ${level} morto — respawn em ${mins} min`);
+        boss._respawnTimer = setTimeout(() => {
+          boss._respawnTimer = null;
+          const e = regularManagers.get(level);
+          if (e && !e.boss.destroyed && !e.boss.bossAlive) {
+            addEvent({ type: 'boss_incoming', rarity: null, mapLevel: level }, level);
+            setTimeout(() => { if (e.boss && !e.boss.bossAlive) e.boss.spawn(0); }, 5000);
+          }
+        }, delay);
+      };
+      // Spawn imediato se boss não está vivo
+      if (!boss.bossAlive) {
+        addEvent({ type: 'boss_incoming', rarity: null, mapLevel: level }, level);
+        setTimeout(() => { if (boss && !boss.bossAlive) boss.spawn(0); }, 5000);
+      }
+    }
+  }
+
+  const entry = { npc, boss };
+  regularManagers.set(level, entry);
+
+  // Registra no bossManagers dinâmico do projectileManager
+  if (boss) {
+    projectileManager.bossManagers.set(level, boss);
+    // Aliases legados para compatibilidade
+    if (level === 2) { projectileManager.bossManager2 = boss; }
+    if (level === 3) { projectileManager.bossManager3 = boss; }
+    if (level === 6) { projectileManager.bossManager6 = boss; }
+  }
+
+  // Reconecta allNpcs proxy e npcManagers list
+  _rewireProjectileManager();
+  return entry;
+}
+
+function _rewireProjectileManager() {
+  projectileManager.npcs = allNpcs;
+  const allNpcMgrs = [npcManager, npcManager2];
+  for (const { npc } of regularManagers.values()) { if (npc && !npc.destroyed) allNpcMgrs.push(npc); }
+  projectileManager.npcManagers = allNpcMgrs;
+  if (worldBossManager) worldBossManager.npcManagers = allNpcMgrs;
 }
 
 function ensureManagersForMap(level) {
-  if (level === 1) ensureMap1Managers();
-  else if (level === 2) ensureMap2Managers();
-  else if (level === 3) ensureMap3Managers();
-  else if (level === 4) ensureMap4Managers();
-  else if (level === 6) ensureMap6Managers();
-  else if (level === 10) _ensureDungeonManager(10, 'bonus_map_1');
-  else if (level === 11) _ensureDungeonManager(11, 'bonus_map_2');
-  else if (level === 12) _ensureDungeonManager(12, 'bonus_map_3');
-}
-
-function _ensureDungeonManager(level, dungeonId) {
-  const varName = level === 10 ? 'npcManagerDungeon1' : level === 11 ? 'npcManagerDungeon2' : 'npcManagerDungeon3';
-  let mgr = level === 10 ? npcManagerDungeon1 : level === 11 ? npcManagerDungeon2 : npcManagerDungeon3;
-  if (mgr) return;
-  console.log(`[DUNGEON] Creating NPC manager for dungeon level ${level} (${dungeonId})`);
-  mgr = new NPCManager(projectileManager, DUNGEON_MAP_DEFS, level, attackManager);
-  // Mark all spawned NPCs as dungeon bosses
-  mgr.npcs.forEach(npc => { npc.isDungeonBoss = true; npc.dungeonId = dungeonId; });
-  if (level === 10) npcManagerDungeon1 = mgr;
-  else if (level === 11) npcManagerDungeon2 = mgr;
-  else npcManagerDungeon3 = mgr;
-}
-
-// Função para recriar managers do mapa 2
-function ensureMap2Managers() {
-  if (!npcManager2 || npcManager2.destroyed) {
-    console.log('🔄 Recriando managers do Mapa 2');
-    npcManager2 = new NPCManager(projectileManager, MAP_DEFS, 2, attackManager);
-    npcManager2.destroyed = false;
-
-    bossManager2 = new BossManager(wss, players, npcManager2.npcs, 2);
-    bossManager2.destroyed = false;
-
-    // Reconfigurar referências — usar proxy completo se mapa 3 ainda ativo
-    projectileManager.bossManager2 = bossManager2;
-    if (npcManager3 && !npcManager3.destroyed) {
-      // Mapa 3 ainda tem jogadores — manter proxy com 3 managers para não tornar
-      // os NPCs do mapa 3 intangíveis para o sistema de colisão de projéteis
-      projectileManager.npcs = allNpcs;
-      projectileManager.npcManagers = [npcManager, npcManager2, npcManager3];
-      worldBossManager.npcManagers = [npcManager, npcManager2, npcManager3];
-    } else {
-      projectileManager.npcManagers = [npcManager, npcManager2];
-      projectileManager.npcs = new Proxy({}, {
-        get: (_, prop) => {
-          if (prop === 'get') return id => npcManager.npcs.get(id) || npcManager2.npcs.get(id);
-          if (prop === 'has') return id => npcManager.npcs.has(id) || npcManager2.npcs.has(id);
-          if (prop === 'values') return () => [...npcManager.npcs.values(), ...npcManager2.npcs.values()][Symbol.iterator]();
-          if (prop === 'forEach') return cb => { npcManager.npcs.forEach(cb); npcManager2.npcs.forEach(cb); };
-          if (prop === 'delete') return id => npcManager.npcs.delete(id) || npcManager2.npcs.delete(id);
-          return undefined;
-        }
-      });
-      worldBossManager.npcManagers = [npcManager, npcManager2];
+  if (level === 1) {
+    if (!npcManager || npcManager.destroyed) {
+      console.log('🔄 Recriando managers do Mapa 1');
+      npcManager = new NPCManager(projectileManager, MAP_DEFS, 1, attackManager);
+      npcManager.destroyed = false;
+      bossManager = new BossManager(wss, players, npcManager.npcs, 1);
+      bossManager.destroyed = false;
+      projectileManager.bossManager = bossManager;
+      projectileManager.bossManagers.set(1, bossManager);
+      _rewireProjectileManager();
     }
-  }
-  return npcManager2;
-}
-
-// Função para recriar managers do mapa 3
-function ensureMap3Managers() {
-  if (!npcManager3 || npcManager3.destroyed) {
-    console.log('🔄 Recriando managers do Mapa 3');
-    npcManager3 = new NPCManager(projectileManager, MAP_DEFS, 3, attackManager);
-    npcManager3.destroyed = false;
-
-    bossManager3 = new BossManager(wss, players, npcManager3.npcs, 3);
-    bossManager3.destroyed = false;
-    bossManager3._onBossKill    = (killer)      => progressDailyMission(killer,      'bossKills',   1);
-    bossManager3._onBossAssist  = (participant) => progressDailyMission(participant, 'bossAssists', 1);
-  }
-  // SEMPRE restaurar o Proxy completo e as referências — ensureMap1/2Managers pode ter substituído
-  // projectileManager.npcs por um proxy sem mapa 3, mesmo que npcManager3 ainda esteja vivo.
-  projectileManager.npcs = allNpcs;
-  projectileManager.npcManagers = [npcManager, npcManager2, npcManager3];
-  projectileManager.bossManager2 = bossManager2;
-  projectileManager.bossManager3 = bossManager3;
-  worldBossManager.npcManagers = [npcManager, npcManager2, npcManager3];
-  return npcManager3;
-}
-
-function ensureMap4Managers() {
-  if (!npcManager4 || npcManager4.destroyed) {
-    console.log('🔄 Recriando managers do Mapa 4');
-    npcManager4 = new NPCManager(projectileManager, MAP_DEFS, 4, attackManager);
-    npcManager4.destroyed = false;
-  }
-  // Wire npcManager4 into the allNpcs proxy and projectileManager
-  projectileManager.npcs = allNpcs;
-  projectileManager.npcManagers = [npcManager, npcManager2, npcManager3, npcManager4].filter(Boolean);
-  worldBossManager.npcManagers  = [npcManager, npcManager2, npcManager3, npcManager4].filter(Boolean);
-  return npcManager4;
-}
-
-// Mapa 6: npc:null — boss-only map (NPCManager criado mas não spawna NPCs regulares)
-function ensureMap6Managers() {
-  if (!npcManager6 || npcManager6.destroyed) {
-    console.log('🔄 Criando managers do Mapa 6 (boss-only)');
-    npcManager6 = new NPCManager(projectileManager, MAP_DEFS, 6, attackManager);
-    npcManager6.destroyed = false;
-
-    bossManager6 = new BossManager(wss, players, npcManager6.npcs, 6);
-    bossManager6.destroyed = false;
-    bossManager6._onBossKill = (killer) => {
-      progressDailyMission(killer, 'bossKills', 1);
-      // Agendar respawn após respawnDelay (padrão 1 hora)
-      if (bossManager6._respawnTimer) clearTimeout(bossManager6._respawnTimer);
-      const delay     = MAP_DEFS[6].boss.respawnDelay || 3600000;
-      const respawnAt = Date.now() + delay;
-      const mins      = Math.round(delay / 60000);
-      addEvent({ type: 'boss_respawn_scheduled', mapLevel: 6, respawnAt, delayMs: delay }, 6);
-      console.log(`👻 The Drowned Widow morta — respawn em ${mins} min`);
-      bossManager6._respawnTimer = setTimeout(() => {
-        bossManager6._respawnTimer = null;
-        if (bossManager6 && !bossManager6.destroyed && !bossManager6.bossAlive) {
-          addEvent({ type: 'boss_incoming', rarity: null, mapLevel: 6 }, 6);
-          setTimeout(() => { if (bossManager6 && !bossManager6.bossAlive) bossManager6.spawn(0); }, 5000);
-        }
-      }, delay);
-    };
-    bossManager6._onBossAssist  = (participant) => progressDailyMission(participant, 'bossAssists', 1);
-  }
-
-  // Wire into global proxy
-  projectileManager.npcs = allNpcs;
-  projectileManager.npcManagers = [npcManager, npcManager2, npcManager3, npcManager4, npcManager6].filter(Boolean);
-  projectileManager.bossManager6 = bossManager6;
-  worldBossManager.npcManagers  = [npcManager, npcManager2, npcManager3, npcManager4, npcManager6].filter(Boolean);
-
-  // Spawn boss se ainda não está vivo (timer-based, não kill-based)
-  if (!bossManager6.bossAlive) {
-    addEvent({ type: 'boss_incoming', rarity: null, mapLevel: 6 }, 6);
-    setTimeout(() => { if (bossManager6 && !bossManager6.bossAlive) bossManager6.spawn(0); }, 5000);
-  }
-
-  return npcManager6;
-}
-
-// Função para recriar managers do mapa 1 (analógica à do 2)
-function ensureMap1Managers() {
-  if (!npcManager || npcManager.destroyed) {
-    console.log('🔄 Recriando managers do Mapa 1');
-    npcManager = new NPCManager(projectileManager, MAP_DEFS, 1, attackManager);
-    npcManager.destroyed = false;
-
-    bossManager = new BossManager(wss, players, npcManager.npcs, 1);
-    bossManager.destroyed = false;
-
-    // Reconfigurar referências — usar proxy completo se mapas superiores ainda ativos
-    projectileManager.bossManager = bossManager;
-    if (npcManager3 && !npcManager3.destroyed) {
-      projectileManager.npcs = allNpcs;
-      projectileManager.npcManagers = [npcManager, npcManager2, npcManager3];
-      worldBossManager.npcManagers = [npcManager, npcManager2, npcManager3];
-    } else {
-      projectileManager.npcManagers = [npcManager, npcManager2];
-      projectileManager.npcs = new Proxy({}, {
-        get: (_, prop) => {
-          if (prop === 'get') return id => npcManager.npcs.get(id) || npcManager2.npcs.get(id);
-          if (prop === 'has') return id => npcManager.npcs.has(id) || npcManager2.npcs.has(id);
-          if (prop === 'values') return () => [...npcManager.npcs.values(), ...npcManager2.npcs.values()][Symbol.iterator]();
-          if (prop === 'forEach') return cb => { npcManager.npcs.forEach(cb); npcManager2.npcs.forEach(cb); };
-          if (prop === 'delete') return id => npcManager.npcs.delete(id) || npcManager2.npcs.delete(id);
-          return undefined;
-        }
-      });
-      worldBossManager.npcManagers = [npcManager, npcManager2];
+  } else if (level === 2) {
+    if (!npcManager2 || npcManager2.destroyed) {
+      console.log('🔄 Recriando managers do Mapa 2');
+      npcManager2 = new NPCManager(projectileManager, MAP_DEFS, 2, attackManager);
+      npcManager2.destroyed = false;
+      bossManager2 = new BossManager(wss, players, npcManager2.npcs, 2);
+      bossManager2.destroyed = false;
+      projectileManager.bossManager2 = bossManager2;
+      projectileManager.bossManagers.set(2, bossManager2);
+      _rewireProjectileManager();
     }
+  } else if (level >= 7 && MAP_DEFS[level]?.isBonusMap) {
+    ensureBonusMapManager(level);
+  } else if (MAP_DEFS[level]) {
+    ensureRegularManager(level);
   }
-  return npcManager;
 }
 
 // WebSocket
@@ -1768,6 +1652,20 @@ wss.on('connection', (ws) => {
           if (player.cannonCooldown > 0) break;
           if (player.stunExpires && Date.now() < player.stunExpires) break;
           if (!player.cannons.length) break;
+          // Zona segura — bloqueia disparo dentro do securyRadius (ex: Ilha do Banco)
+          const _mapDef = MAP_DEFS[player.mapLevel || 1] || {};
+          const _banking = _mapDef.banking;
+          const _market  = _mapDef.market;
+          const _safeZone = _banking || _market;
+          if (_safeZone?.securyRadius) {
+            const _sc = _safeZone.center || { x: 0, z: 0 };
+            const _dx = player.x - _sc.x;
+            const _dz = player.z - _sc.z;
+            const _inSafe = _safeZone.islandShape === 'square'
+              ? Math.abs(_dx) <= _safeZone.securyRadius && Math.abs(_dz) <= _safeZone.securyRadius
+              : Math.hypot(_dx, _dz) <= _safeZone.securyRadius;
+            if (_inSafe) break;
+          }
           handleShoot(player, msg);
           break;
         }
@@ -1850,7 +1748,7 @@ wss.on('connection', (ws) => {
           if (player && player.dead) {
             // use map-specific bounds when respawning after death
             const mapSize = getMapSize(player.mapLevel || 1);
-            player.hp             = player.maxHp || 100;
+            player.hp             = Math.max(1, Math.floor((player.maxHp || 100) * 0.10));
             player.dead           = false;
             player.x              = (Math.random() - 0.5) * mapSize * 0.8;
             player.z              = (Math.random() - 0.5) * mapSize * 0.8;
@@ -1981,21 +1879,40 @@ wss.on('connection', (ws) => {
           break;
         }
 
-        case 'enter_bonus_dungeon': {
-          if (!player) break;
-          handleEnterBonusDungeon(player, msg, ws);
-          break;
-        }
-
-        case 'leave_dungeon': {
-          if (!player) break;
-          if ((player.mapLevel || 0) >= 10) _dungeonLeave(player);
-          break;
-        }
-
         case 'unlock_bonus_map': {
           if (!player) break;
           handleUnlockBonusMap(player, msg, ws);
+          break;
+        }
+
+        case 'enter_bonus_map': {
+          if (!player) break;
+          handleEnterBonusMap(player, msg, ws);
+          break;
+        }
+
+        case 'leave_bonus_map':
+        case 'leave_dungeon': {
+          if (!player) break;
+          handleLeaveBonusMap(player, ws);
+          break;
+        }
+
+        case 'bank_deposit': {
+          if (!player) break;
+          handleBankDeposit(player, msg, ws);
+          break;
+        }
+
+        case 'bank_withdraw': {
+          if (!player) break;
+          handleBankWithdraw(player, msg, ws);
+          break;
+        }
+
+        case 'sell_rare_ship': {
+          if (!player) break;
+          handleSellRareShip(player, msg, ws);
           break;
         }
 
@@ -2083,20 +2000,8 @@ async function handleLogin(ws, msg) {
     sendTo(ws, { type: 'error', message: 'Erro ao carregar dados. Tente reconectar.' });
     return null;
   }
-  // Se o jogador for pro mapa 2, garantir que os managers existam
-  if (saved.mapLevel === 2) {
-    ensureMap2Managers();
-  }
-  if (saved.mapLevel === 3) {
-    ensureMap3Managers();
-  }
-  if (saved.mapLevel === 4) {
-    ensureMap4Managers();
-  }
-  // Se o jogador estiver voltando pro mapa 1 após limpeza, refaz managers
-  if (saved.mapLevel === 1 && (npcManager.destroyed || bossManager.destroyed)) {
-    ensureMap1Managers();
-  }
+  // Garante que os managers do mapa do jogador existam
+  ensureManagersForMap(saved.mapLevel || 1);
 
   player.gold              = saved.gold;
   player.dobroes           = saved.dobroes;
@@ -2135,11 +2040,17 @@ async function handleLogin(ws, msg) {
   player.npcKills      = saved.npcKills      || 0;
   player.mapXp         = saved.mapXp         || 0;
   player.mapLevel      = saved.mapLevel      || 1;
+  // Se deslogou dentro de um mapa bônus (isBonusMap), retorna ao mapa regular
+  if (player.mapLevel >= 7 && MAP_DEFS[player.mapLevel]?.isBonusMap) {
+    player.mapLevel = 1;
+    player.x = 0;
+    player.z = 0;
+  }
   player.mapFragments  = saved.mapFragments  || 0;
   // Aplica bônus de talentos e recalcula maxHp (skill vida + talento HP)
   applyTalentBonuses(player);
   recalcMaxHp(player);
-  player.hp            = Math.min(player.maxHp, player.hp);
+  player.hp            = Math.min(player.maxHp, saved.hp != null ? saved.hp : player.maxHp);
   player.maxCannons    = _calcMaxCannons(savedShip, player.talentCannonBonus || 0, MAX_CANNON_SLOTS);
   console.log("maxCannons", player.maxCannons, savedShip.maxCannons, player.talentCannonBonus);
   // Relics
@@ -2166,7 +2077,10 @@ async function handleLogin(ws, msg) {
   player.gunpowder           = saved.gunpowder           || 0;
   player.bonusMapsUnlocked   = saved.bonusMapsUnlocked   || [];
   player.mapPieces           = saved.mapPieces           || {};
-  player.rareShips           = saved.rareShips           || [];
+  player.currentAmmo         = (saved.currentAmmo && AMMO_DEFS[saved.currentAmmo]) ? saved.currentAmmo : 'bala_ferro';
+  player.bonusShips          = saved.bonusShips          || [];
+  player.bankGold            = saved.bankGold            || 0;
+  player.bankUnlocked        = saved.bankUnlocked        || false;
   player.cannonResearchLevel = saved.cannonResearchLevel || 0;
   player.shipMaterialLevel   = saved.shipMaterialLevel   || 0;
   // Pad cannonUpgradesData to match inventory.cannons length
@@ -2195,7 +2109,6 @@ async function handleLogin(ws, msg) {
   ensureManagersForMap(initZone); // garante managers ativos para o mapa inicial do jogador
   const initPlayers = playerManager.snapshot()
     .filter(ps => (ps.mapLevel || 1) === initZone);
-
   sendTo(ws, {
     type:             'init',
     serverNow:        Date.now(),   // client uses this to compensate clock skew
@@ -2205,7 +2118,7 @@ async function handleLogin(ws, msg) {
     x:                player.x,
     z:                player.z,
     mapSize:          (MAP_DEFS[initZone] && MAP_DEFS[initZone].size),
-    npcs:             initZone === 5 ? [] : (getMapManager(initZone) || npcManager).snapshot(),
+    npcs:             MAP_DEFS[initZone]?.isTrainingMap ? [] : (getMapManager(initZone) || npcManager).snapshot(),
     players:          initPlayers,
     gold:             player.gold,
     dobroes:          player.dobroes,
@@ -2224,6 +2137,7 @@ async function handleLogin(ws, msg) {
     mapXpNeeded: (MAP_DEFS[player.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999,
     mapDef:       MAP_DEFS[player.mapLevel || 1] || MAP_DEFS[1],
     mapFragments: player.mapFragments || 0,
+    activeShip: player.activeShip,    // espelhado no top-level para _get_or_create
     equipped: {
       ship:    player.activeShip,
       cannons: player.cannons,
@@ -2246,19 +2160,17 @@ async function handleLogin(ws, msg) {
     gunpowder:           player.gunpowder           || 0,
     bonusMapsUnlocked:   player.bonusMapsUnlocked   || [],
     mapPieces:           player.mapPieces           || {},
-    rareShips:           player.rareShips           || [],
+    rareShips:           player.bonusShips          || [],
+    bankGold:            player.bankGold            || 0,
+    bankUnlocked:        player.bankUnlocked        || false,
     cannonResearchLevel: player.cannonResearchLevel || 0,
     shipMaterialLevel:   player.shipMaterialLevel   || 0,
     bossProgress: (() => {
-      if (initZone === 5) return null; // mapa de treino: sem boss
+      if (MAP_DEFS[initZone]?.isTrainingMap) return null; // mapa de treino: sem boss
       const kts = MAP_DEFS[initZone]?.boss?.killsToSpawn ?? 10;
       if (kts === 0) return { current: 0, needed: 0, mapLevel: initZone, bossAlive: getMapBossAlive(initZone) };
-      const tot = initZone === 3 ? projectileManager.totalNpcKills3
-                : initZone === 2 ? projectileManager.totalNpcKills2
-                : projectileManager.totalNpcKills;
-      const alive = initZone === 3 ? !!bossManager3?.bossAlive
-                  : initZone === 2 ? !!bossManager2?.bossAlive
-                  : !!bossManager?.bossAlive;
+      const tot   = getMapKills(initZone);
+      const alive = getMapBossAlive(initZone);
       return { current: tot % kts, needed: kts, mapLevel: initZone, bossAlive: alive };
     })(),
   });
@@ -2350,7 +2262,7 @@ function handleShoot(player, msg) {
   projectileManager.spawnSalvo(player, msg.targetX, msg.targetZ);
   player.castExpires = Date.now() + 350; // 350ms cast penalty — player slows to 15% speed
   // Treino: concede XP de ataque por atirar na torre (sem NPCs para acertar)
-  if (player.mapLevel === 5) {
+  if (MAP_DEFS[player.mapLevel]?.isTrainingMap) {
     grantSkillXp(player, 'ataque', Math.max(1, Math.floor((player.cannonDamage || 10) / 5)), wss);
   }
 }
@@ -2751,13 +2663,14 @@ function handleLeaveAfkTraining(player) {
   player.z = 0;
   player.input = { w: false, a: false, s: false, d: false };
   player.speed = 0;
-  if (_retMap === 3) ensureMap3Managers();
+  ensureManagersForMap(_retMap);
   db.save(player, true).catch(e => console.error('Save error:', e));
+  const _retMgr = getMapManager(_retMap);
   sendTo(player.ws, {
     type: 'map_transition', toLevel: _retMap,
     mapDef: MAP_DEFS[_retMap], mapSize: _retSize,
     x: player.x, z: player.z, mapXp: player.mapXp || 0,
-    npcs: _retMap === 3 && npcManager3 ? npcManager3.snapshot() : [],
+    npcs: _retMgr ? _retMgr.snapshot() : [],
     bossProgress: null,
     dailyMissions: _retMap === 4 ? buildDailyMissions(player) : undefined,
   });
@@ -2909,10 +2822,10 @@ function handleExploreMap(player, msg, ws) {
       ammoResults[reward.id] = (ammoResults[reward.id] || 0) + reward.qty;
       player.inventory.ammo[reward.id] = (player.inventory.ammo[reward.id] || 0) + reward.qty;
     } else if (reward.type === 'mapPiece') {
-      // mapPiece: accumulates per bonus-map in player.mapPieces
       if (!player.mapPieces) player.mapPieces = {};
       player.mapPieces[reward.id] = (player.mapPieces[reward.id] || 0) + reward.qty;
       resourceResults[reward.id] = (resourceResults[reward.id] || 0) + reward.qty;
+      console.log(`[EXPLORE] mapPiece rolled: ${reward.id} → total: ${player.mapPieces[reward.id]}`);
     } else {
       // resource: ironPlates | goldDust | gunpowder | mapFragments
       resourceResults[reward.id] = (resourceResults[reward.id] || 0) + reward.qty;
@@ -2940,154 +2853,6 @@ function handleExploreMap(player, msg, ws) {
   });
 }
 
-function handleEnterBonusDungeon(player, msg, ws) {
-  const dungeonId = msg.dungeonId;
-  const dungeon   = BONUS_DUNGEON_DEFS[dungeonId];
-  const config    = BONUS_DUNGEON_MAP_CONFIGS[dungeonId];
-  if (!dungeon || !config) { sendTo(ws, { type: 'error', message: 'Masmorra inválida.' }); return; }
-
-  const pieceId  = dungeon.pieceId;
-  const required = dungeon.requiredPieces;
-  if (!player.mapPieces) player.mapPieces = {};
-  const current  = player.mapPieces[pieceId] || 0;
-  if (current < required) {
-    sendTo(ws, { type: 'error', message: `Peças insuficientes! ${current}/${required}` });
-    return;
-  }
-
-  // Deduct pieces
-  player.mapPieces[pieceId] = current - required;
-
-  // Store return location
-  player._prevMapLevel = player.mapLevel || 1;
-  player._prevX = player.x || 0;
-  player._prevZ = player.z || 0;
-
-  // Teleport to dungeon zone
-  const dungeonLevel = config.mapLevel;
-  player.mapLevel = dungeonLevel;
-  player.x = 0;
-  player.z = config.playerSpawnZ || 150;
-  player.input = { w: false, a: false, s: false, d: false };
-  player.speed = 0;
-
-  // Ensure dungeon NPC manager exists (creates & spawns 1 NPC if needed)
-  ensureManagersForMap(dungeonLevel);
-  const dungeonMgr = getMapManager(dungeonLevel);
-
-  db.save(player, true).catch(e => console.error('Save error:', e));
-
-  sendTo(ws, {
-    type:     'map_transition',
-    toLevel:  dungeonLevel,
-    mapDef:   DUNGEON_MAP_DEFS[dungeonLevel] || {},
-    mapSize:  config.size,
-    x:        player.x,
-    z:        player.z,
-    npcs:     dungeonMgr ? dungeonMgr.snapshot() : [],
-    bossProgress: null,
-    mapPieces: player.mapPieces,
-  });
-}
-
-function handleDungeonComplete(player, npc) {
-  const dungeonId = npc.dungeonId;
-  const dungeon   = BONUS_DUNGEON_DEFS[dungeonId];
-  if (!dungeon) return;
-
-  // Wave 0 rewards
-  const wave    = dungeon.waves[0];
-  const rewards = wave.rewards;
-  player.dobroes    = (player.dobroes    || 0) + (rewards.dobroes    || 0);
-  player.gold       = (player.gold       || 0) + (rewards.gold       || 0);
-  player.ironPlates = (player.ironPlates || 0) + (rewards.ironPlates || 0);
-  player.goldDust   = (player.goldDust   || 0) + (rewards.goldDust   || 0);
-  player.gunpowder  = (player.gunpowder  || 0) + (rewards.gunpowder  || 0);
-  if (rewards.xp) player.mapXp = (player.mapXp || 0) + rewards.xp;
-
-  // Roll rare ship drop
-  const npcDef = BONUS_NPC_DEFS[dungeon.npcId];
-  let shipDrop = null;
-  if (npcDef && Math.random() < npcDef.shipDropChance) {
-    shipDrop = rollBonusShip(npcDef);
-    if (!player.rareShips) player.rareShips = [];
-    player.rareShips.push(shipDrop);
-  }
-
-  db.save(player, true).catch(e => console.error('Save error:', e));
-
-  sendTo(player.ws, {
-    type:       'bonus_dungeon_complete',
-    dungeonId,
-    rewards,
-    shipDrop,
-    autoLeaveMs: 10000,   // client auto-teleports after this delay
-    mapPieces:  player.mapPieces  || {},
-    rareShips:  player.rareShips  || [],
-    dobroes:    player.dobroes,
-    gold:       player.gold,
-    ironPlates: player.ironPlates || 0,
-    goldDust:   player.goldDust   || 0,
-    gunpowder:  player.gunpowder  || 0,
-  });
-
-  // Auto-teleport back after autoLeaveMs
-  setTimeout(() => {
-    if (player.ws && (player.mapLevel || 0) >= 10) _dungeonLeave(player);
-  }, 10000);
-}
-
-function _dungeonLeave(player) {
-  const returnLevel = player._prevMapLevel || 1;
-  const returnX = player._prevX || 0;
-  const returnZ = player._prevZ || 0;
-
-  player.mapLevel = returnLevel;
-  player.x = returnX;
-  player.z = returnZ;
-  player._prevMapLevel = null;
-  player._prevX = null;
-  player._prevZ = null;
-  player.input = { w: false, a: false, s: false, d: false };
-  player.speed = 0;
-
-  ensureManagersForMap(returnLevel);
-  const returnMgr = getMapManager(returnLevel);
-  const returnDef = MAP_DEFS[returnLevel] || MAP_DEFS[1];
-  const returnSize = returnDef.size || 1200;
-  const bpKts = returnDef.boss?.killsToSpawn ?? 10;
-
-  db.save(player, true).catch(e => console.error('Save error:', e));
-
-  sendTo(player.ws, {
-    type:     'map_transition',
-    toLevel:  returnLevel,
-    mapDef:   returnDef,
-    mapSize:  returnSize,
-    x:        returnX,
-    z:        returnZ,
-    npcs:     returnMgr ? returnMgr.snapshot() : [],
-    mapXp:    player.mapXp || 0,
-    bossProgress: returnDef.boss
-      ? { current: getMapKills(returnLevel) % bpKts, needed: bpKts, mapLevel: returnLevel, bossAlive: getMapBossAlive(returnLevel) }
-      : null,
-  });
-}
-
-function _scheduleDungeonNpcRespawn(dungeonId) {
-  const config = BONUS_DUNGEON_MAP_CONFIGS[dungeonId];
-  if (!config || !config.npcRespawnDelay) return;
-  setTimeout(() => {
-    const mgr = getMapManager(config.mapLevel);
-    if (!mgr) return;
-    if (mgr.npcs.size > 0) return; // already has an NPC
-    const npc = mgr.spawn(config.mapLevel);
-    npc.isDungeonBoss = true;
-    npc.dungeonId     = dungeonId;
-    addEvent({ type: 'entity_add', entity: mgr.snapshot([npc])[0] }, config.mapLevel, true);
-  }, config.npcRespawnDelay);
-}
-
 function handleUnlockBonusMap(player, msg, ws) {
   const mapId = msg.mapId;
   const mapDef = BONUS_MAPS.find(m => m.id === mapId);
@@ -3096,20 +2861,225 @@ function handleUnlockBonusMap(player, msg, ws) {
   const already = (player.bonusMapsUnlocked || []).includes(mapId);
   if (already) { sendTo(ws, { type: 'error', message: 'Mapa já desbloqueado!' }); return; }
 
-  if ((player.mapFragments || 0) < mapDef.requiredFragments) {
-    sendTo(ws, { type: 'error', message: `Fragmentos insuficientes! Necessário: ${mapDef.requiredFragments}` });
+  const pieceId  = mapDef.pieceId;
+  const required = mapDef.requiredPieces;
+  const owned    = (player.mapPieces || {})[pieceId] || 0;
+  if (owned < required) {
+    sendTo(ws, { type: 'error', message: `Peças insuficientes! Necessário: ${required} 📜 (você tem ${owned})` });
     return;
   }
 
-  player.mapFragments       -= mapDef.requiredFragments;
+  if (!player.mapPieces) player.mapPieces = {};
+  player.mapPieces[pieceId] -= required;
   player.bonusMapsUnlocked   = [...(player.bonusMapsUnlocked || []), mapId];
   db.save(player).catch(e => console.error('Save error:', e));
 
   sendTo(ws, {
     type:              'bonus_map_unlocked',
     mapId,
-    mapFragments:      player.mapFragments,
+    mapPieces:         player.mapPieces,
     bonusMapsUnlocked: player.bonusMapsUnlocked,
+  });
+}
+
+function handleEnterBonusMap(player, msg, ws) {
+  const mapId  = msg.mapId;
+  const level  = BONUS_MAP_LEVELS[mapId];
+  if (!level) { sendTo(ws, { type: 'error', message: 'Mapa bônus inválido.' }); return; }
+
+  const unlocked = (player.bonusMapsUnlocked || []).includes(mapId);
+  if (!unlocked) { sendTo(ws, { type: 'error', message: 'Mapa não desbloqueado.' }); return; }
+
+  // Guarda mapa de origem para retornar depois
+  player.preBonusMapLevel = player.mapLevel || 1;
+  player.preBonusX        = player.x || 0;
+  player.preBonusZ        = player.z || 0;
+  player.mapLevel         = level;
+  player.x                = 0;
+  player.z                = 0;
+  player.speed            = 0;
+  player.input            = { w: false, a: false, s: false, d: false };
+
+  ensureBonusMapManager(level);
+  const mgr = getMapManager(level);
+  const mapDef = MAP_DEFS[level];
+
+  db.save(player, true).catch(e => console.error('Save error:', e));
+  sendTo(ws, {
+    type:           'map_transition',
+    toLevel:        level,
+    mapDef:         mapDef,
+    mapSize:        mapDef.size,
+    x:              0,
+    z:              0,
+    mapXp:          player.mapXp || 0,
+    npcs:           mgr ? mgr.snapshot() : [],
+    bossProgress:   null,
+    isBonusMap:     true,
+    bonusMapId:     mapId,
+  });
+  console.log(`🗺️ ${player.name} entrou em ${mapDef.name} (level ${level})`);
+}
+
+function handleLeaveBonusMap(player, ws) {
+  if (!MAP_DEFS[player.mapLevel]?.isBonusMap) {
+    sendTo(ws, { type: 'error', message: 'Não está em um mapa bônus.' });
+    return;
+  }
+
+  const returnLevel = player.preBonusMapLevel || 1;
+  const returnX     = player.preBonusX        || 0;
+  const returnZ     = player.preBonusZ        || 0;
+  player.mapLevel   = returnLevel;
+  player.x          = returnX;
+  player.z          = returnZ;
+  player.speed      = 0;
+  player.input      = { w: false, a: false, s: false, d: false };
+  delete player.preBonusMapLevel;
+  delete player.preBonusX;
+  delete player.preBonusZ;
+
+  ensureManagersForMap(returnLevel);
+  const mgr    = getMapManager(returnLevel);
+  const mapDef = MAP_DEFS[returnLevel];
+
+  db.save(player, true).catch(e => console.error('Save error:', e));
+  sendTo(ws, {
+    type:         'map_transition',
+    toLevel:      returnLevel,
+    mapDef:       mapDef,
+    mapSize:      mapDef.size,
+    x:            returnX,
+    z:            returnZ,
+    mapXp:        player.mapXp || 0,
+    npcs:         mgr ? mgr.snapshot() : [],
+    bossProgress: mapDef.boss
+      ? { current: 0, needed: mapDef.boss.killsToSpawn ?? 10, mapLevel: returnLevel, bossAlive: getMapBossAlive(returnLevel) }
+      : null,
+  });
+  console.log(`🚪 ${player.name} saiu do mapa bônus → mapa ${returnLevel}`);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Bonus Dungeon Complete
+// ──────────────────────────────────────────────────────────────────────────────
+function sendBonusDungeonComplete(player, mapLevel, mapDef) {
+  const ws = player.ws;
+
+  // ── Busca definições da dungeon e do NPC boss ──────────────────────────────
+  const bonusMapId  = mapDef.bonusMapId;                        // ex: 'bonus_map_1'
+  const dungeonDef  = bonusMapId ? BONUS_DUNGEON_DEFS[bonusMapId] : null;
+  const npcDef      = dungeonDef ? BONUS_NPC_DEFS[dungeonDef.npcId] : null;
+
+  // ── Recompensas da wave 0 (via computeWaveRewards) ────────────────────────
+  const waveRewards = dungeonDef?.waves?.[0]?.rewards || computeWaveRewards(0);
+  player.dobroes   = (player.dobroes   || 0) + (waveRewards.dobroes    || 0);
+  player.gold      = (player.gold      || 0) + (waveRewards.gold       || 0);
+  player.ironPlates= (player.ironPlates|| 0) + (waveRewards.ironPlates || 0);
+  player.goldDust  = (player.goldDust  || 0) + (waveRewards.goldDust   || 0);
+  player.gunpowder = (player.gunpowder || 0) + (waveRewards.gunpowder  || 0);
+  if (waveRewards.xp) player.mapXp = (player.mapXp || 0) + waveRewards.xp;
+
+  // ── Navio raro — roll via rollBonusShip (Math.pow bias) ───────────────────
+  let shipDrop = null;
+  if (npcDef) {
+    const chance = npcDef.shipDropChance ?? 0.02;   // valor real após testes
+    if (Math.random() < chance) {
+      shipDrop = rollBonusShip(npcDef);
+      if (!player.bonusShips) player.bonusShips = [];
+      player.bonusShips.push(shipDrop);
+      console.log(`🚢 ${player.name} ganhou navio raro: ${shipDrop.name} [hp:${shipDrop.hp} cannon:${shipDrop.cannon}] hpTier:${shipDrop.hpTier} cannonTier:${shipDrop.cannonTier}`);
+    }
+  }
+
+  db.save(player, true).catch(e => console.error('Save error (bonus complete):', e));
+
+  sendTo(ws, {
+    type:        'bonus_dungeon_complete',
+    mapLevel,
+    autoLeaveMs: 10000,
+    dobroes:     player.dobroes,
+    gold:        player.gold,
+    ironPlates:  player.ironPlates  || 0,
+    goldDust:    player.goldDust    || 0,
+    gunpowder:   player.gunpowder   || 0,
+    rareShips:   player.bonusShips  || [],
+    rewards: {
+      dobroes:    waveRewards.dobroes    || 0,
+      gold:       waveRewards.gold       || 0,
+      ironPlates: waveRewards.ironPlates || 0,
+      goldDust:   waveRewards.goldDust   || 0,
+      gunpowder:  waveRewards.gunpowder  || 0,
+      xp:         waveRewards.xp        || 0,
+    },
+    shipDrop,
+  });
+  console.log(`🏆 ${player.name} completou masmorra bônus mapa ${mapLevel} (${mapDef.name})`);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Banco (Bank)
+// ──────────────────────────────────────────────────────────────────────────────
+function handleBankDeposit(player, msg, ws) {
+  const amount = Math.floor(Number(msg.amount) || 0);
+  if (amount <= 0) { sendTo(ws, { type: 'error', message: 'Valor inválido.' }); return; }
+  if ((player.gold || 0) < amount) { sendTo(ws, { type: 'error', message: 'Ouro insuficiente.' }); return; }
+
+  player.gold        -= amount;
+  player.bankGold     = (player.bankGold || 0) + amount;
+  if (!player.bankUnlocked) player.bankUnlocked = true;
+
+  db.save(player, true).catch(e => console.error('Save error (bank deposit):', e));
+  sendTo(ws, {
+    type:        'bank_update',
+    gold:        player.gold,
+    bankGold:    player.bankGold,
+    bankUnlocked: player.bankUnlocked,
+  });
+}
+
+function handleBankWithdraw(player, msg, ws) {
+  const amount = Math.floor(Number(msg.amount) || 0);
+  if (amount <= 0) { sendTo(ws, { type: 'error', message: 'Valor inválido.' }); return; }
+  if ((player.bankGold || 0) < amount) { sendTo(ws, { type: 'error', message: 'Saldo insuficiente no cofre.' }); return; }
+
+  player.bankGold -= amount;
+  player.gold      = (player.gold || 0) + amount;
+
+  db.save(player, true).catch(e => console.error('Save error (bank withdraw):', e));
+  sendTo(ws, {
+    type:        'bank_update',
+    gold:        player.gold,
+    bankGold:    player.bankGold,
+    bankUnlocked: player.bankUnlocked,
+  });
+}
+
+// Base sell prices per ship rarity (rough gold value)
+const RARE_SHIP_SELL_BASE = { normal: 200, raro: 600, epico: 2000, lendario: 8000 };
+
+function handleSellRareShip(player, msg, ws) {
+  const instanceId = String(msg.instanceId || '');
+  if (!instanceId) { sendTo(ws, { type: 'error', message: 'ID inválido.' }); return; }
+
+  const ships = player.bonusShips || [];
+  const idx   = ships.findIndex(s => s.instanceId === instanceId);
+  if (idx === -1) { sendTo(ws, { type: 'error', message: 'Navio não encontrado.' }); return; }
+
+  const ship      = ships[idx];
+  const tier      = ship.tier || 'normal';
+  const salePrice = RARE_SHIP_SELL_BASE[tier] ?? RARE_SHIP_SELL_BASE.normal;
+  ships.splice(idx, 1);
+  player.bonusShips = ships;
+  player.gold       = (player.gold || 0) + salePrice;
+
+  db.save(player, true).catch(e => console.error('Save error (sell rare ship):', e));
+  sendTo(ws, {
+    type:       'rare_ship_sold',
+    instanceId,
+    salePrice,
+    gold:       player.gold,
+    rareShips:  player.bonusShips,
   });
 }
 
@@ -3290,11 +3260,9 @@ function handleUseRelic(player, msg) {
     // 1b. Notifica o NPC manager do mapa do jogador para que NPCs tentem desviar
     {
       const _pLvl = player.mapLevel || 1;
-      const _lMgr = _pLvl === 6 ? npcManager6
-                  : _pLvl === 4 ? npcManager4
-                  : _pLvl === 3 ? npcManager3
+      const _lMgr = _pLvl === 1 ? npcManager
                   : _pLvl === 2 ? npcManager2
-                  : npcManager;
+                  : getMapManager(_pLvl);
       _lMgr?.notifyDangerZone(lx, lz, LIGHTNING_RADIUS, castMs);
     }
 
@@ -3323,37 +3291,19 @@ function handleUseRelic(player, msg) {
                 worldBossManager.onWorldBossDead(npc, player.id);
               } else {
                 const _lBossLvl = npc.mapLevel || 1;
-                const lBossMgr = _lBossLvl === 3 ? bossManager3 : _lBossLvl === 2 ? bossManager2 : bossManager;
-                lBossMgr.onBossDead(npc, player.id);
+                const lBossMgr = projectileManager.bossManagers.get(_lBossLvl)
+                               || (_lBossLvl === 2 ? bossManager2 : bossManager);
+                lBossMgr && lBossMgr.onBossDead(npc, player.id);
                 worldBossManager.onZoneBossDead(npc, player.id);
               }
               projectileManager.npcs.delete(npc.id);
-            } else if (npc.isDungeonBoss) {
-              addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: player.id, goldDrop: 0 }, npc.mapLevel);
-              projectileManager.npcs.delete(npc.id);
-              handleDungeonComplete(player, npc);
-              _scheduleDungeonNpcRespawn(npc.dungeonId);
             } else {
               const rewards = projectileManager.grantNpcKillRewards(player, npc);
               addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: player.id, goldDrop: rewards.goldDrop }, npc.mapLevel);
               const _nLvlL = npc.mapLevel || 1;
-              const lmgr = _nLvlL === 4 ? npcManager4 : _nLvlL === 3 ? npcManager3 : _nLvlL === 2 ? npcManager2 : npcManager;
+              const lmgr = _nLvlL === 1 ? npcManager : _nLvlL === 2 ? npcManager2 : getMapManager(_nLvlL);
               lmgr && lmgr.respawnScaled(npc.id, player.npcKills || 0, _nLvlL);
-              // Boss spawn accounting (lightning kill)
-              { const _bpLvlL = _nLvlL;
-                if (_bpLvlL === 3) projectileManager.totalNpcKills3 = (projectileManager.totalNpcKills3||0)+1;
-                else if (_bpLvlL === 2) projectileManager.totalNpcKills2 = (projectileManager.totalNpcKills2||0)+1;
-                else projectileManager.totalNpcKills = (projectileManager.totalNpcKills||0)+1;
-                const _bpKtsL = MAP_DEFS[_bpLvlL]?.boss?.killsToSpawn ?? 10;
-                const _bpTotL = _bpLvlL===3 ? projectileManager.totalNpcKills3 : _bpLvlL===2 ? projectileManager.totalNpcKills2 : projectileManager.totalNpcKills;
-                const _bpBmgrL = _bpLvlL===3 ? bossManager3 : _bpLvlL===2 ? bossManager2 : bossManager;
-                if ((_bpTotL % _bpKtsL) === 0 && _bpBmgrL && !_bpBmgrL.bossAlive) {
-                  const rarity = _bpBmgrL.rollPendingRarity();
-                  addEvent({ type:'boss_incoming', rarity, mapLevel:_bpLvlL }, _bpLvlL);
-                  setTimeout(() => _bpBmgrL.spawn(player.npcKills||0), 2000);
-                }
-                addEvent({ type:'boss_progress', current:_bpTotL%_bpKtsL, needed:_bpKtsL, mapLevel:_bpLvlL, bossAlive:!!_bpBmgrL?.bossAlive }, _bpLvlL);
-              }
+              _npcKillBossAccounting(_nLvlL, player.npcKills || 0);
               db.save(player).catch(e => console.error('Save error:', e));
               const curMapDef = MAP_DEFS[player.mapLevel || 1] || {};
               sendTo(player.ws, {
@@ -3438,37 +3388,19 @@ function handleUseRelic(player, msg) {
                 worldBossManager.onWorldBossDead(npc, player.id);
               } else {
                 const _rkBossLvl = npc.mapLevel || 1;
-                const rkBossMgr = _rkBossLvl === 3 ? bossManager3 : _rkBossLvl === 2 ? bossManager2 : bossManager;
-                rkBossMgr.onBossDead(npc, player.id);
+                const rkBossMgr = projectileManager.bossManagers.get(_rkBossLvl)
+                                || (_rkBossLvl === 2 ? bossManager2 : bossManager);
+                rkBossMgr && rkBossMgr.onBossDead(npc, player.id);
                 worldBossManager.onZoneBossDead(npc, player.id);
               }
               projectileManager.npcs.delete(npc.id);
-            } else if (npc.isDungeonBoss) {
-              addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: player.id, goldDrop: 0 }, npc.mapLevel);
-              projectileManager.npcs.delete(npc.id);
-              handleDungeonComplete(player, npc);
-              _scheduleDungeonNpcRespawn(npc.dungeonId);
             } else {
               const rewards = projectileManager.grantNpcKillRewards(player, npc);
               addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: player.id, goldDrop: rewards.goldDrop }, npc.mapLevel);
               const _nLvlR = npc.mapLevel || 1;
-              const rkMgr = _nLvlR === 4 ? npcManager4 : _nLvlR === 3 ? npcManager3 : _nLvlR === 2 ? npcManager2 : npcManager;
+              const rkMgr = _nLvlR === 1 ? npcManager : _nLvlR === 2 ? npcManager2 : getMapManager(_nLvlR);
               rkMgr && rkMgr.respawnScaled(npc.id, player.npcKills || 0, _nLvlR);
-              // Boss spawn accounting (rocket kill)
-              { const _bpLvlR = _nLvlR;
-                if (_bpLvlR === 3) projectileManager.totalNpcKills3 = (projectileManager.totalNpcKills3||0)+1;
-                else if (_bpLvlR === 2) projectileManager.totalNpcKills2 = (projectileManager.totalNpcKills2||0)+1;
-                else projectileManager.totalNpcKills = (projectileManager.totalNpcKills||0)+1;
-                const _bpKtsR = MAP_DEFS[_bpLvlR]?.boss?.killsToSpawn ?? 10;
-                const _bpTotR = _bpLvlR===3 ? projectileManager.totalNpcKills3 : _bpLvlR===2 ? projectileManager.totalNpcKills2 : projectileManager.totalNpcKills;
-                const _bpBmgrR = _bpLvlR===3 ? bossManager3 : _bpLvlR===2 ? bossManager2 : bossManager;
-                if ((_bpTotR % _bpKtsR) === 0 && _bpBmgrR && !_bpBmgrR.bossAlive) {
-                  const rarity = _bpBmgrR.rollPendingRarity();
-                  addEvent({ type:'boss_incoming', rarity, mapLevel:_bpLvlR }, _bpLvlR);
-                  setTimeout(() => _bpBmgrR.spawn(player.npcKills||0), 2000);
-                }
-                addEvent({ type:'boss_progress', current:_bpTotR%_bpKtsR, needed:_bpKtsR, mapLevel:_bpLvlR, bossAlive:!!_bpBmgrR?.bossAlive }, npc.mapLevel);
-              }
+              _npcKillBossAccounting(_nLvlR, player.npcKills || 0);
               db.save(player).catch(e => console.error('Save error:', e));
               const curMapDef = MAP_DEFS[player.mapLevel || 1] || {};
               sendTo(player.ws, {
@@ -3565,37 +3497,19 @@ function handleUseRelic(player, msg) {
               worldBossManager.onWorldBossDead(npc, player.id);
             } else {
               const _mtBossLvl = npc.mapLevel || 1;
-              const mtBossMgr = _mtBossLvl === 3 ? bossManager3 : _mtBossLvl === 2 ? bossManager2 : bossManager;
-              mtBossMgr.onBossDead(npc, player.id);
+              const mtBossMgr = projectileManager.bossManagers.get(_mtBossLvl)
+                              || (_mtBossLvl === 2 ? bossManager2 : bossManager);
+              mtBossMgr && mtBossMgr.onBossDead(npc, player.id);
               worldBossManager.onZoneBossDead(npc, player.id);
             }
             projectileManager.npcs.delete(npc.id);
-          } else if (npc.isDungeonBoss) {
-              addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: player.id, goldDrop: 0 }, npc.mapLevel);
-              projectileManager.npcs.delete(npc.id);
-              handleDungeonComplete(player, npc);
-              _scheduleDungeonNpcRespawn(npc.dungeonId);
           } else {
             const rewards = projectileManager.grantNpcKillRewards(player, npc);
             addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: player.id, goldDrop: rewards.goldDrop }, npc.mapLevel);
             const _nLvlM = npc.mapLevel || 1;
-            const mtMgr = _nLvlM === 4 ? npcManager4 : _nLvlM === 3 ? npcManager3 : _nLvlM === 2 ? npcManager2 : npcManager;
+            const mtMgr = _nLvlM === 1 ? npcManager : _nLvlM === 2 ? npcManager2 : getMapManager(_nLvlM);
             mtMgr && mtMgr.respawnScaled(npc.id, player.npcKills || 0, _nLvlM);
-            // Boss spawn accounting (meteor kill)
-            { const _bpLvlM = _nLvlM;
-              if (_bpLvlM === 3) projectileManager.totalNpcKills3 = (projectileManager.totalNpcKills3||0)+1;
-              else if (_bpLvlM === 2) projectileManager.totalNpcKills2 = (projectileManager.totalNpcKills2||0)+1;
-              else projectileManager.totalNpcKills = (projectileManager.totalNpcKills||0)+1;
-              const _bpKtsM = MAP_DEFS[_bpLvlM]?.boss?.killsToSpawn ?? 10;
-              const _bpTotM = _bpLvlM===3 ? projectileManager.totalNpcKills3 : _bpLvlM===2 ? projectileManager.totalNpcKills2 : projectileManager.totalNpcKills;
-              const _bpBmgrM = _bpLvlM===3 ? bossManager3 : _bpLvlM===2 ? bossManager2 : bossManager;
-              if ((_bpTotM % _bpKtsM) === 0 && _bpBmgrM && !_bpBmgrM.bossAlive) {
-                const rarity = _bpBmgrM.rollPendingRarity();
-                addEvent({ type:'boss_incoming', rarity, mapLevel:_bpLvlM }, _bpLvlM);
-                setTimeout(() => _bpBmgrM.spawn(player.npcKills||0), 2000);
-              }
-              addEvent({ type:'boss_progress', current:_bpTotM%_bpKtsM, needed:_bpKtsM, mapLevel:_bpLvlM, bossAlive:!!_bpBmgrM?.bossAlive }, _bpLvlM);
-            }
+            _npcKillBossAccounting(_nLvlM, player.npcKills || 0);
             db.save(player).catch(e => console.error('Save error:', e));
             const curMapDef = MAP_DEFS[player.mapLevel || 1] || {};
             sendTo(player.ws, {
@@ -3720,7 +3634,7 @@ function handleUseRelic(player, msg) {
   }
 
   // Treino: concede XP de relíquia por usar (sem NPCs para acertar)
-  if (player.mapLevel === 5) {
+  if (MAP_DEFS[player.mapLevel]?.isTrainingMap) {
     grantSkillXp(player, 'reliquia', 30, wss);
   }
 
@@ -3878,12 +3792,14 @@ async function shutdown() {
   if (worldBossManager) worldBossManager.destroy();
   if (playerManager) playerManager.destroy();
   
-  // Destroi managers opcionais se existirem
-  if (npcManager3)   npcManager3.destroy();
-  if (npcManager4)   npcManager4.destroy();
-  if (npcManager6)   npcManager6.destroy();
-  if (bossManager3)  bossManager3.destroy();
-  if (bossManager6)  bossManager6.destroy();
+  // Destroi managers dinâmicos (mapas 3-6 e bônus)
+  for (const { npc, boss } of regularManagers.values()) {
+    if (npc  && !npc.destroyed)  npc.destroy();
+    if (boss && !boss.destroyed) boss.destroy();
+  }
+  for (const mgr of bonusNpcManagers.values()) {
+    if (mgr && !mgr.destroyed) mgr.destroy();
+  }
 
   console.log('🔌 Fechando WebSocket server...');
   // Termina conexões ativas — wss.close() callback só dispara quando não há clientes
@@ -3910,11 +3826,10 @@ async function shutdown() {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
-const PORT = process.env.PORT || process.env.VITE_PORT || 3001;
-const HOST = process.env.HOST || process.env.VITE_HOST_URL || '0.0.0.0';
+const PORT = process.env.PORT || 3001;
 
 // Sobe o servidor imediatamente — /api/constants não precisa de banco
-server.listen(PORT, HOST, () => console.log(`\n⚓  Sea of Code on http://${HOST}:${PORT}\n`));
+server.listen(PORT, () => console.log(`\n⚓  Sea of Code on http://localhost:${PORT}\n`));
 
 // Conecta ao banco em background (WebSocket/jogo só funcionam depois)
 db.init().then(() => {

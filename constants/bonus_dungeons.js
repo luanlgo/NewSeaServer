@@ -19,10 +19,13 @@ const BONUS_NPC_DEFS = {
     yOffset:        0,
     rotOffset:      0,
     hitRadius:      18,
+    usesCannons:    true,
+    cannonRange:    150,
+    cannonCount:    2,
     fireInterval:   4000,
-    attacks:        ['cannon_burst', 'cross_blast', 'impale_line', 'heavy_stomp'],
     shipDropId:     'colossal_ghost_pirate_galleon',
-    shipDropChance: 0.03,                 // 3% to drop the ship
+    //shipDropChance: 0.03,                 // 3% to drop the ship
+    shipDropChance: 10.0,                 // 100% for testing
     stats: {
       hpMin:     30000, hpMax:     40000,
       cannonMin: 60,    cannonMax: 80,
@@ -38,10 +41,13 @@ const BONUS_NPC_DEFS = {
     yOffset:        0,
     rotOffset:      0,
     hitRadius:      16,
+    usesCannons:    true,
+    cannonRange:    150,
+    cannonCount:    2,
     fireInterval:   3800,
-    attacks:        ['cannon_burst', 'piercing_beam', 'charge_line', 'cross_blast'],
     shipDropId:     'massive_imperial_warship',
-    shipDropChance: 0.02,                 // 2% to drop the ship
+    //shipDropChance: 0.02,                 // 2% to drop the ship
+    shipDropChance: 10.0,                 // 100% for testing
     stats: {
       hpMin:     30000, hpMax:     40000,
       cannonMin: 70,    cannonMax: 90,
@@ -57,10 +63,13 @@ const BONUS_NPC_DEFS = {
     yOffset:        0,
     rotOffset:      0,
     hitRadius:      22,
+    usesCannons:    true,
+    cannonRange:    150,
+    cannonCount:    2,
     fireInterval:   3500,
-    attacks:        ['cannon_burst', 'cross_blast', 'piercing_beam', 'impale_line', 'lava_breath'],
     shipDropId:     'gigantic_mechanical_pirate_ship',
-    shipDropChance: 0.01,                 // 1% to drop the ship
+    //shipDropChance: 0.01,                 // 1% to drop the ship
+    shipDropChance: 10.0,                 // 100% for testing
     stats: {
       hpMin:     40000, hpMax:     50000,
       cannonMin: 80,    cannonMax: 100,
@@ -128,6 +137,18 @@ const BONUS_DUNGEON_DEFS = {
 
 // ── SHIP STAT ROLL ─────────────────────────────────────────────────────────
 // Stats rolled with Math.pow(random, 3): clusters near minimum, max stats extremely rare.
+
+// Quality tiers based on where a stat falls in its min-max range (0–100 %):
+//   0–25 %  → normal | 25–50 % → raro | 50–75 % → epico | 75–100 % → lendario
+function _statTier(value, min, max) {
+  if (max <= min) return 'normal';
+  const t = (value - min) / (max - min);
+  if (t >= 0.75) return 'lendario';
+  if (t >= 0.50) return 'epico';
+  if (t >= 0.25) return 'raro';
+  return 'normal';
+}
+
 function rollBonusShip(npcDef) {
   const { hpMin, hpMax, cannonMin, cannonMax } = npcDef.stats;
   const t_hp     = Math.pow(Math.random(), 3);
@@ -142,6 +163,10 @@ function rollBonusShip(npcDef) {
     hp,
     maxHp:       hp,
     cannon,
+    hpTier:      _statTier(hp,     hpMin,     hpMax),
+    cannonTier:  _statTier(cannon, cannonMin, cannonMax),
+    hpMin,  hpMax,
+    cannonMin, cannonMax,
     modelKey:    npcDef.id,
     obtainedAt:  Date.now(),
     tradeable:   true,
@@ -164,7 +189,7 @@ const DUNGEON_MAP_LEVEL = {
 const BONUS_DUNGEON_MAP_CONFIGS = {
   bonus_map_1: {
     id: 'bonus_map_1', mapLevel: 10, name: 'Baía dos Naufragados', icon: '🏴‍☠️',
-    size:            500,   // zone radius in world units
+    size:            1000,   // zone radius in world units
     playerSpawnZ:    150,   // player Z on entry (NPC spawns at 0,0)
     // Respawn: delay (ms) before a new dungeon NPC appears after one is killed.
     // 0 = NPC only respawns when a new player enters.
@@ -172,13 +197,13 @@ const BONUS_DUNGEON_MAP_CONFIGS = {
   },
   bonus_map_2: {
     id: 'bonus_map_2', mapLevel: 11, name: 'Fortaleza do Esquecimento', icon: '🏰',
-    size:            500,
+    size:            1000,
     playerSpawnZ:    150,
     npcRespawnDelay: 30000,
   },
   bonus_map_3: {
     id: 'bonus_map_3', mapLevel: 12, name: 'Abismo dos Afundados', icon: '🌊',
-    size:            500,
+    size:            1000,
     playerSpawnZ:    150,
     npcRespawnDelay: 45000,
   },
@@ -200,20 +225,23 @@ Object.entries(BONUS_DUNGEON_MAP_CONFIGS).forEach(([dungeonId, config]) => {
     isDungeon: true,
     dungeonId,
     npc: {
-      count:       1,              // single boss NPC per dungeon
-      names:       [npcDef.name],
-      baseHp:      avgHp,
-      baseDamage:  avgDmg,
-      hitRadius:   npcDef.hitRadius,
-      fireInterval:npcDef.fireInterval,
-      model:       npcDef.model,
-      scale:       npcDef.scale,
-      yOffset:     npcDef.yOffset,
-      rotOffset:   npcDef.rotOffset,
-      attacks:     npcDef.attacks,
-      hullColor:   0x111111,
-      sailColor:   0x440022,
-      flagColor:   0x220011,
+      count:        1,              // single boss NPC per dungeon
+      names:        [npcDef.name],
+      baseHp:       avgHp,
+      baseDamage:   avgDmg,
+      hitRadius:    npcDef.hitRadius,
+      // Canhões reais (como c6, sem lifesteal) — ignora ATTACK_DEFS
+      usesCannons:  true,
+      cannonRange:  npcDef.cannonRange  || 150,
+      cannonCount:  npcDef.cannonCount  || 2,
+      fireInterval: npcDef.fireInterval || 3500,
+      model:        npcDef.model,
+      scale:        npcDef.scale,
+      yOffset:      npcDef.yOffset,
+      rotOffset:    npcDef.rotOffset,
+      hullColor:    0x111111,
+      sailColor:    0x440022,
+      flagColor:    0x220011,
     },
   };
 });
