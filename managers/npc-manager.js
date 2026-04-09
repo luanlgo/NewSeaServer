@@ -9,7 +9,10 @@ class NPCManager {
     this.attackManager = attackManager;
     this.mapDefs = mapDefs || {};
     this.zoneLevel = mapLevel || 1;
-    
+    this._initialNpcCount = 0;   // set after spawnAll; used by dungeon boss-spawn logic
+    this._bossPhase       = false;
+    this._dungeonBossId   = null;
+
     // Track respawn timers para poder cancelá-los
     this._respawnTimers = new Map();
 
@@ -54,6 +57,78 @@ class NPCManager {
     const count  = npcDef.count || NPC_COUNT;
     console.log(`[NPC] Mapa ${this.zoneLevel}: spawnando ${count} NPCs | hitRadius=${npcDef.hitRadius ?? 'N/A (usa HIT_RADIUS)'}`);
     for (let i = 0; i < count; i++) this.spawn(this.zoneLevel);
+    this._initialNpcCount = this.npcs.size;
+  }
+
+  /**
+   * Spawns a single NPC from an explicit def (used for dungeon bosses).
+   * The NPC is marked noRespawn=true and isDungeonBoss=true.
+   */
+  spawnWithDef(npcDef, mapLevel, x, z) {
+    const id = uid();
+    const avgHp     = Math.round((npcDef.stats.hpMin     + npcDef.stats.hpMax)     / 2);
+    // cannonMin/Max = quantidade de canhões disparados por salva
+    const avgCannon = Math.round((npcDef.stats.cannonMin + npcDef.stats.cannonMax) / 2);
+    // dmgMin/Max = dano por projétil individual (fallback para cannonMin/Max se não definido)
+    const avgDmg    = Math.round(((npcDef.stats.dmgMin ?? npcDef.stats.cannonMin) +
+                                   (npcDef.stats.dmgMax ?? npcDef.stats.cannonMax)) / 2);
+    const mapDef    = this.mapDefs[mapLevel] || {};
+    const mapSize   = mapDef.size || 1000;
+    const npc = {
+      id,
+      name:         npcDef.name,
+      mapLevel,
+      x:            x ?? (Math.random() - 0.5) * 100,
+      y:            0,
+      z:            z ?? (Math.random() - 0.5) * 100,
+      rotation:     Math.random() * Math.PI * 2,
+      hp:           avgHp,
+      maxHp:        avgHp,
+      baseHp:       avgHp,
+      speed:        rand(0.4, 0.9),
+      targetId:     null,
+      dead:         false,
+      isNPC:        true,
+      isBoss:       true,
+      isDungeonBoss: true,
+      noRespawn:    true,
+      stunExpires:  0,
+      slowMult:     1,
+      slowExpires:  0,
+      dots:         [],
+      cannonCount:  avgCannon,   // média de cannonMin/cannonMax (ex: 70 para colossal)
+      ammoType:     'bala_ferro',
+      cannonDmg:    avgDmg,      // dano por projétil individual (dmgMin/dmgMax)
+      baseDmg:      avgDmg,
+      cannonRange:  npcDef.cannonRange  ?? 150,
+      cannonSpread: npcDef.cannonSpread ?? 0.3,  // spread do cone de disparo (rad)
+      fireInterval: npcDef.fireInterval ?? 3500,
+      hitRadius:    npcDef.hitRadius    ?? 20,
+      npcModel:     npcDef.model        ?? null,
+      npcScale:     npcDef.scale        ?? null,
+      npcYOffset:   npcDef.yOffset      ?? null,
+      npcRotOffset: npcDef.rotOffset    ?? null,
+      npcHullColor: 0x111111,
+      npcSailColor: 0x440022,
+      npcFlagColor: 0x220011,
+      usesCannons:  npcDef.usesCannons  ?? true,
+      attacks:      [],
+      _attackCooldowns: {},
+      _currentCast:     null,
+      _castTimer:       null,
+      _nextCannonShot:  0,
+      _scaledForKills:  0,
+      _lastRescaleTime: 0,
+      _lastDamageTime:  0,
+      _cachedNearest:   null,
+      _cachedNearestDist: Infinity,
+      _targetCacheTime:   0,
+      _lastRegenBroadcast: 0,
+      relicDropChance:  0,
+    };
+    this.npcs.set(id, npc);
+    console.log(`[NPC] Dungeon boss spawned: ${npc.name} (${id}) @ map${mapLevel}`);
+    return npc;
   }
 
   spawn(mapLevel) {
@@ -146,7 +221,15 @@ class NPCManager {
       clearTimeout(this._respawnTimers.get(id));
       this._respawnTimers.delete(id);
     }
-    
+
+    // Dungeon NPCs (noRespawn flag or noNpcRespawn on map def) are removed and never re-spawned.
+    const npc        = this.npcs.get(id);
+    const mapNpcDef  = (this.mapDefs[(mapLevel || npc?.mapLevel) ?? this.zoneLevel] || {}).npc || {};
+    if ((npc && npc.noRespawn) || mapNpcDef.noNpcRespawn) {
+      this.npcs.delete(id);
+      return;
+    }
+
     this.npcs.delete(id);
     
     const timer = setTimeout(() => {
@@ -181,6 +264,12 @@ class NPCManager {
   // Rescales boss stats — keeps HP proportional, NEVER resets to full
   _rescaleBoss(boss, kills) {
     if (boss._scaledForKills === kills) return;
+    // Dungeon bosses têm stats fixos definidos em spawnWithDef — não escalam com kills do jogador.
+    // Sem esse guard, _rescaleBoss zeraria cannonDmg e resetaria HP para 600 (fallback).
+    if (boss.isDungeonBoss) {
+      boss._scaledForKills = kills;
+      return;
+    }
     const bossDef  = (this.mapDefs[boss.mapLevel || this.zoneLevel] || {}).boss || {};
     const tier     = Math.floor(kills / 10);
     const hpTier   = Math.min(tier, 300);
@@ -305,7 +394,8 @@ class NPCManager {
       }
 
       // Boss rescale — atualiza tier ao pegar novo target; reseta se ocioso
-      if (npc.isBoss && !npc.isWorldBoss) {
+      // Dungeon bosses têm stats fixos (spawnWithDef), não sofrem rescale
+      if (npc.isBoss && !npc.isWorldBoss && !npc.isDungeonBoss) {
         if (nearest && nearest.id !== npc.targetId) {
           // Novo target: rescala imediatamente para o tier dele
           const kills = nearest.npcKills || 0;
@@ -473,9 +563,10 @@ class NPCManager {
               if (fireNow >= npc._nextCannonShot) {
                 npc._nextCannonShot = fireNow + npc.fireInterval;
                 const count   = npc.cannonCount || 1;
+                const spread  = npc.cannonSpread ?? 0.3;
                 const baseAng = Math.atan2(nearestForCombat.x - npc.x, nearestForCombat.z - npc.z);
                 for (let ci = 0; ci < count; ci++) {
-                  const ang = baseAng + (Math.random() - 0.5) * 0.3;
+                  const ang = baseAng + (Math.random() - 0.5) * spread;
                   // Projétil vai em direção ao alvo, limitado pelo cannonRange
                   const projDist = Math.min(nearestDistForCombat + 20, npc.cannonRange);
                   this.projectileManager.spawn(
@@ -566,6 +657,7 @@ class NPCManager {
       dead: n.dead,
       isNPC: true,
       isBoss: n.isBoss,
+      isDungeonBoss: n.isDungeonBoss || false,
       isWorldBoss: n.isWorldBoss || false,
       rarity: n.rarity || null,
       mapLevel: n.mapLevel || 1,

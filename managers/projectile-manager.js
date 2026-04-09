@@ -608,6 +608,7 @@ class ProjectileManager {
       const _hitMapLvl = target.mapLevel || 1;
 
       // Roubo de ouro: projétil NPC contra jogador em mapa com goldStealRatio
+      // Rouba do gold na bolsa (player.gold)
       let goldStolen = 0;
       if (!isNPC && batch.ownerIsNPC) {
         const goldStealRatio = (MAP_DEFS[_hitMapLvl] || {}).goldStealRatio || 0;
@@ -754,9 +755,13 @@ class ProjectileManager {
           const pvpKiller = this.players.get(proj.ownerId);
           if (pvpKiller) {
             pvpKiller.pvpKills = (pvpKiller.pvpKills || 0) + 1;
-            // ── 5% XP and npcKills transfer on PvP kill ──────────────────
+            // ── Transfers on PvP kill ─────────────────────────────────────
+            // 5% XP transfer
             const xpTransfer    = Math.floor((target.mapXp    || 0) * 0.05);
+            // 5% npcKills transfer (affects tier)
             const killsTransfer = Math.floor((target.npcKills || 0) * 0.05);
+            // 100% pocket gold transfer — só se vítima abriu o banco nesta vida
+            const goldTransfer  = target.bankVisited ? (target.gold || 0) : 0;
             if (xpTransfer > 0) {
               pvpKiller.mapXp  = (pvpKiller.mapXp  || 0) + xpTransfer;
               target.mapXp     = Math.max(0, (target.mapXp || 0) - xpTransfer);
@@ -765,8 +770,12 @@ class ProjectileManager {
               pvpKiller.npcKills  = (pvpKiller.npcKills  || 0) + killsTransfer;
               target.npcKills     = Math.max(0, (target.npcKills || 0) - killsTransfer);
             }
-            if (xpTransfer > 0 || killsTransfer > 0) {
-              if (this._onPvpLoot) this._onPvpLoot(pvpKiller, target, xpTransfer, killsTransfer);
+            if (goldTransfer > 0) {
+              pvpKiller.gold  = (pvpKiller.gold  || 0) + goldTransfer;
+              target.gold     = 0;
+            }
+            if (xpTransfer > 0 || killsTransfer > 0 || goldTransfer > 0) {
+              if (this._onPvpLoot) this._onPvpLoot(pvpKiller, target, xpTransfer, killsTransfer, goldTransfer);
             }
             // Callback para missão pvpKills (definido em server.js) — passa o jogador morto
             if (this._onPvpKill) this._onPvpKill(pvpKiller, target);

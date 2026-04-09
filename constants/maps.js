@@ -493,6 +493,7 @@ MAP_DEFS[7] = {
   sideMap:     null,
   npc: {
     count:           5,
+    noNpcRespawn:    true,
     baseHp:          200,
     baseDamage:      12,
     fireInterval:    3000,
@@ -546,6 +547,7 @@ MAP_DEFS[8] = {
   sideMap:     null,
   npc: {
     count:           5,
+    noNpcRespawn:    true,
     baseHp:          500,
     baseDamage:      25,
     fireInterval:    3500,
@@ -599,6 +601,7 @@ MAP_DEFS[9] = {
   sideMap:     null,
   npc: {
     count:           5,
+    noNpcRespawn:    true,
     baseHp:          1200,
     baseDamage:      60,
     fireInterval:    4000,

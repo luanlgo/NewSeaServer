@@ -13,22 +13,24 @@ const BONUS_NPC_DEFS = {
   colossal_ghost_pirate_galleon: {
     id:             'colossal_ghost_pirate_galleon',
     name:           'Colossal Ghost Pirate Galleon',
-    rarity:         'comum',              // most accessible bonus NPC
+    rarity:         'comum',
     model:          '/models/bonus/colossal_ghost_pirate_galleon.glb',
     scale:          10,
     yOffset:        0,
     rotOffset:      0,
     hitRadius:      18,
     usesCannons:    true,
-    cannonRange:    150,
+    cannonRange:    450,   // range enorme — impossível de kitar dentro da dungeon (size 1000)
+    cannonSpread:   0.12,  // spread fechado para acertar mesmo à distância
     cannonCount:    2,
-    fireInterval:   4000,
+    fireInterval:   3000,  // cadência mais agressiva (era 4000)
     shipDropId:     'colossal_ghost_pirate_galleon',
-    //shipDropChance: 0.03,                 // 3% to drop the ship
-    shipDropChance: 10.0,                 // 100% for testing
+    //shipDropChance: 0.03,
+    shipDropChance: 10.0,  // 100% for testing
     stats: {
       hpMin:     30000, hpMax:     40000,
-      cannonMin: 60,    cannonMax: 80,
+      cannonMin: 60,    cannonMax: 80,    // quantidade de canhões por salva (avg 70)
+      dmgMin:    220,   dmgMax:    300,   // dano por projétil (era 40-60)
     },
   },
 
@@ -42,37 +44,41 @@ const BONUS_NPC_DEFS = {
     rotOffset:      0,
     hitRadius:      16,
     usesCannons:    true,
-    cannonRange:    150,
+    cannonRange:    460,
+    cannonSpread:   0.10,
     cannonCount:    2,
-    fireInterval:   3800,
+    fireInterval:   2800,  // cadência maior (era 3800)
     shipDropId:     'massive_imperial_warship',
-    //shipDropChance: 0.02,                 // 2% to drop the ship
-    shipDropChance: 10.0,                 // 100% for testing
+    //shipDropChance: 0.02,
+    shipDropChance: 10.0,  // 100% for testing
     stats: {
       hpMin:     30000, hpMax:     40000,
-      cannonMin: 70,    cannonMax: 90,
+      cannonMin: 70,    cannonMax: 90,    // quantidade de canhões por salva (avg 80)
+      dmgMin:    290,   dmgMax:    380,   // dano por projétil (era 50-70)
     },
   },
 
   gigantic_mechanical_pirate_ship: {
     id:             'gigantic_mechanical_pirate_ship',
     name:           'Gigantic Mechanical Pirate Ship',
-    rarity:         'raro',               // rarest bonus NPC
+    rarity:         'raro',
     model:          '/models/bonus/gigantic_mechanical_pirate_ship.glb',
     scale:          3.0,
     yOffset:        0,
     rotOffset:      0,
     hitRadius:      22,
     usesCannons:    true,
-    cannonRange:    150,
+    cannonRange:    480,
+    cannonSpread:   0.08,  // spread mais fechado — gigantic é o mais preciso
     cannonCount:    2,
-    fireInterval:   3500,
+    fireInterval:   2500,  // cadência mais alta (era 3500)
     shipDropId:     'gigantic_mechanical_pirate_ship',
-    //shipDropChance: 0.01,                 // 1% to drop the ship
-    shipDropChance: 10.0,                 // 100% for testing
+    //shipDropChance: 0.01,
+    shipDropChance: 10.0,  // 100% for testing
     stats: {
       hpMin:     40000, hpMax:     50000,
-      cannonMin: 80,    cannonMax: 100,
+      cannonMin: 80,    cannonMax: 100,   // quantidade de canhões por salva (avg 90)
+      dmgMin:    370,   dmgMax:    480,   // dano por projétil (era 60-80)
     },
   },
 };
@@ -216,10 +222,14 @@ const BONUS_DUNGEON_MAP_CONFIGS = {
 // to balance the fight.
 const DUNGEON_MAP_DEFS = {};
 Object.entries(BONUS_DUNGEON_MAP_CONFIGS).forEach(([dungeonId, config]) => {
-  const dungeonDef = BONUS_DUNGEON_DEFS[dungeonId];
-  const npcDef     = BONUS_NPC_DEFS[dungeonDef.npcId];
-  const avgHp  = Math.round((npcDef.stats.hpMin  + npcDef.stats.hpMax)  / 2);
-  const avgDmg = Math.round((npcDef.stats.cannonMin + npcDef.stats.cannonMax) / 2);
+  const dungeonDef  = BONUS_DUNGEON_DEFS[dungeonId];
+  const npcDef      = BONUS_NPC_DEFS[dungeonDef.npcId];
+  const avgHp       = Math.round((npcDef.stats.hpMin     + npcDef.stats.hpMax)     / 2);
+  // cannonMin/Max = quantidade de canhões disparados por salva
+  const avgCannon   = Math.round((npcDef.stats.cannonMin + npcDef.stats.cannonMax) / 2);
+  // dmgMin/Max = dano por projétil (separado da contagem de canhões)
+  const avgDmg      = Math.round(((npcDef.stats.dmgMin ?? npcDef.stats.cannonMin) +
+                                   (npcDef.stats.dmgMax ?? npcDef.stats.cannonMax)) / 2);
   DUNGEON_MAP_DEFS[config.mapLevel] = {
     size:      config.size,
     isDungeon: true,
@@ -228,12 +238,12 @@ Object.entries(BONUS_DUNGEON_MAP_CONFIGS).forEach(([dungeonId, config]) => {
       count:        1,              // single boss NPC per dungeon
       names:        [npcDef.name],
       baseHp:       avgHp,
-      baseDamage:   avgDmg,
+      baseDamage:   avgDmg,         // dano por projétil individual
       hitRadius:    npcDef.hitRadius,
-      // Canhões reais (como c6, sem lifesteal) — ignora ATTACK_DEFS
+      // Canhões reais — cannonCount define quantos projéteis por salva
       usesCannons:  true,
       cannonRange:  npcDef.cannonRange  || 150,
-      cannonCount:  npcDef.cannonCount  || 2,
+      cannonCount:  avgCannon,          // usa a média de cannonMin/Max (60-80 etc.)
       fireInterval: npcDef.fireInterval || 3500,
       model:        npcDef.model,
       scale:        npcDef.scale,
