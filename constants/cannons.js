@@ -18,7 +18,7 @@ const AMMO_DEFS = {
   bala_gelo:       { damage: 12, slow: 0.40, slowDur: 2000, dotDmg: 0, dotTick: 0,   dotDur: 0,    stunChance: 0, stunDur: 0 },
   bala_fogo:       { damage: 15, slow: 0,    slowDur: 0,    dotDmg: 1, dotTick: 500, dotDur: 3000, stunChance: 0, stunDur: 0 },
   bala_luz:        { damage: 15, slow: 0,    slowDur: 0,    dotDmg: 0, dotTick: 0,   dotDur: 0,    stunChance: 3, stunDur: 3000 },
-  bala_sangue:     { damage: 500, slow: 0,    slowDur: 0,    dotDmg: 2, dotTick: 500, dotDur: 3000, stunChance: 0, stunDur: 0 },
+  bala_sangue:     { damage: 17, slow: 0,    slowDur: 0,    dotDmg: 2, dotTick: 500, dotDur: 3000, stunChance: 0, stunDur: 0 },
 };
 
 // ── SAIL_DEFS ─────────────────────────────────────────────────────────────────

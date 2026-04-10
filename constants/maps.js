@@ -38,7 +38,7 @@ MAP_DEFS[1] = {
     rotOffset: 0,
     hitRadius: 8,
     relicDropChance: 0.01, // 1%
-    attacks: ['tentacle_slam', 'tail_slam', 'ink_blast', 'tentacle_sweep', 'claw_slam'],
+    attacks: ['tentacle_slam', 'venom_pool', 'bite'],
     ammoTiers: [
       { minKills: 0,   ammo: 'bala_ferro' },
       { minKills: 100, ammo: 'bala_gelo'  },
@@ -706,7 +706,7 @@ MAP_DEFS[10] = {
     rewardPerTier: 0.1,
     regenPerSec:   500,
     regenDelay:    20000,
-    killsToSpawn:  1,
+    killsToSpawn:  20,
     dobraoMin:     500,
     dobraoMax:     1000,
     hullColor:     0x3a2008,
