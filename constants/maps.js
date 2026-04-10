@@ -38,7 +38,7 @@ MAP_DEFS[1] = {
     rotOffset: 0,
     hitRadius: 8,
     relicDropChance: 0.01, // 1%
-    attacks: ['tentacle_slam', 'venom_pool', 'bite'],
+    attacks: ['impale_line', 'deep_surge', 'cannon_shot'],
     ammoTiers: [
       { minKills: 0,   ammo: 'bala_ferro' },
       { minKills: 100, ammo: 'bala_gelo'  },
@@ -63,7 +63,7 @@ MAP_DEFS[1] = {
     yOffset: -20,
     rotOffset: 0,
     hitRadius: 12,
-    attacks: ['impale_line', 'charge_line', 'lava_breath', 'cleave', 'arcane_nova'],
+    attacks: ['charge_line', 'forked_shot', 'impale_line', 'bite', 'ink_blast'],
     rarities: [
       { id: 'normal',   label: 'Normal',   hpMult: 1.0, rewardMult: 1.0,  chance: 0.40, color: '#888', bg: 'rgba(40,40,40,0.92)' },
       { id: 'raro',     label: 'Raro',     hpMult: 1.5, rewardMult: 1.5,  chance: 0.30, color: '#44f', bg: 'rgba(10,20,60,0.92)' },
