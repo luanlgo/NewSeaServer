@@ -164,6 +164,10 @@ const SHIP_RELIQC = {
   whydah_galley:       { maxMana: 10, maxHelic: 4 },
   queen_annes_revenge: { maxMana: 10, maxHelic: 4 },
   fancy:               { maxMana: 10, maxHelic: 4 },
+  // ── Barcos raros (Mapa Bônus) ─────────────────────────────────────────────
+  colossal_ghost_pirate_galleon:   { maxMana: 10, maxHelic: 4 },
+  massive_imperial_warship:        { maxMana: 10, maxHelic: 4 },
+  gigantic_mechanical_pirate_ship: { maxMana: 10, maxHelic: 4 },
 };
 
 // ── SHIP_UPGRADE_DEFS — upgrades comprados na ilha (vida, defesa, dano) ───────

@@ -149,6 +149,8 @@ class DBManager {
              current_ammo=$32,
              bank_gold=$33,
              bank_unlocked=$34,
+             bonus_inventory=$35,
+             active_bonus_ship_stats=$36,
              last_seen=NOW()
          WHERE name=$1`,
         [
@@ -180,15 +182,17 @@ class DBManager {
           JSON.stringify(player.bonusMapsUnlocked   || []),
           player.cannonResearchLevel || 0,
           player.shipMaterialLevel   || 0,
-          JSON.stringify(player.mapPieces  || {}),
-          JSON.stringify(player.rareShips  || []),
+          JSON.stringify(player.mapPieces   || {}),
+          JSON.stringify(player.bonusShips  || []),
           player.hp != null ? player.hp : (player.maxHp || 100),
           player.currentAmmo || 'bala_ferro',
           player.bankGold    || 0,
           player.bankUnlocked ? true : false,
+          JSON.stringify(player.bonusInventory || []),
+          player.activeBonusShipStats ? JSON.stringify(player.activeBonusShipStats) : null,
         ]
       );
-      
+
       if (result.rowCount === 0) {
         console.warn(`[DB] No rows updated for "${player.name}"`);
       }
@@ -218,8 +222,82 @@ class DBManager {
     
     // Add columns (mantido seu código de migração)
     await this._addColumns();
-    
+    await this._ensureAuctionsTable();
+
     console.log('💾 PostgreSQL ready');
+  }
+
+  async _ensureAuctionsTable() {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS auctions (
+        id          TEXT PRIMARY KEY,
+        ship_data   JSONB NOT NULL,
+        owner_id    TEXT NOT NULL,
+        owner_name  TEXT NOT NULL,
+        min_bid     INTEGER NOT NULL DEFAULT 0,
+        top_bid     INTEGER NOT NULL DEFAULT 0,
+        bids        JSONB NOT NULL DEFAULT '[]',
+        ends_at     BIGINT NOT NULL,
+        created_at  BIGINT NOT NULL
+      );
+    `);
+  }
+
+  // Salva todos os leilões ativos (substitui todos de uma vez)
+  async saveAuctions(auctionsMap) {
+    try {
+      await pool.query('DELETE FROM auctions');
+      for (const [id, a] of auctionsMap) {
+        await pool.query(
+          `INSERT INTO auctions (id, ship_data, owner_id, owner_name, min_bid, top_bid, bids, ends_at, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           ON CONFLICT (id) DO UPDATE
+             SET ship_data=$2, top_bid=$6, bids=$7`,
+          [
+            id,
+            JSON.stringify(a.shipData),
+            a.ownerId,
+            a.ownerName,
+            a.minBid,
+            a.topBid,
+            JSON.stringify(a.bids || []),
+            a.endsAt,
+            a.createdAt || Date.now(),
+          ]
+        );
+      }
+    } catch (err) {
+      console.error('[DB] Error saving auctions:', err);
+    }
+  }
+
+  // Carrega todos os leilões do DB (chamado no startup)
+  async loadAuctions() {
+    try {
+      const { rows } = await pool.query('SELECT * FROM auctions WHERE ends_at > $1', [Date.now()]);
+      return rows.map(r => ({
+        id:        r.id,
+        shipData:  r.ship_data,
+        ownerId:   r.owner_id,
+        ownerName: r.owner_name,
+        minBid:    r.min_bid,
+        topBid:    r.top_bid,
+        bids:      r.bids || [],
+        endsAt:    Number(r.ends_at),
+        createdAt: Number(r.created_at),
+      }));
+    } catch (err) {
+      console.error('[DB] Error loading auctions:', err);
+      return [];
+    }
+  }
+
+  async deleteAuction(auctionId) {
+    try {
+      await pool.query('DELETE FROM auctions WHERE id = $1', [auctionId]);
+    } catch (err) {
+      console.error('[DB] Error deleting auction:', err);
+    }
   }
 
   async _addColumns() {
@@ -248,6 +326,8 @@ class DBManager {
       'ALTER TABLE players ADD COLUMN IF NOT EXISTS ship_material_level INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE players ADD COLUMN IF NOT EXISTS map_pieces JSONB NOT NULL DEFAULT \'{}\'',
       'ALTER TABLE players ADD COLUMN IF NOT EXISTS rare_ships JSONB DEFAULT \'[]\'',
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS bonus_inventory JSONB DEFAULT \'[]\'',
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS active_bonus_ship_stats JSONB DEFAULT NULL',
       'ALTER TABLE players ADD COLUMN IF NOT EXISTS hp INTEGER NOT NULL DEFAULT 100',
       "ALTER TABLE players ADD COLUMN IF NOT EXISTS current_ammo TEXT NOT NULL DEFAULT 'bala_ferro'",
       'ALTER TABLE players ADD COLUMN IF NOT EXISTS bank_gold INTEGER NOT NULL DEFAULT 0',
@@ -320,7 +400,9 @@ class DBManager {
       gunpowder:           row.gunpowder            || 0,
       bonusMapsUnlocked:   row.bonus_maps_unlocked  || [],
       mapPieces:           row.map_pieces           || {},
-      rareShips:           row.rare_ships           || [],
+      bonusShips:          row.rare_ships            || [],
+      bonusInventory:         row.bonus_inventory           || [],
+      activeBonusShipStats:   row.active_bonus_ship_stats   || null,
       hp:                  row.hp != null ? row.hp : 100,
       currentAmmo:         row.current_ammo || 'bala_ferro',
       bankGold:            row.bank_gold    || 0,
@@ -350,7 +432,7 @@ class DBManager {
     const talents_arr  = [], island_up   = [], cannon_up  = [];
     const iron_plates  = [], gold_dust   = [], gunpowder_arr = [];
     const bonus_maps   = [], cannon_res  = [], ship_mat   = [];
-    const map_pieces_arr = [], rare_ships_arr = [], hp_arr = [], current_ammo_arr = [], bank_gold_arr = [], bank_unlocked_arr = [];
+    const map_pieces_arr = [], hp_arr = [], current_ammo_arr = [], bank_gold_arr = [], bank_unlocked_arr = [], bonus_inv_arr = [], active_bonus_stats_arr = [];
 
     for (const p of playersToSave) {
       const inventory = p.inventory || {};
@@ -386,8 +468,10 @@ class DBManager {
       bonus_maps.push(JSON.stringify(p.bonusMapsUnlocked   || []));
       cannon_res.push(p.cannonResearchLevel  || 0);
       ship_mat.push(p.shipMaterialLevel      || 0);
-      map_pieces_arr.push(JSON.stringify(p.mapPieces || {}));
-      rare_ships_arr.push(JSON.stringify(p.rareShips || []));
+      map_pieces_arr.push(JSON.stringify(p.mapPieces   || {}));
+      // rare_ships NÃO é salvo no batchSave — apenas via _flush urgente (evita race condition)
+      bonus_inv_arr.push(JSON.stringify(p.bonusInventory || []));
+      active_bonus_stats_arr.push(p.activeBonusShipStats ? JSON.stringify(p.activeBonusShipStats) : null);
       hp_arr.push(p.hp != null ? p.hp : (p.maxHp || 100));
       current_ammo_arr.push(p.currentAmmo || 'bala_ferro');
       bank_gold_arr.push(p.bankGold || 0);
@@ -426,12 +510,14 @@ class DBManager {
            cannon_research_level = v.cannon_res::integer,
            ship_material_level  = v.ship_mat::integer,
            map_pieces           = v.map_pieces::jsonb,
-           rare_ships           = v.rare_ships::jsonb,
+           -- rare_ships NÃO atualizado aqui (apenas via _flush urgente)
            hp                   = v.hp::integer,
            current_ammo         = v.current_ammo,
            bank_gold            = v.bank_gold::integer,
-           bank_unlocked        = v.bank_unlocked::boolean,
-           last_seen            = NOW()
+           bank_unlocked            = v.bank_unlocked::boolean,
+           bonus_inventory          = v.bonus_inv::jsonb,
+           active_bonus_ship_stats  = v.active_bonus_stats::jsonb,
+           last_seen                = NOW()
          FROM (
            SELECT
              UNNEST($1::text[])    AS name,
@@ -463,11 +549,12 @@ class DBManager {
              UNNEST($27::text[])   AS cannon_res,
              UNNEST($28::text[])   AS ship_mat,
              UNNEST($29::text[])   AS map_pieces,
-             UNNEST($30::text[])   AS rare_ships,
-             UNNEST($31::text[])   AS hp,
-             UNNEST($32::text[])   AS current_ammo,
-             UNNEST($33::text[])   AS bank_gold,
-             UNNEST($34::text[])   AS bank_unlocked
+             UNNEST($30::text[])   AS hp,
+             UNNEST($31::text[])   AS current_ammo,
+             UNNEST($32::text[])   AS bank_gold,
+             UNNEST($33::text[])   AS bank_unlocked,
+             UNNEST($34::text[])   AS bonus_inv,
+             UNNEST($35::text[])   AS active_bonus_stats
          ) AS v
          WHERE players.name = v.name`,
         [
@@ -500,11 +587,12 @@ class DBManager {
           cannon_res.map(String),
           ship_mat.map(String),
           map_pieces_arr,
-          rare_ships_arr,
           hp_arr.map(String),
           current_ammo_arr,
           bank_gold_arr.map(String),
           bank_unlocked_arr.map(String),
+          bonus_inv_arr,
+          active_bonus_stats_arr,
         ]
       );
       console.log(`💾 Batch save: ${playersToSave.length} players in ${Date.now() - start}ms`);

@@ -20,6 +20,7 @@ const BossManager       = require('./managers/boss-manager');
 const WorldBossManager  = require('./managers/world-boss-manager');
 const ProjectileManager = require('./managers/projectile-manager');
 const AttackManager     = require('./managers/attack-manager');
+const PartyManager      = require('./managers/party-manager');
 
 
 const compression = require('compression');
@@ -115,10 +116,6 @@ const {
   TALENT_COST_TIERS,
   TALENT_XP_BASE,
   TALENT_XP_GROWTH,
-  BONUS_NPC_DEFS,
-  BONUS_DUNGEON_DEFS,
-  rollBonusShip,
-  computeWaveRewards,
 } = require('./constants');
 const {
   calcXpRequired:     _calcXpRequired,
@@ -129,6 +126,7 @@ const {
 } = require('./utils/talent-logic');
 const { calcMaxCannons: _calcMaxCannons, trimCannons: _trimCannons } = require('./utils/combat-calc');
 const { stringify } = require('querystring');
+const { BONUS_DUNGEON_DEFS, BONUS_NPC_DEFS, rollBonusShip } = require('./constants/bonus_dungeons');
 
 // helper to compute map size per-level (default fallback)
 function getMapSize(level) {
@@ -285,9 +283,11 @@ const npcs    = new Map();
 
 // Managers
 const playerManager     = new PlayerManager();
+const partyManager      = new PartyManager();
 
 // 1. ProjectileManager first (no npcs yet — injected after)
 const projectileManager = new ProjectileManager(wss, players, null, null, null, MAP_DEFS);
+projectileManager.partyManager = partyManager;
 
 // 2. AttackManager — gerencia ataques especiais de NPC (telegraph + AoE)
 const attackManager = new AttackManager(addEvent, projectileManager);
@@ -383,6 +383,8 @@ let   bossManager  = new BossManager(wss, players, npcs, 1); // let — pode ser
 let   bossManager2 = new BossManager(wss, players, null, 2); // let — pode ser recriado
 // bossManager3 alias mantido para compatibilidade com código legado (usado via projectileManager.bossManagers)
 let   bossManager3 = null;
+bossManager.partyManager  = partyManager;
+bossManager2.partyManager = partyManager;
 
 // 5. Wire everything into projectileManager
 projectileManager.npcs          = allNpcs;
@@ -444,7 +446,7 @@ function _setupMissionCallbacks(pmgr, bmgr, bmgr2) {
     }
   };
 
-  pmgr._onPvpLoot = (killer, victim, xpGained, killsGained, goldGained = 0) => {
+  pmgr._onPvpLoot = (killer, victim, xpGained, killsGained) => {
     // Notify killer of the loot
     const killerMapDef = MAP_DEFS[killer.mapLevel || 1] || {};
     sendTo(killer.ws, {
@@ -456,9 +458,9 @@ function _setupMissionCallbacks(pmgr, bmgr, bmgr2) {
       mapLevel:    killer.mapLevel || 1,
       mapXpNeeded: killerMapDef.xpToAdvance || 99999,
       mapFragments: killer.mapFragments || 0,
-      reward: { type: 'pvp_loot', xp: xpGained, kills: killsGained, gold: goldGained },
+      reward: { type: 'pvp_loot', xp: xpGained, kills: killsGained },
     });
-    // Notify victim of the loss (gold=0 agora, npcKills reduzido)
+    // Notify victim of the loss
     const victimMapDef = MAP_DEFS[victim.mapLevel || 1] || {};
     sendTo(victim.ws, {
       type:       'currency_update',
@@ -889,16 +891,8 @@ setInterval(() => {
       const targetSize = targetDef.size;
       if (trans.spawnAxis === 'z') {
         p.z = trans.spawnValue(targetSize);
-        // Escala o X proporcionalmente para o novo mapa (evita canto em mapas de tamanho diferente)
-        if (mapSize && targetSize && mapSize !== targetSize) {
-          p.x = (p.x / (mapSize / 2)) * (targetSize / 2);
-        }
       } else {
         p.x = trans.spawnValue(targetSize);
-        // Escala o Z proporcionalmente para o novo mapa
-        if (mapSize && targetSize && mapSize !== targetSize) {
-          p.z = (p.z / (mapSize / 2)) * (targetSize / 2);
-        }
       }
 
       p.mapLevel = targetLevel;
@@ -955,43 +949,38 @@ setInterval(() => {
     if (!mgr.destroyed) {
       const bonusPlayers = new Map([...players].filter(([,p]) => p.mapLevel === lvl));
       mgr.update(dt, bonusPlayers);
-
-      if (!mgr._dungeonComplete) {
-        if (!mgr._bossPhase) {
-          // Phase 1: aguardar que todos os NPCs comuns sejam mortos
-          // _aliveCount exclui dead=true que ainda não saíram do map
-          const _aliveCount = [...mgr.npcs.values()].filter(n => !n.dead).length;
-          if (!global._dungeonLogTimer) global._dungeonLogTimer = {};
-          if (!global._dungeonLogTimer[lvl] || Date.now() - global._dungeonLogTimer[lvl] > 3000) {
-            global._dungeonLogTimer[lvl] = Date.now();
-            console.log(`[DUNGEON lvl${lvl}] npcs=${mgr.npcs.size} alive=${_aliveCount} init=${mgr._initialNpcCount} bossPhase=${mgr._bossPhase}`);
-          }
-          if (mgr._initialNpcCount > 0 && _aliveCount === 0) {
-            mgr._bossPhase = true;
-            const bonusMapId = MAP_DEFS[lvl]?.bonusMapId;
-            const dungeonDef = bonusMapId ? BONUS_DUNGEON_DEFS[bonusMapId] : null;
-            const npcDef     = dungeonDef ? BONUS_NPC_DEFS[dungeonDef.npcId] : null;
-            if (npcDef && bonusPlayers.size > 0) {
-              const boss = mgr.spawnWithDef(npcDef, lvl, 0, 0);
-              mgr._dungeonBossId = boss.id;
-              for (const [, p] of bonusPlayers) {
-                sendTo(p.ws, { type: 'dungeon_boss_spawn', entity: mgr.snapshot([boss])[0] });
-              }
-              console.log(`⚔️ Dungeon boss spawned for map ${lvl}: ${boss.name}`);
-            } else {
-              mgr._dungeonComplete = true;
-              console.log(`[DUNGEON lvl${lvl}] No npcDef or no players — skipping boss, completing dungeon`);
-            }
+      // ── Bonus dungeon: máquina de estados npcs → boss → complete ─────────
+      // NPCs são deletados de mgr.npcs ao morrer (proxy), não apenas marcados dead.
+      if (mgr._phase === 'npcs' && mgr._initialNpcCount > 0 && mgr.npcs.size === 0) {
+        // Todos os NPCs regulares mortos — spawnar boss do dungeon
+        mgr._phase = 'boss';
+        const mapDef   = MAP_DEFS[lvl] || {};
+        const dungeonId = mapDef.bonusMapId;                       // 'bonus_map_1' etc.
+        const dungeonDef = dungeonId && BONUS_DUNGEON_DEFS[dungeonId];
+        const npcDef     = dungeonDef && BONUS_NPC_DEFS[dungeonDef.npcId];
+        if (npcDef) {
+          mgr.spawnWithDef(npcDef, lvl, 0, 0);
+          mgr._bossSpawnedAt = Date.now();
+          console.log(`💀 [BonusDungeon] Boss spawnou: ${npcDef.name} no mapa ${lvl}`);
+          for (const [, p] of bonusPlayers) {
+            sendTo(p.ws, { type: 'bonus_boss_spawn', bossName: npcDef.name, mapLevel: lvl });
           }
         } else {
-          // Phase 2: boss spawned — checar se morreu
-          const boss = mgr.npcs.get(mgr._dungeonBossId);
-          if (!boss || boss.dead || !mgr.npcs.has(mgr._dungeonBossId)) {
-            mgr._dungeonComplete = true;
-            for (const [, p] of bonusPlayers) {
-              sendBonusDungeonComplete(p, lvl, MAP_DEFS[lvl]);
-            }
-          }
+          // Sem boss definido → completar direto
+          mgr._phase = 'complete';
+          const md = MAP_DEFS[lvl] || {};
+          for (const [, p] of bonusPlayers) sendBonusDungeonComplete(p, lvl, md);
+        }
+      }
+
+      // Boss morreu (npcs vazio + grace de 500ms desde o spawn)
+      if (mgr._phase === 'boss' && mgr._bossSpawnedAt > 0
+          && (Date.now() - mgr._bossSpawnedAt) > 500 && mgr.npcs.size === 0) {
+        mgr._phase = 'complete';
+        const mapDef = MAP_DEFS[lvl] || {};
+        console.log(`🏆 [BonusDungeon] Boss morto — enviando recompensas mapa ${lvl}`);
+        for (const [, p] of bonusPlayers) {
+          sendBonusDungeonComplete(p, lvl, mapDef);
         }
       }
     }
@@ -1236,9 +1225,8 @@ setInterval(() => {
             const baseGold  = Math.floor(Math.random() * (dotGoldMax - dotGoldMin + 1) + dotGoldMin);
             if (killer) {
               killer.npcKills = (killer.npcKills || 0) + 1;
-              const tier        = Math.floor(killer.npcKills / 10);
-              const rewardTier  = Math.min(tier, 500);
-              const gold = Math.floor(baseGold * (1 + (killer.dropBonus||0)) * (1 + rewardTier*0.01));
+              const tier = Math.floor(killer.npcKills / 10);
+              const gold = Math.floor(baseGold * (1 + (killer.dropBonus||0)) * (1 + tier*0.01));
               killer.gold += gold;
               // Dobrao drop
               if ((dotNpcDef.dobraoChance || 0) > 0 && Math.random() < dotNpcDef.dobraoChance) {
@@ -1247,7 +1235,7 @@ setInterval(() => {
               }
               // XP grant on DOT kill — use e.mapLevel (NPC zone), not killer.mapLevel
               const dotXpMapDef = MAP_DEFS[e.mapLevel || 1] || MAP_DEFS[1];
-              const xpGained = Math.floor((dotXpMapDef.npc?.xpPerKill || 12) * (1 + rewardTier * 0.01));
+              const xpGained = Math.floor((dotXpMapDef.npc?.xpPerKill || 12) * (1 + tier * 0.01));
               killer.mapXp = (killer.mapXp || 0) + xpGained;
               // XP is lifetime total — never reset, mapLevel only changes at border
               const xpNeeded = (MAP_DEFS[killer.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
@@ -1330,12 +1318,16 @@ setInterval(() => {
     // NPC snapshots — dinâmico para todos os mapas
     const npcSnapByZone = new Map();
     const _snapMgr = (mgr, lvl) => {
-      if (mgr && !mgr.destroyed) npcSnapByZone.set(lvl, mgr.snapshot().filter(n => !n.isBoss || n.isWorldBoss || n.isDungeonBoss));
+      if (mgr && !mgr.destroyed) npcSnapByZone.set(lvl, mgr.snapshot().filter(n => !n.isBoss || n.isWorldBoss));
     };
     _snapMgr(npcManager,  1);
     _snapMgr(npcManager2, 2);
     for (const [lvl, { npc }] of regularManagers) { _snapMgr(npc, lvl); }
-    for (const [lvl, mgr] of bonusNpcManagers)    { _snapMgr(mgr, lvl); }
+    for (const [lvl, mgr] of bonusNpcManagers) {
+      // Dungeon bosses (isDungeonBoss) devem aparecer no NPC snapshot — não estão no bossManagers
+      if (mgr && !mgr.destroyed)
+        npcSnapByZone.set(lvl, mgr.snapshot().filter(n => !n.isBoss || n.isDungeonBoss));
+    }
 
     const playerSnap  = playerManager.snapshot();
 
@@ -1470,7 +1462,9 @@ function ensureBonusMapManager(level) {
   const existing = bonusNpcManagers.get(level);
   if (existing && !existing.destroyed) return existing;
   const mgr = new NPCManager(projectileManager, MAP_DEFS, level, attackManager);
-  mgr.destroyed = false;
+  mgr.destroyed    = false;
+  mgr._phase       = 'npcs'; // 'npcs' → 'boss' → 'complete'
+  mgr._bossSpawnedAt = 0;
   bonusNpcManagers.set(level, mgr);
   _rewireProjectileManager();
   return mgr;
@@ -1572,6 +1566,7 @@ function ensureRegularManager(level) {
 
   // Registra no bossManagers dinâmico do projectileManager
   if (boss) {
+    boss.partyManager = partyManager;
     projectileManager.bossManagers.set(level, boss);
     // Aliases legados para compatibilidade
     if (level === 2) { projectileManager.bossManager2 = boss; }
@@ -1588,7 +1583,6 @@ function _rewireProjectileManager() {
   projectileManager.npcs = allNpcs;
   const allNpcMgrs = [npcManager, npcManager2];
   for (const { npc } of regularManagers.values()) { if (npc && !npc.destroyed) allNpcMgrs.push(npc); }
-  for (const mgr of bonusNpcManagers.values())    { if (!mgr.destroyed) allNpcMgrs.push(mgr); }
   projectileManager.npcManagers = allNpcMgrs;
   if (worldBossManager) worldBossManager.npcManagers = allNpcMgrs;
 }
@@ -1601,6 +1595,7 @@ function ensureManagersForMap(level) {
       npcManager.destroyed = false;
       bossManager = new BossManager(wss, players, npcManager.npcs, 1);
       bossManager.destroyed = false;
+      bossManager.partyManager = partyManager;
       projectileManager.bossManager = bossManager;
       projectileManager.bossManagers.set(1, bossManager);
       _rewireProjectileManager();
@@ -1612,6 +1607,7 @@ function ensureManagersForMap(level) {
       npcManager2.destroyed = false;
       bossManager2 = new BossManager(wss, players, npcManager2.npcs, 2);
       bossManager2.destroyed = false;
+      bossManager2.partyManager = partyManager;
       projectileManager.bossManager2 = bossManager2;
       projectileManager.bossManagers.set(2, bossManager2);
       _rewireProjectileManager();
@@ -1681,20 +1677,6 @@ wss.on('connection', (ws) => {
           if (player.cannonCooldown > 0) break;
           if (player.stunExpires && Date.now() < player.stunExpires) break;
           if (!player.cannons.length) break;
-          // Zona segura — bloqueia disparo dentro do securyRadius (ex: Ilha do Banco)
-          const _mapDef = MAP_DEFS[player.mapLevel || 1] || {};
-          const _banking = _mapDef.banking;
-          const _market  = _mapDef.market;
-          const _safeZone = _banking || _market;
-          if (_safeZone?.securyRadius) {
-            const _sc = _safeZone.center || { x: 0, z: 0 };
-            const _dx = player.x - _sc.x;
-            const _dz = player.z - _sc.z;
-            const _inSafe = _safeZone.islandShape === 'square'
-              ? Math.abs(_dx) <= _safeZone.securyRadius && Math.abs(_dz) <= _safeZone.securyRadius
-              : Math.hypot(_dx, _dz) <= _safeZone.securyRadius;
-            if (_inSafe) break;
-          }
           handleShoot(player, msg);
           break;
         }
@@ -1775,7 +1757,57 @@ wss.on('connection', (ws) => {
 
         case 'request_respawn': {
           if (player && player.dead) {
-            // use map-specific bounds when respawning after death
+            // ── Morte em mapa bônus: perde o mapa e volta ao normal ──────────
+            if (MAP_DEFS[player.mapLevel]?.isBonusMap) {
+              const bonusMapId = MAP_DEFS[player.mapLevel].bonusMapId;
+              const returnLevel = player.preBonusMapLevel || 1;
+              const returnX     = (Math.random() - 0.5) * getMapSize(returnLevel) * 0.5;
+              const returnZ     = (Math.random() - 0.5) * getMapSize(returnLevel) * 0.5;
+
+              // Remove o mapa bônus dos desbloqueados
+              player.bonusMapsUnlocked = (player.bonusMapsUnlocked || []).filter(id => id !== bonusMapId);
+              // Reseta mapPieces para o dungeon (exige farmar peças novamente)
+              const mapDef = MAP_DEFS[player.mapLevel];
+              const bonusDef = BONUS_MAPS.find(m => m.id === bonusMapId);
+              if (bonusDef && player.mapPieces) {
+                player.mapPieces[bonusDef.pieceId] = 0;
+              }
+              player.dead     = false;
+              player.hp       = Math.max(1, Math.floor((player.maxHp || 100) * 0.10));
+              player.mapLevel = returnLevel;
+              player.x        = returnX;
+              player.z        = returnZ;
+              player.speed    = 0;
+              player.input    = { w: false, a: false, s: false, d: false };
+              delete player.preBonusMapLevel;
+              delete player.preBonusX;
+              delete player.preBonusZ;
+
+              ensureManagersForMap(returnLevel);
+              const retMgr    = getMapManager(returnLevel);
+              const retMapDef = MAP_DEFS[returnLevel];
+              db.save(player, true).catch(e => console.error('Save error (bonus death):', e));
+              sendTo(ws, {
+                type:             'map_transition',
+                toLevel:          returnLevel,
+                mapDef:           retMapDef,
+                mapSize:          retMapDef.size,
+                x:                returnX,
+                z:                returnZ,
+                mapXp:            player.mapXp || 0,
+                npcs:             retMgr ? retMgr.snapshot() : [],
+                bossProgress:     retMapDef.boss
+                  ? { current: 0, needed: retMapDef.boss.killsToSpawn ?? 10, mapLevel: returnLevel, bossAlive: getMapBossAlive(returnLevel) }
+                  : null,
+                bonusDied:        true,
+                bonusMapsUnlocked: player.bonusMapsUnlocked,
+                mapPieces:         player.mapPieces || {},
+              });
+              console.log(`💀 ${player.name} morreu no mapa bônus → volta ao mapa ${returnLevel}, perdeu ${bonusMapId}`);
+              break;
+            }
+
+            // ── Respawn normal ────────────────────────────────────────────────
             const mapSize = getMapSize(player.mapLevel || 1);
             player.hp             = Math.max(1, Math.floor((player.maxHp || 100) * 0.10));
             player.dead           = false;
@@ -1788,8 +1820,6 @@ wss.on('connection', (ws) => {
             player.slowExpires    = 0;
             player.stunExpires    = 0;
             player.dot            = null;
-            // Reset bank visit flag — gold volta a ser protegido após morte
-            player.bankVisited    = false;
             // Reset cannon so player can fire immediately
             player.cannonCooldown = 0;
             const totalCharges    = playerManager.getSalvoCount(player.cannons) || 1;
@@ -1929,12 +1959,6 @@ wss.on('connection', (ws) => {
           break;
         }
 
-        case 'open_bank': {
-          // Marca que o jogador abriu o banco — gold na bolsa fica vulnerável a PvP
-          if (player) player.bankVisited = true;
-          break;
-        }
-
         case 'bank_deposit': {
           if (!player) break;
           handleBankDeposit(player, msg, ws);
@@ -1994,6 +2018,27 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        // ── Party ────────────────────────────────────────────────────────────
+        case 'party_invite': {
+          const targetId = String(msg.targetId || '');
+          if (targetId) partyManager.handleInvite(player, targetId, players);
+          break;
+        }
+        case 'party_accept': {
+          const inviterId = String(msg.inviterId || '');
+          if (inviterId) partyManager.handleAccept(player, inviterId, players);
+          break;
+        }
+        case 'party_reject': {
+          const inviterId = String(msg.inviterId || '');
+          if (inviterId) partyManager.handleReject(player, inviterId, players);
+          break;
+        }
+        case 'party_leave': {
+          partyManager.handleLeave(player, players);
+          break;
+        }
+
         case 'equip_navio': {
           if (!player) break;
           handleEquipNavio(player, msg, ws);
@@ -2011,6 +2056,8 @@ wss.on('connection', (ws) => {
       if (player._dbLoaded) {
         db.save(player, true).catch(e => console.error('Save error:', e)); // persist on disconnect
       }
+      partyManager.removePlayer(player.id, players);
+      partyManager.clearInvites(player.id);
       addEvent({ type: 'player_leave', id: player.id });
       playerManager.remove(player.id);
       players.delete(player.id);
@@ -2055,6 +2102,7 @@ async function handleLogin(ws, msg) {
     bala_fogo:       0,
     bala_luz:        0,
     bala_sangue:     0,
+    bala_cura:       0,
     ...saved.inventory.ammo
   };
   // Restore ships (|| doesn't work for empty arrays since [] is truthy)
@@ -2114,8 +2162,7 @@ async function handleLogin(ws, msg) {
   player.gunpowder           = saved.gunpowder           || 0;
   player.bonusMapsUnlocked   = saved.bonusMapsUnlocked   || [];
   player.mapPieces           = saved.mapPieces           || {};
-  player.currentAmmo         = (saved.currentAmmo && AMMO_DEFS[saved.currentAmmo]) ? saved.currentAmmo : 'bala_ferro';
-  player.bonusShips          = saved.rareShips            || [];
+  player.bonusShips          = saved.bonusShips          || [];
   player.bankGold            = saved.bankGold            || 0;
   player.bankUnlocked        = saved.bankUnlocked        || false;
   player.cannonResearchLevel = saved.cannonResearchLevel || 0;
@@ -2637,7 +2684,9 @@ function handleBuyShipUpgrade(player, msg, ws) {
 
   if (upgradeType === 'hp') {
     recalcMaxHp(player);
-    player.hp = Math.min(player.hp + 1000, player.maxHp);
+    const _shipHpBase = (SHIP_DEFS[player.activeShip] || SHIP_DEFS.fragata).hp;
+    const _hpGained   = Math.round(_shipHpBase * 0.05);
+    player.hp = Math.min(player.hp + _hpGained, player.maxHp);
   }
 
   progressDailyMission(player, 'itemsBought', 1);
@@ -2924,18 +2973,8 @@ function handleEnterBonusMap(player, msg, ws) {
   const level  = BONUS_MAP_LEVELS[mapId];
   if (!level) { sendTo(ws, { type: 'error', message: 'Mapa bônus inválido.' }); return; }
 
-  // Verifica e deduz peças diretamente — sem etapa de "desbloquear" separada
-  const mapDef  = BONUS_MAPS.find(m => m.id === mapId);
-  if (!mapDef)  { sendTo(ws, { type: 'error', message: 'Mapa bônus inválido.' }); return; }
-  const pieceId  = mapDef.pieceId;
-  const required = mapDef.requiredPieces;
-  const owned    = (player.mapPieces || {})[pieceId] || 0;
-  if (owned < required) {
-    sendTo(ws, { type: 'error', message: `Peças insuficientes! Necessário: ${required} 📜 (você tem ${owned})` });
-    return;
-  }
-  if (!player.mapPieces) player.mapPieces = {};
-  player.mapPieces[pieceId] -= required;
+  const unlocked = (player.bonusMapsUnlocked || []).includes(mapId);
+  if (!unlocked) { sendTo(ws, { type: 'error', message: 'Mapa não desbloqueado.' }); return; }
 
   // Guarda mapa de origem para retornar depois
   player.preBonusMapLevel = player.mapLevel || 1;
@@ -2947,26 +2986,34 @@ function handleEnterBonusMap(player, msg, ws) {
   player.speed            = 0;
   player.input            = { w: false, a: false, s: false, d: false };
 
+  // Se o dungeon já foi completado (fase 'complete'), resetar o manager para que
+  // os NPCs reiniciem ao entrar novamente.
+  const prevMgr = bonusNpcManagers.get(level);
+  if (prevMgr && prevMgr._phase === 'complete') {
+    prevMgr.destroyed = true;
+    bonusNpcManagers.delete(level);
+    console.log(`♻️ [BonusDungeon] Manager do mapa ${level} resetado para nova entrada.`);
+  }
+
   ensureBonusMapManager(level);
-  const mgr        = getMapManager(level);
-  const zoneDef    = MAP_DEFS[level];
+  const mgr = getMapManager(level);
+  const mapDef = MAP_DEFS[level];
 
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(ws, {
-    type:      'map_transition',
-    toLevel:   level,
-    mapDef:    MAP_DEFS[level],
-    mapSize:   MAP_DEFS[level].size,
-    x:         0,
-    z:         0,
-    mapXp:     player.mapXp || 0,
-    npcs:      mgr ? mgr.snapshot() : [],
-    bossProgress: null,
-    isBonusMap:   true,
-    bonusMapId:   mapId,
-    mapPieces:    player.mapPieces,  // peças deduzidas — atualiza UI do cliente
+    type:           'map_transition',
+    toLevel:        level,
+    mapDef:         mapDef,
+    mapSize:        mapDef.size,
+    x:              0,
+    z:              0,
+    mapXp:          player.mapXp || 0,
+    npcs:           mgr ? mgr.snapshot() : [],
+    bossProgress:   null,
+    isBonusMap:     true,
+    bonusMapId:     mapId,
   });
-  console.log(`🗺️ ${player.name} entrou em ${zoneDef?.name} (level ${level}) — peças deduzidas`);
+  console.log(`🗺️ ${player.name} entrou em ${mapDef.name} (level ${level})`);
 }
 
 function handleLeaveBonusMap(player, ws) {
@@ -3014,55 +3061,60 @@ function handleLeaveBonusMap(player, ws) {
 function sendBonusDungeonComplete(player, mapLevel, mapDef) {
   const ws = player.ws;
 
-  // ── Busca definições da dungeon e do NPC boss ──────────────────────────────
-  const bonusMapId  = mapDef.bonusMapId;                        // ex: 'bonus_map_1'
-  const dungeonDef  = bonusMapId ? BONUS_DUNGEON_DEFS[bonusMapId] : null;
-  const npcDef      = dungeonDef ? BONUS_NPC_DEFS[dungeonDef.npcId] : null;
+  // ── Ler definições da dungeon (BONUS_DUNGEON_DEFS) ─────────────────────────
+  const dungeonId  = mapDef.bonusMapId;
+  const dungeonDef = dungeonId && BONUS_DUNGEON_DEFS[dungeonId];
+  const npcId      = dungeonDef?.npcId;
+  const npcDef     = npcId && BONUS_NPC_DEFS[npcId];
+  const waveRewards = dungeonDef?.waves?.[0]?.rewards || {};
 
-  // ── Recompensas da wave 0 (via computeWaveRewards) ────────────────────────
-  const waveRewards = dungeonDef?.waves?.[0]?.rewards || computeWaveRewards(0);
-  player.dobroes   = (player.dobroes   || 0) + (waveRewards.dobroes    || 0);
-  player.gold      = (player.gold      || 0) + (waveRewards.gold       || 0);
-  player.ironPlates= (player.ironPlates|| 0) + (waveRewards.ironPlates || 0);
-  player.goldDust  = (player.goldDust  || 0) + (waveRewards.goldDust   || 0);
-  player.gunpowder = (player.gunpowder || 0) + (waveRewards.gunpowder  || 0);
-  if (waveRewards.xp) player.mapXp = (player.mapXp || 0) + waveRewards.xp;
+  // ── Recursos fixos da wave ─────────────────────────────────────────────────
+  const dobraoAmt  = waveRewards.dobroes    || 0;
+  const goldAmt    = waveRewards.gold       || 0;
+  const ironAmt    = waveRewards.ironPlates || 0;
+  const dustAmt    = waveRewards.goldDust   || 0;
+  const powderAmt  = waveRewards.gunpowder  || 0;
 
-  // ── Navio raro — roll via rollBonusShip (Math.pow bias) ───────────────────
+  player.dobroes    = (player.dobroes    || 0) + dobraoAmt;
+  player.gold       = (player.gold       || 0) + goldAmt;
+  player.ironPlates = (player.ironPlates || 0) + ironAmt;
+  player.goldDust   = (player.goldDust   || 0) + dustAmt;
+  player.gunpowder  = (player.gunpowder  || 0) + powderAmt;
+
+  // ── Navio raro (chance definida em npcDef) ─────────────────────────────────
   let shipDrop = null;
-  if (npcDef) {
-    const chance = npcDef.shipDropChance ?? 0.02;   // valor real após testes
-    if (Math.random() < chance) {
-      shipDrop = rollBonusShip(npcDef);
-      if (!player.bonusShips) player.bonusShips = [];
-      player.bonusShips.push(shipDrop);
-      console.log(`🚢 ${player.name} ganhou navio raro: ${shipDrop.name} [hp:${shipDrop.hp} cannon:${shipDrop.cannon}] hpTier:${shipDrop.hpTier} cannonTier:${shipDrop.cannonTier}`);
-    }
+  if (npcDef && Math.random() < (npcDef.shipDropChance ?? 0.02)) {
+    shipDrop = rollBonusShip(npcDef);
+    if (!player.bonusShips) player.bonusShips = [];
+    player.bonusShips.push(shipDrop);
   }
 
   db.save(player, true).catch(e => console.error('Save error (bonus complete):', e));
 
   sendTo(ws, {
-    type:        'bonus_dungeon_complete',
+    type:            'bonus_dungeon_complete',
     mapLevel,
-    autoLeaveMs: 10000,
-    dobroes:     player.dobroes,
-    gold:        player.gold,
-    ironPlates:  player.ironPlates  || 0,
-    goldDust:    player.goldDust    || 0,
-    gunpowder:   player.gunpowder   || 0,
-    rareShips:   player.bonusShips  || [],
+    autoLeaveMs:     10000,
+    dobroes:         player.dobroes,
+    gold:            player.gold,
+    ironPlates:      player.ironPlates    || 0,
+    goldDust:        player.goldDust      || 0,
+    gunpowder:       player.gunpowder     || 0,
+    rareShips:       player.bonusShips    || [],
     rewards: {
-      dobroes:    waveRewards.dobroes    || 0,
-      gold:       waveRewards.gold       || 0,
-      ironPlates: waveRewards.ironPlates || 0,
-      goldDust:   waveRewards.goldDust   || 0,
-      gunpowder:  waveRewards.gunpowder  || 0,
-      xp:         waveRewards.xp        || 0,
+      dobroes:    dobraoAmt,
+      gold:       goldAmt,
+      ironPlates: ironAmt,
+      goldDust:   dustAmt,
+      gunpowder:  powderAmt,
     },
     shipDrop,
   });
-  console.log(`🏆 ${player.name} completou masmorra bônus mapa ${mapLevel} (${mapDef.name})`);
+  console.log(`🏆 ${player.name} completou masmorra bônus ${dungeonId ?? mapLevel} — dobrões:${dobraoAmt} ouro:${goldAmt} navio:${shipDrop?.id ?? 'nenhum'}`);
+}
+
+function _rollBonusStat(min, max) {
+  return Math.floor(min + Math.random() * (max - min + 1));
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

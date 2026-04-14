@@ -20,6 +20,7 @@ const EXPLORATION_REWARDS = [
   { type: 'ammo',     id: 'bala_perfurante', qty: 10,  weight: 22 },
   { type: 'ammo',     id: 'bala_gelo',       qty: 10,  weight: 22 },
   { type: 'ammo',     id: 'bala_fogo',       qty: 10,  weight: 16 },
+  { type: 'ammo',     id: 'bala_cura',       qty: 10,  weight: 16 },
   { type: 'ammo',     id: 'bala_luz',        qty: 10,  weight: 10 },
   { type: 'ammo',     id: 'bala_sangue',     qty: 10,  weight: 6  },
   { type: 'ammo',     id: 'bala_sangue',     qty: 500, weight: 1  }, // jackpot raro

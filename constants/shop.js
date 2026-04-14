@@ -13,6 +13,7 @@ const SHOP = {
     { id: 'bala_fogo',       name: 'Bala de Fogo',    price: 20, qty: 30, currency: 'dobrao', ...AMMO_DEFS.bala_fogo },
     { id: 'bala_luz',        name: 'Bala de Luz',     price: 20, qty: 30, currency: 'dobrao', ...AMMO_DEFS.bala_luz },
     { id: 'bala_sangue',     name: 'Bala de Sangue',  price: 40, qty: 30, currency: 'dobrao', ...AMMO_DEFS.bala_sangue },
+    { id: 'bala_cura',       name: 'Bala de Cura',    price: 15, qty: 30, currency: 'dobrao', ...AMMO_DEFS.bala_cura },
   ],
 
   // ammo: keyed object para lookup O(1) no handler buy_ammo
