@@ -2428,6 +2428,7 @@ function handleEquipCannon(player, msg, ws) {
   sendTo(ws, {
     type:        'cannon_state',
     cannons:     player.cannons,
+    maxCannons:  player.maxCannons || MAX_CANNON_SLOTS,
     charges:     shots,
     maxCharges:  shots,
     cooldown:    0,
@@ -2451,6 +2452,7 @@ function handleEquipCannonSync(player, msg, ws) {
   sendTo(ws, {
     type:        'cannon_state',
     cannons:     player.cannons,
+    maxCannons:  player.maxCannons || MAX_CANNON_SLOTS,
     charges:     shots,
     maxCharges:  shots,
     cooldown:    0,
