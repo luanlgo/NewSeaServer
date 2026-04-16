@@ -346,6 +346,26 @@ class ProjectileManager {
   // hit() only accumulates damage into _hitBatch — no broadcasts here.
   // All network messages are sent once per tick in _flushHitBatch().
   hit(proj, target, isNPC) {
+    // ── Bala de cura: só funciona em jogadores aliados do grupo ─────────────
+    if (!isNPC && !proj.ownerIsNPC && proj.ammoType === 'bala_cura') {
+      if (proj.piercing) proj.hitTargets.add(target.id);
+      else { proj.dead = true; this.projectiles.delete(proj.id); }
+
+      const shooter2 = this.players.get(proj.ownerId);
+      const isAlly   = shooter2 && this.partyManager && this.partyManager.areAllies(shooter2.id, target.id);
+      if (isAlly) {
+        const ammo        = AMMO_DEFS['bala_cura'] || {};
+        const HEAL_AMOUNT = ammo.healAmount || 5;
+        target.hp = Math.min(target.maxHp, target.hp + HEAL_AMOUNT);
+        this._broadcastToMap(target.mapLevel || 1, {
+          type: 'heal', targetId: target.id,
+          amount: HEAL_AMOUNT, x: target.x, z: target.z,
+          hp: target.hp, maxHp: target.maxHp,
+        });
+      }
+      return; // sem dano independente de ser aliado ou não
+    }
+
     if (proj.piercing) {
       proj.hitTargets.add(target.id);
     } else {
@@ -525,14 +545,35 @@ class ProjectileManager {
       const xpPerKill = npcMapDef.npc?.xpPerKill || 12;
       xpGained = calcKillXp({ xpPerKill, killTier, talentXpBonus: killer.talentXpBonus || 0 });
 
-      // Dobrao drop
+      // Dobrao drop (só para o killer — não é dividido)
       if ((npcDef.dobraoChance || 0) > 0 && Math.random() < (npcDef.dobraoChance + (killer.talentDobraoBonus || 0))) {
         const dobraoAmt = Math.floor(Math.random() * (npcDef.dobraoMax - npcDef.dobraoMin + 1) + npcDef.dobraoMin);
         killer.dobroes = (killer.dobroes || 0) + dobraoAmt;
       }
 
-      killer.gold  += finalGold;
-      killer.mapXp  = (killer.mapXp || 0) + xpGained;
+      // ── Divisão de recompensas de grupo ──────────────────────────────────
+      const partyMembers = this.partyManager
+        ? this.partyManager.getPartyMembersInZone(killer.id, mapLvl, this.players)
+        : [];
+      const totalMembers = partyMembers.length + 1;
+      const memberGold   = Math.floor(finalGold / totalMembers);
+      const memberXp     = Math.floor(xpGained  / totalMembers);
+      const memberFrags  = Math.floor(FRAGMENT_DROP_NPC / totalMembers);
+
+      killer.gold  += memberGold;
+      killer.mapXp  = (killer.mapXp || 0) + memberXp;
+
+      for (const m of partyMembers) {
+        m.gold       = (m.gold       || 0) + memberGold;
+        m.mapXp      = (m.mapXp      || 0) + memberXp;
+        m.mapFragments = (m.mapFragments || 0) + memberFrags;
+        if (m.ws?.readyState === 1) {
+          sendTo(m.ws, { type: 'currency_update', gold: m.gold, dobroes: m.dobroes });
+        }
+      }
+
+      finalGold = memberGold;
+      xpGained  = memberXp;
 
       // Map unlock notification (xpToAdvance is per-map in MAP_DEFS)
       const xpNeeded = this.mapDefs.xpToAdvance || 99999;
@@ -545,8 +586,8 @@ class ProjectileManager {
         killer._mapUnlockNotified = false;
       }
 
-      // Fragment drop
-      killer.mapFragments = (killer.mapFragments || 0) + FRAGMENT_DROP_NPC;
+      // Fragment drop (killer recebe sua parte; membros já receberam acima)
+      killer.mapFragments = (killer.mapFragments || 0) + memberFrags;
 
       // Relic drop
       if (Math.random() < (npc.relicDropChance || 0)) {
@@ -608,7 +649,6 @@ class ProjectileManager {
       const _hitMapLvl = target.mapLevel || 1;
 
       // Roubo de ouro: projétil NPC contra jogador em mapa com goldStealRatio
-      // Rouba do gold na bolsa (player.gold)
       let goldStolen = 0;
       if (!isNPC && batch.ownerIsNPC) {
         const goldStealRatio = (MAP_DEFS[_hitMapLvl] || {}).goldStealRatio || 0;
@@ -755,13 +795,9 @@ class ProjectileManager {
           const pvpKiller = this.players.get(proj.ownerId);
           if (pvpKiller) {
             pvpKiller.pvpKills = (pvpKiller.pvpKills || 0) + 1;
-            // ── Transfers on PvP kill ─────────────────────────────────────
-            // 5% XP transfer
+            // ── 5% XP and npcKills transfer on PvP kill ──────────────────
             const xpTransfer    = Math.floor((target.mapXp    || 0) * 0.05);
-            // 5% npcKills transfer (affects tier)
             const killsTransfer = Math.floor((target.npcKills || 0) * 0.05);
-            // 100% pocket gold transfer — só se vítima abriu o banco nesta vida
-            const goldTransfer  = target.bankVisited ? (target.gold || 0) : 0;
             if (xpTransfer > 0) {
               pvpKiller.mapXp  = (pvpKiller.mapXp  || 0) + xpTransfer;
               target.mapXp     = Math.max(0, (target.mapXp || 0) - xpTransfer);
@@ -770,12 +806,8 @@ class ProjectileManager {
               pvpKiller.npcKills  = (pvpKiller.npcKills  || 0) + killsTransfer;
               target.npcKills     = Math.max(0, (target.npcKills || 0) - killsTransfer);
             }
-            if (goldTransfer > 0) {
-              pvpKiller.gold  = (pvpKiller.gold  || 0) + goldTransfer;
-              target.gold     = 0;
-            }
-            if (xpTransfer > 0 || killsTransfer > 0 || goldTransfer > 0) {
-              if (this._onPvpLoot) this._onPvpLoot(pvpKiller, target, xpTransfer, killsTransfer, goldTransfer);
+            if (xpTransfer > 0 || killsTransfer > 0) {
+              if (this._onPvpLoot) this._onPvpLoot(pvpKiller, target, xpTransfer, killsTransfer);
             }
             // Callback para missão pvpKills (definido em server.js) — passa o jogador morto
             if (this._onPvpKill) this._onPvpKill(pvpKiller, target);

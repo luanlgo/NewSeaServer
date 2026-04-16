@@ -132,36 +132,62 @@ class BossManager {
 
     const bossDef = (MAP_DEFS[this.zoneLevel] || MAP_DEFS[1]).boss || {};
     const rarities = bossDef.rarities || [];
-    const rarityDef = rarities.find(r => r.id === boss.rarity) || { 
-      rewardMult: 1, 
-      label: 'Normal', 
-      color: '#aaa' 
+    const rarityDef = rarities.find(r => r.id === boss.rarity) || {
+      rewardMult: 1,
+      label: 'Normal',
+      color: '#aaa'
     };
-    
+
     const dobraoMin = boss._dobraoMin || bossDef.dobraoMin || 5;
     const dobraoMax = boss._dobraoMax || bossDef.dobraoMax || 10;
     const baseDrops = Math.floor(rand(dobraoMin, dobraoMax + 1));
     const tierScale = 1 + (boss.spawnTier || 0) * (bossDef.rewardPerTier || 0.30);
     const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * tierScale);
-    
+
     const share = damage / totalDamage;
-    const drops = Math.max(1, Math.round(totalDrops * share));
-    const fragDrop = Math.round((FRAGMENT_DROP_BOSS[boss.rarity] || FRAGMENT_DROP_BOSS.normal) * share);
+    let drops    = Math.max(1, Math.round(totalDrops * share));
+    let fragDrop = Math.round((FRAGMENT_DROP_BOSS[boss.rarity] || FRAGMENT_DROP_BOSS.normal) * share);
+
+    // ── Divisão de recompensas de grupo ──────────────────────────────────────
+    const partyMembers = this.partyManager
+      ? this.partyManager.getPartyMembersInZone(playerId, this.zoneLevel, this.players)
+      : [];
+
+    if (partyMembers.length > 0) {
+      const totalSplit = partyMembers.length + 1;
+      const memberDrops = Math.max(1, Math.floor(drops    / totalSplit));
+      const memberFrags = Math.max(0, Math.floor(fragDrop / totalSplit));
+
+      for (const m of partyMembers) {
+        m.dobroes      = (m.dobroes      || 0) + memberDrops;
+        m.mapFragments = (m.mapFragments || 0) + memberFrags;
+        db.save(m, true).catch(e => console.error('Save error:', e));
+        this._sendTo(m.ws, {
+          type:     'currency_update',
+          gold:     m.gold,
+          dobroes:  m.dobroes,
+          reward:   { type: 'dobrao', amount: memberDrops, share: Math.round(share * 100 / totalSplit) },
+          mapFragments: m.mapFragments,
+        });
+      }
+      drops    = memberDrops;
+      fragDrop = memberFrags;
+    }
 
     player.dobroes = (player.dobroes || 0) + drops;
     player.mapFragments = (player.mapFragments || 0) + fragDrop;
 
     db.save(player, true).catch(e => console.error('Save error:', e));
     console.log(`[boss-debug] rewarding player ${playerId}: damage=${damage} totalDmg=${totalDamage} wsReady=${!!player.ws && player.ws.readyState === 1}`);
-    
+
     this._sendTo(player.ws, {
       type: 'currency_update',
       gold: player.gold,
       dobroes: player.dobroes,
-      reward: { 
-        type: 'dobrao', 
-        amount: drops, 
-        share: Math.round(share * 100) 
+      reward: {
+        type: 'dobrao',
+        amount: drops,
+        share: Math.round(share * 100)
       },
       mapFragments: player.mapFragments,
     });

@@ -1977,6 +1977,13 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        case 'activate_bonus_ship':
+        case 'equip_bonus_ship': {
+          if (!player) break;
+          handleActivateBonusShip(player, msg, ws);
+          break;
+        }
+
         case 'cannon_research': {
           if (!player) break;
           handleCannonResearch(player, msg, ws);
@@ -2162,7 +2169,15 @@ async function handleLogin(ws, msg) {
   player.gunpowder           = saved.gunpowder           || 0;
   player.bonusMapsUnlocked   = saved.bonusMapsUnlocked   || [];
   player.mapPieces           = saved.mapPieces           || {};
-  player.bonusShips          = saved.bonusShips          || [];
+  player.bonusShips     = saved.bonusShips     || [];
+  // Deduplicar por tipo ao carregar — garante no máximo 1 entrada por tipo de navio
+  const rawInv = saved.bonusInventory || [];
+  const invByType = new Map();
+  for (const s of rawInv) {
+    const t = s.id || s.modelKey;
+    if (!invByType.has(t)) invByType.set(t, s); // mantém o primeiro (mais antigo = já ativo)
+  }
+  player.bonusInventory = Array.from(invByType.values());
   player.bankGold            = saved.bankGold            || 0;
   player.bankUnlocked        = saved.bankUnlocked        || false;
   player.cannonResearchLevel = saved.cannonResearchLevel || 0;
@@ -2245,6 +2260,7 @@ async function handleLogin(ws, msg) {
     bonusMapsUnlocked:   player.bonusMapsUnlocked   || [],
     mapPieces:           player.mapPieces           || {},
     rareShips:           player.bonusShips          || [],
+    bonusInventory:      player.bonusInventory      || [],
     bankGold:            player.bankGold            || 0,
     bankUnlocked:        player.bankUnlocked        || false,
     cannonResearchLevel: player.cannonResearchLevel || 0,
@@ -3157,6 +3173,55 @@ function handleBankWithdraw(player, msg, ws) {
 
 // Base sell prices per ship rarity (rough gold value)
 const RARE_SHIP_SELL_BASE = { normal: 200, raro: 600, epico: 2000, lendario: 8000 };
+
+function handleActivateBonusShip(player, msg, ws) {
+  const instanceId = String(msg.instanceId || '');
+  if (!instanceId) { sendTo(ws, { type: 'error', message: 'ID inválido.' }); return; }
+
+  if (!player.bonusInventory) player.bonusInventory = [];
+
+  // Procura no banco (ainda não ativado) ou no inventário (reativação)
+  let ship = null;
+  const bankIdx = (player.bonusShips || []).findIndex(s => s.instanceId === instanceId);
+  if (bankIdx !== -1) {
+    ship = player.bonusShips[bankIdx];
+    player.bonusShips.splice(bankIdx, 1);
+    // Upsert no inventário por TIPO de navio — substitui se já existe um do mesmo tipo
+    const shipType = ship.id || ship.modelKey;
+    const invIdx   = player.bonusInventory.findIndex(s => (s.id || s.modelKey) === shipType);
+    if (invIdx !== -1) {
+      player.bonusInventory[invIdx] = ship; // substitui pelo novo (stats mais recentes)
+    } else {
+      player.bonusInventory.push(ship);     // novo tipo → adiciona slot (max 3)
+    }
+  } else {
+    // Já estava no inventário — apenas reativa (clicou Re-ativar)
+    ship = player.bonusInventory.find(s => s.instanceId === instanceId);
+  }
+
+  if (!ship) { sendTo(ws, { type: 'error', message: 'Navio bônus não encontrado.' }); return; }
+
+  // Aplica stats do navio bônus ao jogador
+  player.maxHp      = ship.maxHp  || ship.hp     || player.maxHp;
+  player.hp         = player.maxHp;
+  player.maxCannons = ship.cannon  || player.maxCannons || 5;
+  if (!player.equipped) player.equipped = {};
+  player.equipped.ship = ship.modelKey || ship.id;
+
+  db.save(player, true).catch(e => console.error('Save error (activate bonus ship):', e));
+  sendTo(ws, {
+    type:           'bonus_ship_activated',
+    instanceId,
+    ship,
+    equipped:       player.equipped,
+    hp:             player.hp,
+    maxHp:          player.maxHp,
+    maxCannons:     player.maxCannons,
+    rareShips:      player.bonusShips     || [],
+    bonusInventory: player.bonusInventory || [],
+  });
+  console.log(`⚔️ ${player.name} ativou: ${ship.name} (hp:${player.maxHp} canhões:${player.maxCannons})`);
+}
 
 function handleSellRareShip(player, msg, ws) {
   const instanceId = String(msg.instanceId || '');

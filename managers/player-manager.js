@@ -50,7 +50,8 @@ class PlayerManager {
           bala_gelo: 0,
           bala_fogo: 0,
           bala_luz: 0,
-          bala_sangue: 0
+          bala_sangue: 0,
+          bala_cura: 0,
         },
         pirates: [],
         ships: ['fragata'],

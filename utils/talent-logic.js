@@ -46,7 +46,7 @@ function recalcMaxHp(player, shipDefs, talentDefs) {
   const skillHpPct = player.skills?.vida ? (player.skills.vida.level - 1) / 100 : 0;
   const talentFlat = (player.talents?.hp || 0) * (talentDefs.hp?.perLevel || 500);
   const hpLevel    = player.shipIslandUpgrades?.hp ?? 0;
-  const islandHp   = hpLevel * 1000;
+  const islandHp   = Math.round(hpLevel * shipDef.hp * 0.05); // +5% do HP base do navio por nível
   player.maxHp = Math.floor(shipDef.hp * (1 + skillHpPct)) + talentFlat + islandHp;
 }
 
