@@ -1004,12 +1004,13 @@ class ProjectileManager {
       this._lifesteals.forEach(({ total, shooter }, ownerId) => {
         if (shooter && this.players.has(ownerId)) {
           sendTo(this._getPlayerWebSocket(shooter), {
-            type: 'heal',
-            amount: total,
-            hp: shooter.hp,
-            source: 'lifesteal',
-            x: shooter.x,
-            z: shooter.z
+            type:     'heal',
+            targetId: shooter.id,
+            amount:   total,
+            hp:       shooter.hp,
+            source:   'lifesteal',
+            x:        shooter.x,
+            z:        shooter.z,
           });
         }
       });
