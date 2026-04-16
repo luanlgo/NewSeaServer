@@ -3009,8 +3009,25 @@ function handleEnterBonusMap(player, msg, ws) {
   const level  = BONUS_MAP_LEVELS[mapId];
   if (!level) { sendTo(ws, { type: 'error', message: 'Mapa bônus inválido.' }); return; }
 
-  const unlocked = (player.bonusMapsUnlocked || []).includes(mapId);
-  if (!unlocked) { sendTo(ws, { type: 'error', message: 'Mapa não desbloqueado.' }); return; }
+  let unlocked = (player.bonusMapsUnlocked || []).includes(mapId);
+
+  // Auto-unlock: se ainda não desbloqueado mas tem peças suficientes, faz em um passo
+  if (!unlocked) {
+    const mapDef  = BONUS_MAPS.find(m => m.id === mapId);
+    if (!mapDef) { sendTo(ws, { type: 'error', message: 'Mapa bônus inválido.' }); return; }
+    const pieceId  = mapDef.pieceId;
+    const required = mapDef.requiredPieces;
+    const owned    = (player.mapPieces || {})[pieceId] || 0;
+    if (owned < required) {
+      sendTo(ws, { type: 'error', message: `Peças insuficientes! Necessário: ${required} 📜 (você tem ${owned})` });
+      return;
+    }
+    if (!player.mapPieces) player.mapPieces = {};
+    player.mapPieces[pieceId] -= required;
+    player.bonusMapsUnlocked = [...(player.bonusMapsUnlocked || []), mapId];
+    unlocked = true;
+    console.log(`🗝️ ${player.name} desbloqueou ${mapId} via enter (${required} peças deduzidas)`);
+  }
 
   // Guarda mapa de origem para retornar depois
   player.preBonusMapLevel = player.mapLevel || 1;

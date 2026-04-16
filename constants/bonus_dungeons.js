@@ -10,6 +10,7 @@
 // ── BONUS NPC DEFINITIONS ──────────────────────────────────────────────────
 // NPCs ordered from most common to rarest (colossal → massive → gigantic)
 const BONUS_NPC_DEFS = {
+  // ── Tier 1: ~300× mapa-1 HP, ~300× dano/salva, recompensa base ──────────────
   colossal_ghost_pirate_galleon: {
     id:             'colossal_ghost_pirate_galleon',
     name:           'Colossal Ghost Pirate Galleon',
@@ -20,20 +21,20 @@ const BONUS_NPC_DEFS = {
     rotOffset:      0,
     hitRadius:      18,
     usesCannons:    true,
-    cannonRange:    450,   // range enorme — impossível de kitar dentro da dungeon (size 1000)
-    cannonSpread:   0.12,  // spread fechado para acertar mesmo à distância
-    cannonCount:    2,
-    fireInterval:   3000,  // cadência mais agressiva (era 4000)
+    cannonRange:    450,
+    cannonSpread:   0.12,
+    cannonCount:    2,       // projéteis por salva do NPC inimigo
+    fireInterval:   3000,
     shipDropId:     'colossal_ghost_pirate_galleon',
-    //shipDropChance: 0.03,
-    shipDropChance: 10.0,  // 100% for testing
+    shipDropChance: 1.0,
     stats: {
-      hpMin:     30000, hpMax:     40000,
-      cannonMin: 60,    cannonMax: 80,    // quantidade de canhões por salva (avg 70)
-      dmgMin:    220,   dmgMax:    300,   // dano por projétil (era 40-60)
+      hpMin:     30000, hpMax:     40000,  // ≈300-400× mapa-1 (base 100)
+      cannonMin: 60,    cannonMax: 80,     // slots do NAVIO DROPADO (não do NPC)
+      dmgMin:    1000,  dmgMax:    1400,   // ≈300× mapa-1 por salva (2 proj × 1200 = 2400)
     },
   },
 
+  // ── Tier 2: ~400× HP, ~400× dano/salva ───────────────────────────────────
   massive_imperial_warship: {
     id:             'massive_imperial_warship',
     name:           'Massive Imperial Warship',
@@ -47,17 +48,17 @@ const BONUS_NPC_DEFS = {
     cannonRange:    460,
     cannonSpread:   0.10,
     cannonCount:    2,
-    fireInterval:   2800,  // cadência maior (era 3800)
+    fireInterval:   2800,
     shipDropId:     'massive_imperial_warship',
-    //shipDropChance: 0.02,
-    shipDropChance: 10.0,  // 100% for testing
+    shipDropChance: 1.0,
     stats: {
-      hpMin:     30000, hpMax:     40000,
-      cannonMin: 70,    cannonMax: 90,    // quantidade de canhões por salva (avg 80)
-      dmgMin:    290,   dmgMax:    380,   // dano por projétil (era 50-70)
+      hpMin:     35000, hpMax:     45000,  // ≈400× mapa-1
+      cannonMin: 70,    cannonMax: 90,     // slots do NAVIO DROPADO
+      dmgMin:    1400,  dmgMax:    1800,   // ≈400× mapa-1 por salva (2 × 1600 = 3200)
     },
   },
 
+  // ── Tier 3: ~500× HP, ~500× dano/salva ───────────────────────────────────
   gigantic_mechanical_pirate_ship: {
     id:             'gigantic_mechanical_pirate_ship',
     name:           'Gigantic Mechanical Pirate Ship',
@@ -69,31 +70,34 @@ const BONUS_NPC_DEFS = {
     hitRadius:      22,
     usesCannons:    true,
     cannonRange:    480,
-    cannonSpread:   0.08,  // spread mais fechado — gigantic é o mais preciso
+    cannonSpread:   0.08,
     cannonCount:    2,
-    fireInterval:   2500,  // cadência mais alta (era 3500)
+    fireInterval:   2500,
     shipDropId:     'gigantic_mechanical_pirate_ship',
-    //shipDropChance: 0.01,
-    shipDropChance: 10.0,  // 100% for testing
+    shipDropChance: 1.0,
     stats: {
-      hpMin:     40000, hpMax:     50000,
-      cannonMin: 80,    cannonMax: 100,   // quantidade de canhões por salva (avg 90)
-      dmgMin:    370,   dmgMax:    480,   // dano por projétil (era 60-80)
+      hpMin:     45000, hpMax:     55000,  // ≈500× mapa-1
+      cannonMin: 80,    cannonMax: 100,    // slots do NAVIO DROPADO
+      dmgMin:    1900,  dmgMax:    2500,   // ≈500× mapa-1 por salva (2 × 2200 = 4400)
     },
   },
 };
 
 // ── WAVE REWARD STRUCTURE ──────────────────────────────────────────────────
 // Wave 0 base values; each subsequent wave multiplies by WAVE_REWARD_MULT.
+// ≈500× mapa-1 base por wave (mapa-1: gold≈35/kill, dobroes≈0, xp≈12/kill)
+// Tier 1 (bonus_map_1): este valor base
+// Tier 2 (bonus_map_2): ×1.5 = 750× mapa-1
+// Tier 3 (bonus_map_3): ×1.5² = 1125× mapa-1
 const WAVE_REWARD_BASE = {
-  dobroes:    20000,
-  gold:       300000,
-  ironPlates: 50,
-  goldDust:   10,
-  gunpowder:  15,
-  xp:         500,
+  dobroes:    3000,    // 500× referência (mapa-2 dá ~6/kill)
+  gold:       20000,   // ≈500× mapa-1 (35 avg × 500 ≈ 17.500, arredondado)
+  ironPlates: 15,
+  goldDust:   5,
+  gunpowder:  8,
+  xp:         300,
 };
-const WAVE_REWARD_MULT = 1.5;  // +50% per wave
+const WAVE_REWARD_MULT = 1.5;  // +50% por tier (mapa 2 = 1.5×, mapa 3 = 2.25×)
 
 function computeWaveRewards(waveIndex) {
   const m = Math.pow(WAVE_REWARD_MULT, waveIndex);
@@ -224,26 +228,24 @@ const DUNGEON_MAP_DEFS = {};
 Object.entries(BONUS_DUNGEON_MAP_CONFIGS).forEach(([dungeonId, config]) => {
   const dungeonDef  = BONUS_DUNGEON_DEFS[dungeonId];
   const npcDef      = BONUS_NPC_DEFS[dungeonDef.npcId];
-  const avgHp       = Math.round((npcDef.stats.hpMin     + npcDef.stats.hpMax)     / 2);
-  // cannonMin/Max = quantidade de canhões disparados por salva
-  const avgCannon   = Math.round((npcDef.stats.cannonMin + npcDef.stats.cannonMax) / 2);
-  // dmgMin/Max = dano por projétil (separado da contagem de canhões)
-  const avgDmg      = Math.round(((npcDef.stats.dmgMin ?? npcDef.stats.cannonMin) +
-                                   (npcDef.stats.dmgMax ?? npcDef.stats.cannonMax)) / 2);
+  const avgHp  = Math.round((npcDef.stats.hpMin  + npcDef.stats.hpMax)  / 2);
+  const avgDmg = Math.round((npcDef.stats.dmgMin + npcDef.stats.dmgMax) / 2);
+  // cannonCount do NPC vem de npcDef.cannonCount (projéteis por salva do inimigo).
+  // stats.cannonMin/Max são os slots do NAVIO DROPADO, não do NPC inimigo.
+  const npcCannonCount = npcDef.cannonCount || 2;
   DUNGEON_MAP_DEFS[config.mapLevel] = {
     size:      config.size,
     isDungeon: true,
     dungeonId,
     npc: {
-      count:        1,              // single boss NPC per dungeon
+      count:        1,
       names:        [npcDef.name],
       baseHp:       avgHp,
-      baseDamage:   avgDmg,         // dano por projétil individual
+      baseDamage:   avgDmg,
       hitRadius:    npcDef.hitRadius,
-      // Canhões reais — cannonCount define quantos projéteis por salva
       usesCannons:  true,
       cannonRange:  npcDef.cannonRange  || 150,
-      cannonCount:  avgCannon,          // usa a média de cannonMin/Max (60-80 etc.)
+      cannonCount:  npcCannonCount,      // projéteis por salva (2, não 70!)
       fireInterval: npcDef.fireInterval || 3500,
       model:        npcDef.model,
       scale:        npcDef.scale,
