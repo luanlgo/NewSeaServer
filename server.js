@@ -2200,6 +2200,25 @@ async function handleLogin(ws, msg) {
   recalcCannons(player);
   applySkillMultipliers(player); // also calls recalcMaxHp internally
 
+  // Restaura navio bônus ativo (feito APÓS applySkillMultipliers para que todos os
+  // campos — shipIslandUpgrades, talents, skills — já estejam carregados)
+  player.activeBonusShipStats = saved.activeBonusShipStats || null;
+  if (player.activeBonusShipStats) {
+    const ship = player.activeBonusShipStats;
+    const baseHp     = ship.maxHp || ship.hp || 1000;
+    const skillHpPct = player.skills?.vida ? (player.skills.vida.level - 1) / 100 : 0;
+    const talentFlat = (player.talents?.hp || 0) * (TALENT_DEFS.hp?.perLevel || 500);
+    const hpLevel    = player.shipIslandUpgrades?.hp ?? 0;
+    const islandHp   = Math.round(baseHp * hpLevel * 0.05);
+    player.maxHp      = Math.floor(baseHp * (1 + skillHpPct)) + talentFlat + islandHp;
+    player.maxCannons = (ship.cannon || 5) + (player.talentCannonBonus || 0);
+    player.activeShip = ship.modelKey || ship.id || player.activeShip;
+    player.hp         = Math.min(saved.hp != null ? saved.hp : player.maxHp, player.maxHp);
+    const tr = _trimCannons(player.cannons, player.maxCannons);
+    if (tr.removed > 0) { player.cannons = tr.cannons; recalcCannons(player); }
+    console.log(`[BONUS SHIP] Restaurado: "${ship.name}" → maxHp=${player.maxHp}, maxCannons=${player.maxCannons}`);
+  }
+
   // All DB data is now applied — safe for periodic saves
   player._dbLoaded = true;
 
@@ -2259,9 +2278,10 @@ async function handleLogin(ws, msg) {
     gunpowder:           player.gunpowder           || 0,
     bonusMapsUnlocked:   player.bonusMapsUnlocked   || [],
     mapPieces:           player.mapPieces           || {},
-    rareShips:           player.bonusShips          || [],
-    bonusInventory:      player.bonusInventory      || [],
-    bankGold:            player.bankGold            || 0,
+    rareShips:             player.bonusShips             || [],
+    bonusInventory:        player.bonusInventory         || [],
+    activeBonusInstanceId: player.activeBonusShipStats?.instanceId || '',
+    bankGold:              player.bankGold                || 0,
     bankUnlocked:        player.bankUnlocked        || false,
     cannonResearchLevel: player.cannonResearchLevel || 0,
     shipMaterialLevel:   player.shipMaterialLevel   || 0,
@@ -2419,7 +2439,7 @@ function handleEquipCannon(player, msg, ws) {
 
 function handleEquipCannonSync(player, msg, ws) {
   const incoming = (msg.cannons || [])
-    .slice(0, MAX_CANNON_SLOTS)
+    .slice(0, player.maxCannons || MAX_CANNON_SLOTS)
     .filter(cid => CANNON_DEFS[cid]);
 
   // Only allow cannons that are actually in inventory
@@ -3201,24 +3221,43 @@ function handleActivateBonusShip(player, msg, ws) {
 
   if (!ship) { sendTo(ws, { type: 'error', message: 'Navio bônus não encontrado.' }); return; }
 
-  // Aplica stats do navio bônus ao jogador
-  player.maxHp      = ship.maxHp  || ship.hp     || player.maxHp;
+  // Aplica stats do navio bônus com todos os bônus de talento / skill / ilha
+  const baseHp     = ship.maxHp || ship.hp || 1000;
+  const skillHpPct = player.skills?.vida ? (player.skills.vida.level - 1) / 100 : 0;
+  const talentFlat = (player.talents?.hp || 0) * (TALENT_DEFS.hp?.perLevel || 500);
+  const hpLevel    = player.shipIslandUpgrades?.hp ?? 0;
+  const islandHp   = Math.round(baseHp * hpLevel * 0.05);
+  player.maxHp      = Math.floor(baseHp * (1 + skillHpPct)) + talentFlat + islandHp;
   player.hp         = player.maxHp;
-  player.maxCannons = ship.cannon  || player.maxCannons || 5;
+  player.maxCannons = (ship.cannon || 5) + (player.talentCannonBonus || 0);
+  player.activeShip = ship.modelKey || ship.id || player.activeShip;
+  player.activeBonusShipStats = ship; // persiste para restaurar no próximo login
+
+  // Aplica propriedades visuais do tipo base do navio
+  const baseDef = SHIP_DEFS[player.activeShip] || SHIP_DEFS.fragata;
+  player.damageMult    = baseDef.damageMult ?? 1.0;
+  player.dropBonus     = baseDef.dropBonus  || 0;
+  player.shipSpeedMult = baseDef.speedMult  || 1.0;
+
+  // Trim de canhões equipados se o novo limite for menor
+  const tr = _trimCannons(player.cannons, player.maxCannons);
+  if (tr.removed > 0) { player.cannons = tr.cannons; recalcCannons(player); }
+
   if (!player.equipped) player.equipped = {};
-  player.equipped.ship = ship.modelKey || ship.id;
+  player.equipped.ship = player.activeShip;
 
   db.save(player, true).catch(e => console.error('Save error (activate bonus ship):', e));
   sendTo(ws, {
-    type:           'bonus_ship_activated',
+    type:                  'bonus_ship_activated',
     instanceId,
     ship,
-    equipped:       player.equipped,
-    hp:             player.hp,
-    maxHp:          player.maxHp,
-    maxCannons:     player.maxCannons,
-    rareShips:      player.bonusShips     || [],
-    bonusInventory: player.bonusInventory || [],
+    equipped:              player.equipped,
+    hp:                    player.hp,
+    maxHp:                 player.maxHp,
+    maxCannons:            player.maxCannons,
+    rareShips:             player.bonusShips     || [],
+    bonusInventory:        player.bonusInventory || [],
+    activeBonusInstanceId: instanceId,
   });
   console.log(`⚔️ ${player.name} ativou: ${ship.name} (hp:${player.maxHp} canhões:${player.maxCannons})`);
 }
@@ -3904,7 +3943,8 @@ function handleEquipNavio(player, msg, ws) {
   const ship = SHIP_DEFS[msg.shipId];
   if (!ship) return;
   if (!player.inventory.ships.includes(msg.shipId)) return;
-  player.activeShip    = msg.shipId;
+  player.activeShip           = msg.shipId;
+  player.activeBonusShipStats = null; // limpa navio bônus ao equipar navio regular
   recalcMaxHp(player);
   player.hp            = Math.min(player.hp, player.maxHp);
   player.damageMult    = ship.damageMult ?? 1.0;
