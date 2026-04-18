@@ -439,7 +439,7 @@ MAP_DEFS[6] = {
   boss: {
     name:        'The Drowned Widow',
     baseHp:       40000,
-    baseDamage:   1500,
+    baseDamage:   0,
     hpPerTier:     0.30,
     dmgPerTier:    0.15,
     rewardPerTier: 0.1,

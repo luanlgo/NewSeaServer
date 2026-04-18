@@ -2187,6 +2187,14 @@ async function handleLogin(ws, msg) {
     player.cannonUpgradesData.push({ as: 0, rn: 0, dm: 0 });
   }
 
+  // Pré-carrega maxCannons do navio bônus ANTES do trim — evita cortar canhões
+  player.activeBonusShipStats = saved.activeBonusShipStats || null;
+  if (player.activeBonusShipStats) {
+    const ship = player.activeBonusShipStats;
+    player.maxCannons = (ship.cannon || 5) + (player.talentCannonBonus || 0);
+    player.activeShip = ship.modelKey || ship.id || player.activeShip;
+  }
+
   // Restore equipped cannons from DB (what was equipped last session)
   const savedEquipped = saved.equipped?.cannons || [];
   player.cannons = savedEquipped.filter(cid => player.inventory.cannons.includes(cid));
@@ -2194,15 +2202,14 @@ async function handleLogin(ws, msg) {
   if (player.cannons.length === 0) {
     player.cannons = (player.inventory.cannons || []).slice(0, 3);
   }
-  // Enforce ship cannon limit
+  // Enforce ship cannon limit (maxCannons já correto para navios bônus)
   player.cannons = _trimCannons(player.cannons, player.maxCannons).cannons;
   player.pirates = saved.equipped?.pirates || [];
   recalcCannons(player);
   applySkillMultipliers(player); // also calls recalcMaxHp internally
 
-  // Restaura navio bônus ativo (feito APÓS applySkillMultipliers para que todos os
-  // campos — shipIslandUpgrades, talents, skills — já estejam carregados)
-  player.activeBonusShipStats = saved.activeBonusShipStats || null;
+  // Restaura HP/stats completos do navio bônus APÓS applySkillMultipliers
+  // (applySkillMultipliers chama recalcMaxHp internamente — sobrescreveria o maxHp do bônus)
   if (player.activeBonusShipStats) {
     const ship = player.activeBonusShipStats;
     const baseHp     = ship.maxHp || ship.hp || 1000;
@@ -2210,12 +2217,8 @@ async function handleLogin(ws, msg) {
     const talentFlat = (player.talents?.hp || 0) * (TALENT_DEFS.hp?.perLevel || 500);
     const hpLevel    = player.shipIslandUpgrades?.hp ?? 0;
     const islandHp   = Math.round(baseHp * hpLevel * 0.05);
-    player.maxHp      = Math.floor(baseHp * (1 + skillHpPct)) + talentFlat + islandHp;
-    player.maxCannons = (ship.cannon || 5) + (player.talentCannonBonus || 0);
-    player.activeShip = ship.modelKey || ship.id || player.activeShip;
-    player.hp         = Math.min(saved.hp != null ? saved.hp : player.maxHp, player.maxHp);
-    const tr = _trimCannons(player.cannons, player.maxCannons);
-    if (tr.removed > 0) { player.cannons = tr.cannons; recalcCannons(player); }
+    player.maxHp = Math.floor(baseHp * (1 + skillHpPct)) + talentFlat + islandHp;
+    player.hp    = Math.min(saved.hp != null ? saved.hp : player.maxHp, player.maxHp);
     console.log(`[BONUS SHIP] Restaurado: "${ship.name}" → maxHp=${player.maxHp}, maxCannons=${player.maxCannons}`);
   }
 

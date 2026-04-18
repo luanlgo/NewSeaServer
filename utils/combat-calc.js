@@ -78,7 +78,7 @@ function calcKillXp({ xpPerKill, killTier = 0, talentXpBonus = 0 }) {
  * @returns {number}
  */
 function calcMaxCannons(ship, talentCannonBonus = 0, fallback = 20) {
-  return (ship.maxCannons || fallback) + talentCannonBonus;
+  return (ship.maxCannons || ship.cannon || fallback) + talentCannonBonus;
 }
 
 /**
