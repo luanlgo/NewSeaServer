@@ -14,7 +14,7 @@ const RELIC_DEFS = {
   r5:  { name: 'Escudo de Ouro',    icon: '🛡️',  rarity: 'lendário', effect: 'gold_shield', manaCost: 4, toggle: true,  damageReduction: 0.50, goldCostPct: 0.10 },
   r6:  { name: 'Vento Furioso',     icon: '💨',  rarity: 'comum',    effect: 'speed_boost', manaCost: 4, toggle: false, duration: 5000, speedBonus: 0.50 },
   r7:  { name: 'Corneta do Abismo', icon: '📯',  rarity: 'raro',     effect: 'attract',     manaCost: 5, toggle: false, duration: 6000, range: 900 },
-  r8:  { name: 'Chuva de Meteoros', icon: '☄️',  rarity: 'épico',    effect: 'meteor',      manaCost: 7, toggle: false, damage: 1200, targetMouse: true, radius: 40,  castTime: 700, scatter: 25, count: 3 },
+  r8:  { name: 'Meteoro',           icon: '☄️',  rarity: 'épico',    effect: 'meteor',      manaCost: 7, toggle: false, damage: 2400, targetMouse: true, radius: 55,  castTime: 700, count: 1 },
   r9:  { name: 'Teleporte',         icon: '🌀',  rarity: 'raro',     effect: 'teleport',    manaCost: 5, toggle: false, targetMouse: true, maxRange: 150 },
   r10: { name: 'Aura Mortal',       icon: '🔥',  rarity: 'lendário', effect: 'aura',        manaCost: 8, toggle: false, duration: 5000, range: 100, damage: 200, tickInterval: 300 },
 };

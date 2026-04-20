@@ -3044,13 +3044,13 @@ function handleEnterBonusMap(player, msg, ws) {
   player.speed            = 0;
   player.input            = { w: false, a: false, s: false, d: false };
 
-  // Se o dungeon já foi completado (fase 'complete'), resetar o manager para que
-  // os NPCs reiniciem ao entrar novamente.
+  // Sempre reinicia o dungeon ao entrar — cada entrada é uma sessão nova,
+  // independente de estar em fase 'npcs', 'boss' ou 'complete'.
   const prevMgr = bonusNpcManagers.get(level);
-  if (prevMgr && prevMgr._phase === 'complete') {
+  if (prevMgr) {
     prevMgr.destroyed = true;
     bonusNpcManagers.delete(level);
-    console.log(`♻️ [BonusDungeon] Manager do mapa ${level} resetado para nova entrada.`);
+    console.log(`♻️ [BonusDungeon] Manager do mapa ${level} reiniciado para nova sessão.`);
   }
 
   ensureBonusMapManager(level);
@@ -3686,31 +3686,22 @@ function handleUseRelic(player, msg) {
     }, player.mapLevel || 1);
 
   } else if (relicDef.effect === 'meteor') {
-    // ── Chuva de Meteoros ─────────────────────────────────────────────
-    // 3 meteors fall sequentially near the target; last one = double dmg + radius
-    const castMs     = relicDef.castTime || 1000;
-    const baseRadius = relicDef.radius  || 15;
-    const scatter    = relicDef.scatter  || 25;
+    // ── Meteoro ───────────────────────────────────────────────────────
+    // Single high-damage meteor falls at the target position.
+    const castMs     = relicDef.castTime || 700;
+    const baseRadius = relicDef.radius   || 55;
     const mtTx       = rTx != null ? rTx : player.x;
     const mtTz       = rTz != null ? rTz : player.z;
+    const pos        = { x: mtTx, z: mtTz };
 
-    // Generate 3 random impact positions near the target
-    const positions = [
-      { x: mtTx, z: mtTz }, // first one: dead centre
-      { x: mtTx + (Math.random() - 0.5) * scatter * 2, z: mtTz + (Math.random() - 0.5) * scatter * 2 },
-      { x: mtTx + (Math.random() - 0.5) * scatter * 2, z: mtTz + (Math.random() - 0.5) * scatter * 2 },
-    ];
-
-    // Helper: apply meteor AOE damage and grant rewards
-    const applyMeteorHit = (pos, radius, dmg) => {
+    const applyMeteorHit = (hitPos, radius, dmg) => {
       const hitsM = [];
       projectileManager.npcs.forEach(npc => {
         if (npc.dead) return;
-        if (Math.hypot(npc.x - pos.x, npc.z - pos.z) > radius) return;
+        if (Math.hypot(npc.x - hitPos.x, npc.z - hitPos.z) > radius) return;
         npc.hp = Math.max(0, npc.hp - dmg);
         npc.lastDamageTime = Date.now();
         hitsM.push({ id: npc.id, hp: npc.hp, isNPC: true, dmg });
-        // Registrar dano no boss para distribuição de recompensa proporcional
         if (npc.isBoss) {
           if (!npc._damageMap) npc._damageMap = new Map();
           npc._damageMap.set(player.id, (npc._damageMap.get(player.id) || 0) + dmg);
@@ -3750,7 +3741,7 @@ function handleUseRelic(player, msg) {
       });
       players.forEach(p => {
         if (p.dead || p.id === player.id) return;
-        if (Math.hypot(p.x - pos.x, p.z - pos.z) <= radius) {
+        if (Math.hypot(p.x - hitPos.x, p.z - hitPos.z) <= radius) {
           p.hp = Math.max(0, p.hp - dmg);
           p.lastCombatTime = Date.now();
           hitsM.push({ id: p.id, hp: p.hp, isNPC: false, dmg });
@@ -3761,41 +3752,19 @@ function handleUseRelic(player, msg) {
 
     const relicDmg = Math.round(relicDef.damage * (1 + (player.talentRelicBonus || 0) + (player.skillRelicBonus || 0)));
 
-    // Meteor 1 — show indicator immediately, land after castMs
-    addEvent({ type: 'meteor_incoming', x: positions[0].x, z: positions[0].z, radius: baseRadius, castMs }, player.mapLevel);
+    // Single meteor — show incoming indicator, land after castMs
+    addEvent({ type: 'meteor_incoming', x: pos.x, z: pos.z, radius: baseRadius, castMs }, player.mapLevel);
     setTimeout(() => {
       if (player.dead) return;
-      const h1 = applyMeteorHit(positions[0], baseRadius, relicDmg);
-      addEvent({ type: 'meteor_strike', x: positions[0].x, z: positions[0].z, radius: baseRadius, hits: h1 }, player.mapLevel);
-      const m1NpcHits = h1.filter(h => h.isNPC).length;
-      if (m1NpcHits > 0) grantSkillXp(player, 'reliquia', m1NpcHits * 18, wss);
-
-      // Meteor 2
-      addEvent({ type: 'meteor_incoming', x: positions[1].x, z: positions[1].z, radius: baseRadius, castMs }, player.mapLevel);
-      setTimeout(() => {
-        if (player.dead) return;
-        const h2 = applyMeteorHit(positions[1], baseRadius, relicDmg);
-        addEvent({ type: 'meteor_strike', x: positions[1].x, z: positions[1].z, radius: baseRadius, hits: h2 }, player.mapLevel);
-        const m2NpcHits = h2.filter(h => h.isNPC).length;
-        if (m2NpcHits > 0) grantSkillXp(player, 'reliquia', m2NpcHits * 18, wss);
-
-        // Meteor 3 — DOUBLE damage and radius
-        const bigRadius = baseRadius * 2;
-        addEvent({ type: 'meteor_incoming', x: positions[2].x, z: positions[2].z, radius: bigRadius, castMs, isLast: true }, player.mapLevel);
-        setTimeout(() => {
-          if (player.dead) return;
-          const h3 = applyMeteorHit(positions[2], bigRadius, relicDmg * 2);
-          addEvent({ type: 'meteor_strike', x: positions[2].x, z: positions[2].z, radius: bigRadius, hits: h3, isLast: true }, player.mapLevel);
-          const m3NpcHits = h3.filter(h => h.isNPC).length;
-          if (m3NpcHits > 0) grantSkillXp(player, 'reliquia', m3NpcHits * 27, wss);
-        }, castMs);
-      }, castMs);
+      const hits = applyMeteorHit(pos, baseRadius, relicDmg);
+      addEvent({ type: 'meteor_strike', x: pos.x, z: pos.z, radius: baseRadius, hits }, player.mapLevel);
+      const npcHits = hits.filter(h => h.isNPC).length;
+      if (npcHits > 0) grantSkillXp(player, 'reliquia', npcHits * 27, wss);
     }, castMs);
 
-    effectPayload.targetX    = mtTx;
-    effectPayload.targetZ    = mtTz;
-    effectPayload.castMs     = castMs;
-    effectPayload.positions  = positions;
+    effectPayload.targetX = mtTx;
+    effectPayload.targetZ = mtTz;
+    effectPayload.castMs  = castMs;
 
   } else if (relicDef.effect === 'teleport') {
     // ── Teleporte ─────────────────────────────────────────────────────
