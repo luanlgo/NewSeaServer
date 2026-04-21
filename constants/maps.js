@@ -63,7 +63,7 @@ MAP_DEFS[1] = {
     yOffset: -20,
     rotOffset: 0,
     hitRadius: 12,
-    attacks: ['charge_line', 'forked_shot', 'impale_line', 'bite', 'ink_blast'],
+    attacks: ['charge_line', 'forked_shot', 'impale_line', 'ink_blast'],
     rarities: [
       { id: 'normal',   label: 'Normal',   hpMult: 1.0, rewardMult: 1.0,  chance: 0.40, color: '#888', bg: 'rgba(40,40,40,0.92)' },
       { id: 'raro',     label: 'Raro',     hpMult: 1.5, rewardMult: 1.5,  chance: 0.30, color: '#44f', bg: 'rgba(10,20,60,0.92)' },
@@ -118,7 +118,7 @@ MAP_DEFS[2] = {
     rotOffset: 0,
     hitRadius: 8,
     relicDropChance: 0.03, // 3%
-    attacks: ['bite', 'tail_slam', 'shockwave', 'venom_pool', 'deep_surge'],
+    attacks: ['tail_slam', 'shockwave', 'venom_pool', 'deep_surge'],
     ammoTiers: [
       { minKills: 200, ammo: 'bala_gelo' },
       { minKills: 400, ammo: 'bala_bala_fogo' },
@@ -198,7 +198,7 @@ MAP_DEFS[3] = {
     rotOffset: 0,
     hitRadius: 8,
     relicDropChance: 0.05, // 5%
-    attacks: ['bite', 'charge_line', 'venom_pool', 'forked_shot', 'shockwave', 'impale_line'],
+    attacks: ['charge_line', 'venom_pool', 'forked_shot', 'shockwave', 'impale_line'],
   },
   boss: {
     name:        'Harbor Warden The Coinbreaker',
@@ -219,7 +219,7 @@ MAP_DEFS[3] = {
     yOffset: 3.5,
     rotOffset: 0,
     hitRadius: 12,
-    attacks: ['bite', 'charge_line', 'venom_pool', 'forked_shot', 'shockwave', 'impale_line'],
+    attacks: ['charge_line', 'venom_pool', 'forked_shot', 'shockwave', 'impale_line'],
     rarities: [
       { id: 'normal',   label: 'Normal',   hpMult: 1.0, rewardMult: 0.1,  chance: 0.40, color: '#888', bg: 'rgba(40,40,40,0.92)' },
       { id: 'raro',     label: 'Raro',     hpMult: 1.5, rewardMult: 1.5,  chance: 0.30, color: '#44f', bg: 'rgba(10,20,60,0.92)' },

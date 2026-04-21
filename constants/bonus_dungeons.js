@@ -26,7 +26,7 @@ const BONUS_NPC_DEFS = {
     cannonCount:    2,       // projéteis por salva do NPC inimigo
     fireInterval:   3000,
     shipDropId:     'colossal_ghost_pirate_galleon',
-    shipDropChance: 1.0,
+    shipDropChance: 0.03,
     stats: {
       hpMin:     30000, hpMax:     40000,  // ≈300-400× mapa-1 (base 100)
       cannonMin: 60,    cannonMax: 80,     // slots do NAVIO DROPADO (não do NPC)
@@ -50,7 +50,7 @@ const BONUS_NPC_DEFS = {
     cannonCount:    2,
     fireInterval:   2800,
     shipDropId:     'massive_imperial_warship',
-    shipDropChance: 1.0,
+    shipDropChance: 0.02,
     stats: {
       hpMin:     35000, hpMax:     45000,  // ≈400× mapa-1
       cannonMin: 70,    cannonMax: 90,     // slots do NAVIO DROPADO
@@ -74,7 +74,7 @@ const BONUS_NPC_DEFS = {
     cannonCount:    2,
     fireInterval:   2500,
     shipDropId:     'gigantic_mechanical_pirate_ship',
-    shipDropChance: 1.0,
+    shipDropChance: 0.01,
     stats: {
       hpMin:     45000, hpMax:     55000,  // ≈500× mapa-1
       cannonMin: 80,    cannonMax: 100,    // slots do NAVIO DROPADO
