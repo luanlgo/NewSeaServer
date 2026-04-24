@@ -568,8 +568,9 @@ class ProjectileManager {
         m.mapXp      = (m.mapXp      || 0) + memberXp;
         m.mapFragments = (m.mapFragments || 0) + memberFrags;
         if (m.ws?.readyState === 1) {
-          sendTo(m.ws, { type: 'currency_update', gold: m.gold, dobroes: m.dobroes });
+          sendTo(m.ws, { type: 'currency_update', gold: m.gold, dobroes: m.dobroes, mapFragments: m.mapFragments });
         }
+        if (this.db) this.db.save(m, true).catch(() => {});
       }
 
       finalGold = memberGold;

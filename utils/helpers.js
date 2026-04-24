@@ -28,6 +28,7 @@ module.exports = {
   },
   
   sendTo: (ws, data) => {
+    if (!ws) return;
     const MAX_BUFFER = parseInt(process.env.MAX_BUFFER) || 1_000_000; // 1MB default
     if (ws.readyState === ws.OPEN && ws.bufferedAmount < MAX_BUFFER) {
       ws.send(JSON.stringify(data));

@@ -179,11 +179,12 @@ class PartyManager {
     const party = this.parties.get(partyId);
     if (!party) return [];
 
+    // Recompensas de grupo são globais — membros em qualquer mapa recebem
     const result = [];
     for (const memberId of party.members) {
       if (memberId === pid) continue;
       const m = players.get(memberId);
-      if (m && !m.dead && (m.mapLevel || 1) === mapLevel) result.push(m);
+      if (m && !m.dead) result.push(m);
     }
     return result;
   }

@@ -393,27 +393,30 @@ class NPCManager {
         }
       }
 
-      // Boss rescale — atualiza tier ao pegar novo target; reseta se ocioso
-      // Dungeon bosses têm stats fixos (spawnWithDef), não sofrem rescale
+      // Boss rescale — só ocorre se o boss estiver fora de combate por 5 minutos.
+      // Durante o combate o tier é fixo, independente de quem entrou na zona.
+      // Dungeon bosses têm stats fixos (spawnWithDef), não sofrem rescale.
       if (npc.isBoss && !npc.isWorldBoss && !npc.isDungeonBoss) {
-        if (nearest && nearest.id !== npc.targetId) {
-          // Novo target: rescala imediatamente para o tier dele
-          const kills = nearest.npcKills || 0;
-          if (kills !== npc._scaledForKills) {
-            this._rescaleBoss(npc, kills);
-            this._broadcast({
-              type: 'entity_rescale',
-              id: npc.id,
-              hp: npc.hp,
-              maxHp: npc.maxHp,
-              tier: npc.spawnTier,
-            });
-            console.log(`👹 Boss map${npc.mapLevel} rescaled → tier ${npc.spawnTier} (target: ${nearest.id})`);
-          }
-        } else if (!nearest) {
-          // Sem ninguém por perto + 30s sem dano → reset para tier 0
-          const bossIdleReset = !npc.lastDamageTime || (now - npc.lastDamageTime > 30000);
-          if (bossIdleReset && (npc._scaledForKills || 0) !== 0) {
+        const RESCALE_OOC_MS = 5 * 60 * 1000; // 5 minutos fora de combate
+        const outOfCombat = !npc.lastDamageTime || (now - npc.lastDamageTime > RESCALE_OOC_MS);
+
+        if (outOfCombat) {
+          if (nearest && nearest.id !== npc.targetId) {
+            // Fora de combate e novo target em range → rescala para o tier dele
+            const kills = nearest.npcKills || 0;
+            if (kills !== npc._scaledForKills) {
+              this._rescaleBoss(npc, kills);
+              this._broadcast({
+                type: 'entity_rescale',
+                id: npc.id,
+                hp: npc.hp,
+                maxHp: npc.maxHp,
+                tier: npc.spawnTier,
+              });
+              console.log(`👹 Boss map${npc.mapLevel} rescaled → tier ${npc.spawnTier} (OOC, target: ${nearest.id})`);
+            }
+          } else if (!nearest && (npc._scaledForKills || 0) !== 0) {
+            // Fora de combate e sem ninguém por perto → reset para tier 0
             this._rescaleBoss(npc, 0);
             this._broadcast({
               type: 'entity_rescale',
@@ -422,7 +425,7 @@ class NPCManager {
               maxHp: npc.maxHp,
               tier: 0,
             });
-            console.log(`👹 Boss map${npc.mapLevel} reset → tier 0 (idle)`);
+            console.log(`👹 Boss map${npc.mapLevel} reset → tier 0 (OOC, idle)`);
           }
         }
       }
