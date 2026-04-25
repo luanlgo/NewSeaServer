@@ -581,6 +581,13 @@ function salvoCount(player) {
 
 // Game loop
 let lastTick = Date.now();
+
+// ── World Time (dia/noite sincronizado entre todos os jogadores) ──────────────
+// 1 ciclo completo = DAY_DURATION_S segundos reais = 24 horas de jogo
+// Começa ao meio-dia (12.0) para que os primeiros jogadores entrem com luz.
+const DAY_DURATION_S       = 1200; // 20 min reais = 1 dia de jogo
+let worldTimeHour          = 12.0; // hora atual (0.0 – 24.0)
+let _worldTimeBroadcastAcc = 0;    // acumulador em ms para o broadcast periódico
 // ── Skill XP helper ─────────────────────────────────────────────────────────
 function xpForLevel(n) { return 50 * n * n; }
 
@@ -734,6 +741,17 @@ setInterval(() => {
   lastTick  = now;
 
   playerManager.update(dt);
+
+  // ── World time — avança e transmite periodicamente ────────────────────────
+  worldTimeHour = (worldTimeHour + dt * 24.0 / DAY_DURATION_S) % 24.0;
+  _worldTimeBroadcastAcc += dt * 1000;
+  if (_worldTimeBroadcastAcc >= 30000) {
+    _worldTimeBroadcastAcc = 0;
+    const wtMsg = JSON.stringify({ type: 'world_time', hour: worldTimeHour });
+    wss.clients.forEach(ws => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(wtMsg);
+    });
+  }
 
   // ── distanceSailed: rastreia distância percorrida por jogadores ───────────
   players.forEach(p => {
@@ -2233,6 +2251,7 @@ async function handleLogin(ws, msg) {
   sendTo(ws, {
     type:             'init',
     serverNow:        Date.now(),   // client uses this to compensate clock skew
+    worldTime:        worldTimeHour, // hora atual do jogo (0–24) para sincronizar dia/noite
     id:               player.id,
     hp:               player.hp,
     maxHp:            player.maxHp,
