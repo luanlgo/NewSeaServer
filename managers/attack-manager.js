@@ -38,6 +38,7 @@ class AttackManager {
   tryAttack(npc, target, allPlayers, mapLevel) {
     if (npc._currentCast) return; // já está em cast
     if (npc.dead || target.dead)  return;
+    if (target.safeUntil && Date.now() < target.safeUntil) return; // imunidade pós-respawn
     if (npc._nextAttackTime && Date.now() < npc._nextAttackTime) return; // cooldown entre ataques
 
     const dist     = dist2D(npc, target);
@@ -105,8 +106,10 @@ class AttackManager {
     let multiTargets = null;
     if (attack.targetMode === 'all_players_in_range') {
       const range = attack.rangeMax || 320;
+      const _now = Date.now();
       const inRange = allPlayers.filter(p =>
-        p.mapLevel === mapLevel && !p.dead && dist2D(npc, p) <= range
+        p.mapLevel === mapLevel && !p.dead &&
+        !(p.safeUntil && _now < p.safeUntil) && dist2D(npc, p) <= range
       );
       if (inRange.length > 0) {
         multiTargets = inRange.map(p => ({ x: p.x, z: p.z }));
@@ -168,7 +171,10 @@ class AttackManager {
     }
 
     const hits = [];
-    const mapPlayers = allPlayers.filter(p => p.mapLevel === mapLevel && !p.dead);
+    const _hitNow = Date.now();
+    const mapPlayers = allPlayers.filter(p =>
+      p.mapLevel === mapLevel && !p.dead && !(p.safeUntil && _hitNow < p.safeUntil)
+    );
 
     const goldStealRatio = (MAP_DEFS[mapLevel] || {}).goldStealRatio || 0;
 
@@ -333,7 +339,10 @@ class AttackManager {
       npc._auraTicks[auraId] = now;
 
       const radius = auraDef.radius || 200;
-      const mapPlayers = allPlayers.filter(p => p.mapLevel === mapLevel && !p.dead);
+      const _auraNow = Date.now();
+      const mapPlayers = allPlayers.filter(p =>
+        p.mapLevel === mapLevel && !p.dead && !(p.safeUntil && _auraNow < p.safeUntil)
+      );
       const hits = [];
 
       for (const p of mapPlayers) {

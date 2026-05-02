@@ -1842,8 +1842,12 @@ wss.on('connection', (ws) => {
             player.cannonCooldown = 0;
             const totalCharges    = playerManager.getSalvoCount(player.cannons) || 1;
             player.cannonCharges  = totalCharges;
+            // ── Imunidade pós-respawn: 30 s de safe period ──────────────────
+            const SAFE_MS = 30000;
+            player.safeUntil = Date.now() + SAFE_MS;
             sendTo(ws, { type: 'respawn', x: player.x, z: player.z, hp: player.hp, maxHp: player.maxHp });
             sendTo(ws, { type: 'cannon_state', charges: totalCharges, maxCharges: totalCharges, cooldown: 0, cooldownMax: player.cannonCooldownMax, homingCharges: 0 });
+            sendTo(ws, { type: 'safe_period', duration: SAFE_MS });
           }
           break;
         }

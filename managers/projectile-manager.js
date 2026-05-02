@@ -346,6 +346,9 @@ class ProjectileManager {
   // hit() only accumulates damage into _hitBatch — no broadcasts here.
   // All network messages are sent once per tick in _flushHitBatch().
   hit(proj, target, isNPC) {
+    // ── Imunidade pós-respawn: projéteis de NPCs não acertam jogadores em safe period ──
+    if (!isNPC && proj.ownerIsNPC && target.safeUntil && Date.now() < target.safeUntil) return;
+
     // ── Bala de cura: só funciona em jogadores aliados do grupo ─────────────
     if (!isNPC && !proj.ownerIsNPC && proj.ammoType === 'bala_cura') {
       if (proj.piercing) proj.hitTargets.add(target.id);

@@ -353,7 +353,7 @@ class NPCManager {
         let nearestDist_ = Infinity;
         
         for (const p of playersMap.values()) {
-          if (!p.dead) {
+          if (!p.dead && !(p.safeUntil && now < p.safeUntil)) {
             const d = dist2D(npc, p);
             if (d < nearestDist_) {
               nearestDist_ = d;
