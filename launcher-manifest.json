@@ -1,0 +1,25 @@
+{
+  "version": "0.1.0",
+  "date": "2026-05-02",
+  "changelog": [
+    "Período de segurança de 30s após respawn",
+    "Sistema de grupo com até 5 membros",
+    "Bala de cura para aliados do grupo",
+    "Shader de oceano melhorado",
+    "Múltiplos biomas e mapas"
+  ],
+  "files": [
+    {
+      "name": "SeaOfCode.exe",
+      "url": "",
+      "sha256": "",
+      "size": 0
+    },
+    {
+      "name": "SeaOfCode.pck",
+      "url": "",
+      "sha256": "",
+      "size": 0
+    }
+  ]
+}

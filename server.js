@@ -277,6 +277,20 @@ app.post('/save-progress', async (req, res) => {
   }
 });
 
+// ── Launcher manifest ─────────────────────────────────────────────────────────
+// GET /launcher/manifest — retorna versão atual + lista de arquivos para download.
+// Edite launcher-manifest.json (ou rode scripts/publish.js) para atualizar.
+app.get('/launcher/manifest', (req, res) => {
+  try {
+    // re-require para capturar edições sem reiniciar o servidor
+    delete require.cache[require.resolve('./launcher-manifest.json')];
+    const manifest = require('./launcher-manifest.json');
+    res.json(manifest);
+  } catch (e) {
+    res.status(404).json({ error: 'launcher-manifest.json não encontrado', detail: e.message });
+  }
+});
+
 // Shared state maps passed by reference to all managers
 const players = new Map();
 const npcs    = new Map();
