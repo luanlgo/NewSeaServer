@@ -84,6 +84,10 @@ MAP_DEFS[1] = {
     hasMoon:          true,
     hasDenseNebula:   false,
   },
+  // Zonas de cura — círculo verde no mapa. healPct = fração do maxHp por segundo (0.10 = 10%/s)
+  healingZones: [
+    { x: 320,  z: -240, radius: 80, healPct: 0.10 },
+  ],
 };
 
 // ── Mapa 2: Baía das Sombras ──────────────────────────────────────────────────
@@ -164,6 +168,9 @@ MAP_DEFS[2] = {
     hasMoon:          false,
     hasDenseNebula:   true,
   },
+  healingZones: [
+    { x: -300, z: 220, radius: 80, healPct: 0.10 },
+  ],
 };
 
 // ── Mapa 3: Ilha do Comércio ──────────────────────────────────────────────────
@@ -307,7 +314,10 @@ MAP_DEFS[3] = {
         ],
       }
     ]
-  }
+  },
+  healingZones: [
+    { x: 250,  z: 350, radius: 90, healPct: 0.10 },
+  ],
 };
 
 // ── Mapa 4: Ilha do Farol ─────────────────────────────────────────────────────
@@ -387,6 +397,9 @@ MAP_DEFS[4] = {
     { id:'reef_hunter_manta',     icon:'🦀',  label:'Derrotar 50 Gilded Reef Manta',        stat:'reefKills',       target:50,     reward:{ gold:120000 } },
     { id:'market_guard',          icon:'🏝️',  label:'Defender a ilha mercado',              stat:'marketDefense',   target:30,     reward:{ dobrao:10000 } },
     { id:'lighthouse_keeper',     icon:'🕯️',  label:'Completar missão do farol',            stat:'lighthouseQuest', target:1,      reward:{ dobrao:7000 } },
+  ],
+  healingZones: [
+    { x: -400, z: 300, radius: 90, healPct: 0.10 },
   ],
 };
 
@@ -476,6 +489,9 @@ MAP_DEFS[6] = {
     hasMoon:          true,
     hasDenseNebula:   false,
   },
+  healingZones: [
+    { x: 280, z: -350, radius: 90, healPct: 0.10 },
+  ],
 };
 
 // ── Mapas Bônus (levels 7–9, acessíveis via Mesa de Exploração) ───────────────

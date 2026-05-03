@@ -1062,6 +1062,25 @@ setInterval(() => {
     });
   }
 
+  // ── Healing zone tick — 10% HP/s dentro do raio ──────────────────────────
+  players.forEach(p => {
+    if (p.dead || p.hp >= p.maxHp) return;
+    const zones = (MAP_DEFS[p.mapLevel] || {}).healingZones || [];
+    for (const zone of zones) {
+      const dx = p.x - zone.x, dz = p.z - zone.z;
+      if (dx * dx + dz * dz > zone.radius * zone.radius) continue;
+      const amount = Math.max(1, Math.round(p.maxHp * (zone.healPct || 0.10) * dt));
+      const prev   = p.hp;
+      p.hp = Math.min(p.maxHp, p.hp + amount);
+      const healed = p.hp - prev;
+      if (healed > 0) {
+        sendTo(p.ws, { type: 'heal', amount: healed, hp: p.hp, maxHp: p.maxHp,
+                       targetId: p.id, x: p.x, z: p.z, source: 'zone' });
+      }
+      break; // uma zona por tick é suficiente
+    }
+  });
+
   // ── Healer pirate tick ────────────────────────────────────────────────────
   players.forEach(p => {
     if (p.dead || p.hp >= p.maxHp) return;
