@@ -1062,9 +1062,10 @@ setInterval(() => {
     });
   }
 
-  // ── Healing zone tick — 10% HP/s dentro do raio ──────────────────────────
+  // ── Healing zone tick — 10% HP/s quando parado dentro do raio ───────────
   players.forEach(p => {
     if (p.dead || p.hp >= p.maxHp) return;
+    if (p.speed > 0.1) return; // só cura se o barco estiver parado
     const zones = (MAP_DEFS[p.mapLevel] || {}).healingZones || [];
     for (const zone of zones) {
       const dx = p.x - zone.x, dz = p.z - zone.z;
