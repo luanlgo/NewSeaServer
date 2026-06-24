@@ -1,7 +1,10 @@
 {
-  "version": "0.1.0",
-  "date": "2026-05-02",
+  "version": "0.1.3",
+  "date": "2026-06-24",
   "changelog": [
+    "[v0.1.3] — descreva as mudanças aqui",
+    "[v0.1.2] — descreva as mudanças aqui",
+    "[v0.1.1] — descreva as mudanças aqui",
     "Período de segurança de 30s após respawn",
     "Sistema de grupo com até 5 membros",
     "Bala de cura para aliados do grupo",
@@ -11,15 +14,9 @@
   "files": [
     {
       "name": "SeaOfCode.exe",
-      "url": "",
-      "sha256": "",
-      "size": 0
-    },
-    {
-      "name": "SeaOfCode.pck",
-      "url": "",
-      "sha256": "",
-      "size": 0
+      "url": "https://github.com/luanlgo/NewSea/releases/download/v0.1.3/SeaOfCode.exe",
+      "sha256": "45ef053925d46ddf67f4ad5741ed9dc6fef593afb62e43191d6df9a98e0f1ede",
+      "size": 297510056
     }
   ]
 }
