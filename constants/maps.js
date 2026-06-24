@@ -461,14 +461,32 @@ MAP_DEFS[6] = {
     dobraoMax:     5000,
     hullColor:     0x553311,
     sailColor:     0x996633,
-    model:       '/models/monster/ghostly_female_spirit.glb',
-    scale: 60,
-    yOffset: 3.5,
+    model:       '/models/monster/mergulhador.glb',
+    scale: 220,
+    yOffset: -290.0,
     rotOffset: 0,
     hitRadius: 30,
     relicDropChance: 0.25, // 25% — poucos NPCs, mapa difícil
-    attacks: ['ghost_soul_pillars', 'cross_blast', 'sniper_shot', 'wide_flame_cone', 'arcane_nova'],
-    auras:   ['ghost_dread_aura'],
+    moveType:   'melee',   // humanóide: idle|walk|run baseado em distância
+    closeRange: 200,       // dentro = walk 50%; fora = run 100%
+    aggroRange: 350,       // raio de detecção de proximidade (unidades)
+    aggroTime:  20,        // segundos perto para virar agressivo
+    attacks: [
+      {
+        id:            'emerge',          // Mergulho + emergência dramática
+        animIdx:       9,                 // F9 lista: animação nº 9
+        animSpeed:     0.3,
+        cooldown:      60000,             // 60 s
+        triggerRange:  600,               // ativa quando jogador está a ≤600 u
+        // ── 3 fases (ms) ────────────────────────────────────────────────────
+        phase1End:     1500,              // 0–1.5s  → afunda (parado)
+        phase2End:     6000,              // 1.5–6s  → nada embaixo (200% vel)
+        totalDuration: 10000,             // 6–10s   → emerge (parado, dano)
+        // ── Dano ─────────────────────────────────────────────────────────────
+        damage:        200,
+        damageRadius:  220,               // raio do dano ao emergir
+      },
+    ],
     rarities: [
       { id: 'infernal', label: 'Infernal', hpMult: 1.0, rewardMult: 1, chance: 1, color: '#f80', bg: 'rgba(60,15,0,0.92)' },
     ],

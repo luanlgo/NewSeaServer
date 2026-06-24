@@ -1,6 +1,16 @@
 // managers/NPCManager.js
 const { uid, rand, clamp, dist2D } = require('../utils/helpers');
-const { MAX_HP, SHIP_SPEED, NPC_COUNT, MAP_DEFS, WORLD_BOSS_DEF, HIT_RADIUS } = require('../constants');
+const { MAX_HP, SHIP_SPEED, NPC_COUNT, MAP_DEFS, WORLD_BOSS_DEF, HIT_RADIUS, difficultyMult } = require('../constants');
+
+// ── Equilíbrio de aggro dos NPCs normais (navios piratas / monstros) ─────────
+// Bosses ignoram estes limites (perseguem sem distância máxima).
+//   AGGRO   → distância para começar a perseguir um novo alvo (menor = menos chato)
+//   DEAGGRO → distância para desistir do alvo atual (aggro "pegajoso": > AGGRO)
+//   LEASH   → distância máxima do ponto de spawn antes de desistir e voltar pra casa
+//             (impede que o NPC seja arrastado pelo mapa inteiro)
+const NPC_AGGRO_RANGE   = 150;
+const NPC_DEAGGRO_RANGE = 320;
+const NPC_LEASH_RANGE   = 700;
 
 class NPCManager {
   constructor(projectileManager, mapDefs, mapLevel, attackManager = null) {
@@ -180,6 +190,8 @@ class NPCManager {
       npcYOffset:   npcDef.yOffset   ?? null,
       npcRotOffset: npcDef.rotOffset ?? null,
       _scaledForKills: -1,
+      _scaledForDiff:  1,    // dificuldade aplicada (multiplicador) — ver _rescaleNPC
+      diffMult:        1,    // multiplicador de dificuldade atual (recompensa usa este)
       _lastRescaleTime: 0,
       _lastDamageTime: 0,
 
@@ -292,21 +304,25 @@ class NPCManager {
   }
 
   // Rescales stats only — NEVER resets HP
-  _rescaleNPC(npc, kills) {
-    if (npc._scaledForKills === kills) return;
-    
+  _rescaleNPC(npc, kills, diffMult = npc.diffMult || 1) {
+    if (npc._scaledForKills === kills && npc._scaledForDiff === diffMult) return;
+
     const mapNpcDef = (this.mapDefs[npc.mapLevel || this.zoneLevel] || {}).npc || {};
     const tier    = Math.floor(kills / 10);
     const hpTier  = Math.min(tier, 300);
     const dmgTier = Math.min(tier, 250);
     const hpPerTier  = mapNpcDef.hpPerTier  ?? 0.05;
     const dmgPerTier = mapNpcDef.dmgPerTier ?? 0.08;
-    const newMax = Math.floor(npc.baseHp * (1 + hpTier * hpPerTier));
+    // Dificuldade multiplica HP e dano por projétil (não o nº de projéteis,
+    // para não inundar a tela — o DPS total já escala via dano × HP).
+    const newMax = Math.floor(npc.baseHp * (1 + hpTier * hpPerTier) * diffMult);
     // Para NPCs com canhões: usa count do MAP_DEFS como base + tier
     // Para monstros (ATTACK_DEFS): cannonCount não é usado, linear de 1
     const baseCannonCount = npc.usesCannons ? (mapNpcDef.cannonCount || 1) : 1;
     npc.cannonCount = Math.min(20, baseCannonCount + dmgTier);
-    npc.cannonDmg   = Math.round(npc.baseDmg * (1 + dmgTier * dmgPerTier));
+    npc.cannonDmg   = Math.round(npc.baseDmg * (1 + dmgTier * dmgPerTier) * diffMult);
+    npc.diffMult    = diffMult;
+    npc._scaledForDiff = diffMult;
 
     if (newMax !== npc.maxHp) {
       const frac = npc.maxHp > 0 ? npc.hp / npc.maxHp : 1;
@@ -353,7 +369,7 @@ class NPCManager {
         let nearestDist_ = Infinity;
         
         for (const p of playersMap.values()) {
-          if (!p.dead && !(p.safeUntil && now < p.safeUntil)) {
+          if (!p.dead && !p.isPeaceful && !(p.safeUntil && now < p.safeUntil)) {
             const d = dist2D(npc, p);
             if (d < nearestDist_) {
               nearestDist_ = d;
@@ -378,11 +394,16 @@ class NPCManager {
       }
 
       // NPC rescale
+      // Escala do NPC = tier (kills do alvo) × dificuldade do alvo.
+      // Só re-escala fora de combate (20s sem dano): ao tomar dano o NPC TRAVA
+      // sua dificuldade/tier até passar esse tempo sem sofrer ação — evita que
+      // o jogador troque a dificuldade no meio da luta para mudar a recompensa.
       const noRecentDamage = !npc.lastDamageTime || (now - npc.lastDamageTime > 20000);
       if (nearest && nearest.id !== npc.targetId && noRecentDamage && !npc.isBoss) {
-        const kills = nearest.npcKills || 0;
-        if (kills !== npc._scaledForKills) {
-          this._rescaleNPC(npc, kills);
+        const kills    = nearest.npcKills || 0;
+        const diffMult = difficultyMult(nearest.difficulty || 0);
+        if (kills !== npc._scaledForKills || diffMult !== npc._scaledForDiff) {
+          this._rescaleNPC(npc, kills, diffMult);
           this._broadcast({
             type: 'entity_rescale',
             id: npc.id,
@@ -553,10 +574,164 @@ class NPCManager {
       }
 
       // Combat — bosses always pursue the nearest player (no distance limit)
-      // so they never drift into fog and disappear. Regular NPCs disengage at 210 u.
+      // so they never drift into fog and disappear. NPCs normais usam aggro
+      // pegajoso (AGGRO/DEAGGRO) + leash do spawn — ver bloco padrão abaixo.
       if (!dodging) {
-        const engageRange = npc.isBoss ? Infinity : 210;
-        if (nearestForCombat && nearestDistForCombat < engageRange) {
+
+        // ── Melee boss (humanóide) — aggro + máquina de estados ─────────────────
+        if (npc.isBoss && npc.moveType === 'melee') {
+
+          // — Aggro por dano recebido (checa lastDamageTime sem precisar alterar projectile-manager)
+          if (npc.aggroState === 'passive') {
+            const dmgT = npc.lastDamageTime || 0;
+            if (dmgT > npc._lastCheckedDmgTime) {
+              npc.aggroState = 'aggressive';
+              npc._proximityMap?.clear();
+              console.log(`👹 Boss map${npc.mapLevel} → AGRESSIVO (dano recebido)`);
+            }
+            npc._lastCheckedDmgTime = dmgT;
+          }
+
+          // — Aggro por proximidade (20 s contínuos dentro do raio)
+          if (npc.aggroState === 'passive' && npc._proximityMap) {
+            for (const [pid, p] of playersMap) {
+              if (p.dead) continue;
+              const d = dist2D(npc, p);
+              if (d <= npc._aggroRange) {
+                if (!npc._proximityMap.has(pid)) {
+                  npc._proximityMap.set(pid, now);
+                } else if (now - npc._proximityMap.get(pid) >= npc._aggroTime) {
+                  npc.aggroState = 'aggressive';
+                  npc._proximityMap.clear();
+                  console.log(`👹 Boss map${npc.mapLevel} → AGRESSIVO (${pid} ficou ${npc._aggroTime/1000}s perto)`);
+                  break;
+                }
+              } else {
+                npc._proximityMap.delete(pid);
+              }
+            }
+          }
+
+          // — Verificar/iniciar ataque especial (melee boss)
+          if (npc.aggroState === 'aggressive' && !npc._currentCast && nearestForCombat) {
+            for (const atk of (npc.attacks || [])) {
+              const cd = npc._attackCooldowns[atk.id] || 0;
+              if (now < cd) continue;
+              if (dist2D(npc, nearestForCombat) > (atk.triggerRange || 600)) continue;
+              npc._currentCast = {
+                id: atk.id, atk,
+                startTime: now,
+                _dmgDealt: false,
+                targetX: nearestForCombat.x,
+                targetZ: nearestForCombat.z,
+                targetId: nearestForCombat.id,
+              };
+              npc._attackCooldowns[atk.id] = now + atk.cooldown;
+              this._broadcast({
+                type: 'boss_cast_start',
+                npcId: npc.id, attackId: atk.id,
+                animIdx: atk.animIdx, animSpeed: atk.animSpeed,
+                phase1End: atk.phase1End, phase2End: atk.phase2End,
+                totalDuration: atk.totalDuration,
+              });
+              console.log(`👹 [boss-cast] ${atk.id} map${npc.mapLevel} → (${nearestForCombat.x.toFixed(0)},${nearestForCombat.z.toFixed(0)})`);
+              break;
+            }
+          }
+
+          // — Processar fases do cast ativo
+          if (npc._currentCast) {
+            const { atk, startTime, targetX, targetZ } = npc._currentCast;
+            const elapsed = now - startTime;
+
+            if (elapsed < atk.phase1End) {
+              // Fase 1 (0–1.5s): afunda — parado
+              npc.speed = 0; npc.moveState = 'cast';
+
+            } else if (elapsed < atk.phase2End) {
+              // Fase 2 (1.5–4s): nada embaixo do barco — 200% velocidade
+              const dx = targetX - npc.x;
+              const dz = targetZ - npc.z;
+              const d  = Math.sqrt(dx * dx + dz * dz);
+              if (d > 15) {
+                npc.rotation = Math.atan2(dx, dz);
+                npc.speed    = SHIP_SPEED * 2.0;
+              } else {
+                npc.speed = 0; // chegou sob o barco
+              }
+              npc.moveState = 'cast';
+
+            } else if (elapsed < atk.totalDuration) {
+              // Fase 3 (4–7s): emerge — parado, aplica dano uma única vez
+              npc.speed = 0; npc.moveState = 'cast';
+              if (!npc._currentCast._dmgDealt) {
+                npc._currentCast._dmgDealt = true;
+                for (const [pid, p] of playersMap) {
+                  if (p.dead) continue;
+                  if (dist2D(npc, p) > (atk.damageRadius || 220)) continue;
+                  const dmg = Math.round((atk.damage || 200) * (npc.dmgMult || 1));
+                  p.hp = Math.max(0, p.hp - dmg);
+                  if (p.hp <= 0 && !p.dead) p.dead = true;
+                  this._broadcast({ type: 'npc_attack_hit', targetId: pid, damage: dmg, x: npc.x, z: npc.z, attackId: atk.id });
+                }
+                this._broadcast({ type: 'boss_emerge_vfx', npcId: npc.id, x: npc.x, z: npc.z });
+                console.log(`👹 [boss-cast] emerge VFX+dmg @ (${npc.x.toFixed(0)},${npc.z.toFixed(0)}) r=${atk.damageRadius}`);
+              }
+            } else {
+              // Cast finalizado — volta ao movimento normal
+              npc._currentCast = null;
+            }
+
+          } else if (npc.aggroState === 'passive') {
+            // Parado — nada de chase
+            npc.speed     = 0;
+            npc.moveState = 'idle';
+            npc.targetId  = null;
+          } else {
+            // Agressivo — persegue o mais próximo (walk perto, run longe)
+            if (nearestForCombat) {
+              npc.targetId = nearestForCombat.id;
+              const mAng = Math.atan2(nearestForCombat.x - npc.x, nearestForCombat.z - npc.z);
+              let mDiff = mAng - npc.rotation;
+              while (mDiff >  Math.PI) mDiff -= Math.PI * 2;
+              while (mDiff < -Math.PI) mDiff += Math.PI * 2;
+              npc.rotation += clamp(mDiff, -0.08, 0.08);
+              if (nearestDistForCombat <= (npc.closeRange || 200)) {
+                npc.speed     = SHIP_SPEED * 0.7125 * (npc.slowMult || 1); // 50% × 1.5
+                npc.moveState = 'walk';
+              } else {
+                npc.speed     = SHIP_SPEED * 1.425  * (npc.slowMult || 1); // 100% × 1.5
+                npc.moveState = 'run';
+              }
+            } else {
+              // Nenhum jogador visível — aguarda parado
+              npc.speed     = 0;
+              npc.moveState = 'idle';
+              npc.targetId  = null;
+            }
+          }
+        } else
+
+        // ── Movimento padrão (navios piratas / monstros normais) ────────────────
+        if (true) {
+        // Ponto de origem (home) para o leash — inicializado preguiçosamente
+        if (npc.spawnX === undefined) { npc.spawnX = npc.x; npc.spawnZ = npc.z; }
+        const homeDist = Math.hypot(npc.x - npc.spawnX, npc.z - npc.spawnZ);
+        const leashed  = !npc.isBoss && homeDist > NPC_LEASH_RANGE;
+
+        // Decisão de alvo — bosses sempre engajam; NPCs normais usam aggro pegajoso:
+        // engajam de perto (AGGRO), mantêm até o alvo fugir além de DEAGGRO, e
+        // desistem se forem arrastados para longe do spawn (leash).
+        let engaged = false;
+        if (npc.isBoss) {
+          engaged = !!nearestForCombat;
+        } else if (!leashed && nearestForCombat) {
+          engaged = (npc.targetId === nearestForCombat.id)
+            ? nearestDistForCombat < NPC_DEAGGRO_RANGE
+            : nearestDistForCombat < NPC_AGGRO_RANGE;
+        }
+
+        if (engaged && nearestForCombat) {
           npc.targetId = nearestForCombat.id;
 
           if (npc.usesCannons) {
@@ -599,11 +774,21 @@ class NPCManager {
             const maxSpd = npc.isBoss ? SHIP_SPEED * 0.95 : SHIP_SPEED * 0.7;
             npc.speed = Math.min(npc.speed + 0.05, maxSpd * (npc.slowMult || 1));
           }
+        } else if (leashed) {
+          // Arrastado para longe demais → desiste do alvo e navega de volta ao spawn
+          npc.targetId = null;
+          const angleHome = Math.atan2(npc.spawnX - npc.x, npc.spawnZ - npc.z);
+          let diffH = angleHome - npc.rotation;
+          while (diffH > Math.PI)  diffH -= Math.PI * 2;
+          while (diffH < -Math.PI) diffH += Math.PI * 2;
+          npc.rotation += clamp(diffH, -0.06, 0.06);
+          npc.speed = Math.min(npc.speed + 0.04, SHIP_SPEED * 0.6 * (npc.slowMult || 1));
         } else {
           npc.rotation += (Math.random() - 0.5) * 0.02;
           npc.speed = Math.min(npc.speed + 0.01, SHIP_SPEED * 0.4 * (npc.slowMult || 1));
           npc.targetId = null;
         }
+        } // fecha if(true) do bloco padrão
       }
 
       npc.x += Math.sin(npc.rotation) * npc.speed * dt * 30;
@@ -672,6 +857,8 @@ class NPCManager {
       npcYOffset:   n.npcYOffset,
       npcRotOffset: n.npcRotOffset,
       usesCannons:  n.usesCannons || false,
+      moveState:    n.moveState  || null,
+      aggroState:   n.aggroState || null,
     }));
   }
 

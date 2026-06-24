@@ -21,6 +21,7 @@ const WorldBossManager  = require('./managers/world-boss-manager');
 const ProjectileManager = require('./managers/projectile-manager');
 const AttackManager     = require('./managers/attack-manager');
 const PartyManager      = require('./managers/party-manager');
+const PetManager        = require('./managers/pet-manager');
 
 
 const compression = require('compression');
@@ -116,6 +117,9 @@ const {
   TALENT_COST_TIERS,
   TALENT_XP_BASE,
   TALENT_XP_GROWTH,
+  DIFFICULTIES,
+  difficultyDef,
+  isDifficultyUnlocked,
 } = require('./constants');
 const {
   calcXpRequired:     _calcXpRequired,
@@ -298,6 +302,7 @@ const npcs    = new Map();
 // Managers
 const playerManager     = new PlayerManager();
 const partyManager      = new PartyManager();
+const petManager        = new PetManager(wss, players, db);
 
 // 1. ProjectileManager first (no npcs yet — injected after)
 const projectileManager = new ProjectileManager(wss, players, null, null, null, MAP_DEFS);
@@ -357,32 +362,40 @@ function flushEvents() {
 }
 
 // 3. Proxy dinâmico — agrega todos os managers (regular + bônus)
+// Map extra para NPCs dinâmicos (wild pets, etc.) — suporta set/delete diretamente
+const extraNpcs = new Map();
+
 const allNpcs = new Proxy({}, {
   get(_, prop) {
     if (prop === 'get') return id => {
+      const extra = extraNpcs.get(id); if (extra) return extra;
       let r = npcManager.npcs.get(id) || npcManager2.npcs.get(id);
       if (r) return r;
       for (const { npc } of regularManagers.values()) { const n = npc?.npcs.get(id); if (n) return n; }
       for (const m of bonusNpcManagers.values())      { const n = m.npcs.get(id); if (n) return n; }
     };
+    if (prop === 'set')    return (id, npc) => extraNpcs.set(id, npc);
     if (prop === 'has') return id => {
+      if (extraNpcs.has(id)) return true;
       if (npcManager.npcs.has(id) || npcManager2.npcs.has(id)) return true;
       for (const { npc } of regularManagers.values()) { if (npc?.npcs.has(id)) return true; }
       for (const m of bonusNpcManagers.values())      { if (m.npcs.has(id)) return true; }
       return false;
     };
     if (prop === 'values') return () => {
-      const arr = [...npcManager.npcs.values(), ...npcManager2.npcs.values()];
+      const arr = [...extraNpcs.values(), ...npcManager.npcs.values(), ...npcManager2.npcs.values()];
       for (const { npc } of regularManagers.values()) { if (npc && !npc.destroyed) arr.push(...npc.npcs.values()); }
       for (const m of bonusNpcManagers.values())      { if (!m.destroyed) arr.push(...m.npcs.values()); }
       return arr[Symbol.iterator]();
     };
     if (prop === 'forEach') return cb => {
+      extraNpcs.forEach(cb);
       npcManager.npcs.forEach(cb); npcManager2.npcs.forEach(cb);
       for (const { npc } of regularManagers.values()) { if (npc && !npc.destroyed) npc.npcs.forEach(cb); }
       for (const m of bonusNpcManagers.values())      { if (!m.destroyed) m.npcs.forEach(cb); }
     };
     if (prop === 'delete') return id => {
+      if (extraNpcs.delete(id)) return true;
       if (npcManager.npcs.delete(id) || npcManager2.npcs.delete(id)) return true;
       for (const { npc } of regularManagers.values()) { if (npc?.npcs.delete(id)) return true; }
       for (const m of bonusNpcManagers.values())      { if (m.npcs.delete(id)) return true; }
@@ -402,6 +415,9 @@ bossManager2.partyManager = partyManager;
 
 // 5. Wire everything into projectileManager
 projectileManager.npcs          = allNpcs;
+// Wire petManager ↔ projectileManager para wild pets
+petManager.projectileManager       = projectileManager;
+projectileManager._onWildPetKill   = (wildNpc, killer) => petManager.onWildPetKilled(wildNpc, killer);
 projectileManager.grantSkillXp  = grantSkillXp;
 projectileManager.npcManagers   = [npcManager, npcManager2];
 projectileManager.bossManager   = bossManager;
@@ -1278,16 +1294,18 @@ setInterval(() => {
             if (killer) {
               killer.npcKills = (killer.npcKills || 0) + 1;
               const tier = Math.floor(killer.npcKills / 10);
-              const gold = Math.floor(baseGold * (1 + (killer.dropBonus||0)) * (1 + tier*0.01));
+              // Multiplicador de dificuldade travado no NPC (kills por DoT também escalam)
+              const dotDiff = e.diffMult || 1;
+              const gold = Math.round(Math.floor(baseGold * (1 + (killer.dropBonus||0)) * (1 + tier*0.01)) * dotDiff);
               killer.gold += gold;
               // Dobrao drop
               if ((dotNpcDef.dobraoChance || 0) > 0 && Math.random() < dotNpcDef.dobraoChance) {
-                const dAmt = Math.floor(Math.random() * (dotNpcDef.dobraoMax - dotNpcDef.dobraoMin + 1) + dotNpcDef.dobraoMin);
+                const dAmt = Math.round(Math.floor(Math.random() * (dotNpcDef.dobraoMax - dotNpcDef.dobraoMin + 1) + dotNpcDef.dobraoMin) * dotDiff);
                 killer.dobroes = (killer.dobroes || 0) + dAmt;
               }
               // XP grant on DOT kill — use e.mapLevel (NPC zone), not killer.mapLevel
               const dotXpMapDef = MAP_DEFS[e.mapLevel || 1] || MAP_DEFS[1];
-              const xpGained = Math.floor((dotXpMapDef.npc?.xpPerKill || 12) * (1 + tier * 0.01));
+              const xpGained = Math.round(Math.floor((dotXpMapDef.npc?.xpPerKill || 12) * (1 + tier * 0.01)) * dotDiff);
               killer.mapXp = (killer.mapXp || 0) + xpGained;
               // XP is lifetime total — never reset, mapLevel only changes at border
               const xpNeeded = (MAP_DEFS[killer.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
@@ -1300,7 +1318,7 @@ setInterval(() => {
                 killer._mapUnlockNotified = false;
               }
               // Fragment drop (DOT kill path)
-              killer.mapFragments = (killer.mapFragments || 0) + FRAGMENT_DROP_NPC;
+              killer.mapFragments = (killer.mapFragments || 0) + Math.floor(FRAGMENT_DROP_NPC * dotDiff);
               db.save(killer).catch(e => console.error('Save error:', e));
               const curXpNeeded = (MAP_DEFS[killer.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
               sendTo(killer.ws, { type: 'currency_update', gold: killer.gold, dobroes: killer.dobroes, reward: { type:'gold', amount: gold }, npcKills: killer.npcKills, mapXp: killer.mapXp, mapLevel: killer.mapLevel || 1, mapXpNeeded: curXpNeeded, mapFragments: killer.mapFragments });
@@ -1716,6 +1734,35 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        case 'set_peaceful': {
+          // Modo pesca: jogador fica invisível para NPCs enquanto pescar
+          player.isPeaceful = !!msg.peaceful;
+          break;
+        }
+
+        case 'set_difficulty': {
+          // Troca a dificuldade do jogador (afeta escala dos NPCs + recompensas).
+          // Só permitido FORA de combate e se a dificuldade já estiver desbloqueada.
+          const idx = msg.difficulty | 0;
+          const def = difficultyDef(idx);
+          if (!DIFFICULTIES[idx]) {
+            sendTo(ws, { type: 'difficulty_error', reason: 'invalid' });
+            break;
+          }
+          if (!isDifficultyUnlocked(idx, player.npcKills || 0)) {
+            sendTo(ws, { type: 'difficulty_error', reason: 'locked', reqKills: def.reqKills, difficulty: player.difficulty || 0 });
+            break;
+          }
+          if (Date.now() - (player.lastCombatTime || 0) < 6000) {
+            sendTo(ws, { type: 'difficulty_error', reason: 'in_combat', difficulty: player.difficulty || 0 });
+            break;
+          }
+          player.difficulty = idx;
+          sendTo(ws, { type: 'difficulty_set', difficulty: idx });
+          db.save(player, true).catch(e => console.error('Save error (difficulty):', e));
+          break;
+        }
+
         case 'move_to': {
           if (player.dead || player.afkTraining) break;
           const mx = typeof msg.targetX === 'number' ? msg.targetX : null;
@@ -2081,6 +2128,38 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        // ── Compra de comida para pets ────────────────────────────────────────
+        case 'buy_pet_food': {
+          if (!player) break;
+          const foodId = String(msg.foodId || '');
+          const qty    = Math.max(1, Math.min(999, Math.floor(Number(msg.qty || 0))));
+          // Preço é autoritativo no servidor — ignora msg.price do cliente
+          const FOOD_PRICES_SRV = { frutas: 30, cerveja: 50 };
+          const unitPrice = FOOD_PRICES_SRV[foodId];
+          if (!unitPrice || qty <= 0) {
+            sendTo(ws, { type: 'pet_error', reason: 'Item inválido.' });
+            break;
+          }
+          const totalCost = unitPrice * qty;
+          if (player.gold < totalCost) {
+            sendTo(ws, { type: 'pet_error', reason: `Gold insuficiente (precisa ${totalCost}, tem ${player.gold}).` });
+            break;
+          }
+          player.gold -= totalCost;
+          if (!player.inventory) player.inventory = {};
+          player.inventory[foodId] = (player.inventory[foodId] || 0) + qty;
+          sendTo(ws, {
+            type:         'inventory_update',
+            inventory:    player.inventory,
+            gold:         player.gold,
+            dobroes:      player.dobroes,
+            notification: `🍖 +${qty}× ${foodId} adicionado ao inventário! (-${totalCost} 🪙)`,
+          });
+          db.save(player, true);
+          console.log(`[Pet] ${player.name} comprou ${qty}x ${foodId} por ${totalCost}g`);
+          break;
+        }
+
         // ── Party ────────────────────────────────────────────────────────────
         case 'party_invite': {
           const targetId = String(msg.targetId || '');
@@ -2105,6 +2184,19 @@ wss.on('connection', (ws) => {
         case 'equip_navio': {
           if (!player) break;
           handleEquipNavio(player, msg, ws);
+          break;
+        }
+
+        // ── Pets ────────────────────────────────────────────────────────────
+        case 'pet_equip':
+        case 'pet_attack':
+        case 'pet_skill':
+        case 'pet_capture':
+        case 'debug_spawn_pet':
+        case 'debug_give_food':
+        case 'debug_level_pet': {
+          if (!player || !player._dbLoaded) break;
+          petManager.handleMessage(player, msg);
           break;
         }
 
@@ -2186,6 +2278,7 @@ async function handleLogin(ws, msg) {
   // Talentos
   player.talents       = saved.talents || { hp:0, defesa:0, canhoes:0, dano:0, dano_relic:0, riqueza:0, ganancioso:0, mestre:0, slot_reliquia:0, totalSpent:0 };
   player.npcKills      = saved.npcKills      || 0;
+  player.difficulty    = saved.difficulty    || 0;
   player.mapXp         = saved.mapXp         || 0;
   player.mapLevel      = saved.mapLevel      || 1;
   // Se deslogou dentro de um mapa bônus (isBonusMap), retorna ao mapa regular
@@ -2310,6 +2403,8 @@ async function handleLogin(ws, msg) {
     inventory:        player.inventory,
     skills:   player.skills,
     npcKills:   player.npcKills || 0,
+    difficulty:   player.difficulty || 0,
+    difficulties: DIFFICULTIES,
     mapXp:      player.mapXp    || 0,
     mapLevel:   player.mapLevel || 1,
     mapXpNeeded: (MAP_DEFS[player.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999,
@@ -2345,6 +2440,8 @@ async function handleLogin(ws, msg) {
     bankUnlocked:        player.bankUnlocked        || false,
     cannonResearchLevel: player.cannonResearchLevel || 0,
     shipMaterialLevel:   player.shipMaterialLevel   || 0,
+    // ── Pets ────────────────────────────────────────────────────────────────
+    ...petManager.injectInitData(player),
     bossProgress: (() => {
       if (MAP_DEFS[initZone]?.isTrainingMap) return null; // mapa de treino: sem boss
       const kts = MAP_DEFS[initZone]?.boss?.killsToSpawn ?? 10;
@@ -2354,6 +2451,9 @@ async function handleLogin(ws, msg) {
       return { current: tot % kts, needed: kts, mapLevel: initZone, bossAlive: alive };
     })(),
   });
+
+  // Notifica PetManager que jogador entrou (envia pets selvagens do mapa)
+  petManager.onPlayerJoined(player);
 
   // Reconexão com sessão AFK ativa → notificar cliente
   if (player.afkTraining && player.afkUntil > Date.now()) {
@@ -2680,7 +2780,7 @@ function handleBuyAmmo(player, msg, ws) {
   const { SHOP } = require('./constants');
   const item = SHOP.ammo[msg.ammoId];
   if (!item) return;
-  const packs     = Math.max(1, Math.min(100, parseInt(msg.packs) || 1)); // how many packs (1 pack = item.qty)
+  const packs     = Math.max(1, Math.min(99999, parseInt(msg.packs) || 1)); // how many packs (1 pack = item.qty) — sem limite prático; custo limita
   const totalCost = item.price * packs;
   if (item.currency === 'gold') {
     if (player.gold < totalCost) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }

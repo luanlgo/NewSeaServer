@@ -13,6 +13,7 @@ const talents     = require('./talents');
 const attacks       = require('./attacks');
 const exploration   = require('./exploration');
 const bonusDungeons = require('./bonus_dungeons');
+const difficulty    = require('./difficulty');
 
 module.exports = {
   // Engine
@@ -47,4 +48,7 @@ module.exports = {
 
   // Masmorras Bônus
   ...bonusDungeons,
+
+  // Dificuldades
+  ...difficulty,
 };

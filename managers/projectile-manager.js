@@ -436,6 +436,12 @@ class ProjectileManager {
     } else {
       target._lastDamageTime = now;
       if (shooter2) { shooter2.lastActionTime = now; shooter2.lastCombatTime = now; }
+      // Wild pet: ativa aggro contra o primeiro jogador que atacar
+      if (target.isWildPet && shooter2 && !target.aggroTarget) {
+        target.aggroTarget    = shooter2.id;
+        target._lastAttackerId = shooter2.id;
+        console.log(`[Pet] 🐾 Wild pet ${target.petId || target.id} agro em ${shooter2.name}`);
+      }
     }
 
     // Accumulate into batch — merge hits on same target within this tick
@@ -513,7 +519,8 @@ class ProjectileManager {
 
     // Death handled in _flushHitBatch() at end of tick
     if (target.hp <= 0) {
-      target.dead = true; // mark dead now so other projectiles skip it
+      target.dead = true;       // mark dead now so other projectiles skip it
+      target.isPeaceful = false; // sai do modo pesca ao morrer
     }
   } // end hit()
 
@@ -535,6 +542,11 @@ class ProjectileManager {
 
     let finalGold = 0, xpGained = 0;
 
+    // Multiplicador de dificuldade TRAVADO no NPC (definido pelo npc-manager ao
+    // escalar). Usar o do NPC — e não o do killer — impede o exploit de trocar
+    // a dificuldade pouco antes de matar para inflar a recompensa.
+    const diffMult = npc.diffMult || 1;
+
     if (killer) {
       killer.npcKills = (killer.npcKills || 0) + 1;
       const killTier  = Math.floor(killer.npcKills / 10);
@@ -548,9 +560,13 @@ class ProjectileManager {
       const xpPerKill = npcMapDef.npc?.xpPerKill || 12;
       xpGained = calcKillXp({ xpPerKill, killTier, talentXpBonus: killer.talentXpBonus || 0 });
 
+      // Dificuldade multiplica as recompensas (mesmo fator do HP/dano do NPC)
+      finalGold = Math.round(finalGold * diffMult);
+      xpGained  = Math.round(xpGained  * diffMult);
+
       // Dobrao drop (só para o killer — não é dividido)
       if ((npcDef.dobraoChance || 0) > 0 && Math.random() < (npcDef.dobraoChance + (killer.talentDobraoBonus || 0))) {
-        const dobraoAmt = Math.floor(Math.random() * (npcDef.dobraoMax - npcDef.dobraoMin + 1) + npcDef.dobraoMin);
+        const dobraoAmt = Math.round(Math.floor(Math.random() * (npcDef.dobraoMax - npcDef.dobraoMin + 1) + npcDef.dobraoMin) * diffMult);
         killer.dobroes = (killer.dobroes || 0) + dobraoAmt;
       }
 
@@ -561,7 +577,7 @@ class ProjectileManager {
       const totalMembers = partyMembers.length + 1;
       const memberGold   = Math.floor(finalGold / totalMembers);
       const memberXp     = Math.floor(xpGained  / totalMembers);
-      const memberFrags  = Math.floor(FRAGMENT_DROP_NPC / totalMembers);
+      const memberFrags  = Math.floor(FRAGMENT_DROP_NPC * diffMult / totalMembers);
 
       killer.gold  += memberGold;
       killer.mapXp  = (killer.mapXp || 0) + memberXp;
@@ -593,8 +609,8 @@ class ProjectileManager {
       // Fragment drop (killer recebe sua parte; membros já receberam acima)
       killer.mapFragments = (killer.mapFragments || 0) + memberFrags;
 
-      // Relic drop
-      if (Math.random() < (npc.relicDropChance || 0)) {
+      // Relic drop (dificuldade aumenta a chance, com teto de 95%)
+      if (Math.random() < Math.min(0.95, (npc.relicDropChance || 0) * diffMult)) {
         if (!killer.inventory.relics) killer.inventory.relics = [];
         const ownedIds = new Set(killer.inventory.relics.map(r => r.relicId));
         const dropped  = _rollRelicDrop(ownedIds);
@@ -652,6 +668,13 @@ class ProjectileManager {
       // ONE hit update per target — filtrado por mapa
       const _hitMapLvl = target.mapLevel || 1;
 
+      // Marca o atacante (jogador) em combate ao causar dano num NPC — usado pela
+      // guarda "só troca de dificuldade fora de combate" no handler set_difficulty.
+      if (isNPC && !batch.ownerIsNPC && killerProj) {
+        const _shooter = this.players.get(killerProj.ownerId);
+        if (_shooter) _shooter.lastCombatTime = now;
+      }
+
       // Roubo de ouro: projétil NPC contra jogador em mapa com goldStealRatio
       let goldStolen = 0;
       if (!isNPC && batch.ownerIsNPC) {
@@ -687,6 +710,16 @@ class ProjectileManager {
         const killer = !proj.ownerIsNPC ? this.players.get(proj.ownerId) : null;
 
         if (isNPC) {
+          // ── Wild Pet: tratamento especial (sem gold rewards, apenas captura) ──
+          if (target.isWildPet) {
+            this._broadcastToMap(target.mapLevel || 1, {
+              type: 'entity_dead', id: targetId, isNPC: true, killerId: proj.ownerId,
+            });
+            this.npcs.delete(targetId);
+            if (this._onWildPetKill) this._onWildPetKill(target, killer);
+            return; // pula rewards normais
+          }
+
           if (target.isDungeonBoss) {
             // Dungeon Boss: chama handleDungeonComplete no servidor
             this._broadcastToMap(target.mapLevel || 1, { type: 'entity_dead', id: targetId, isNPC: true, killerId: proj.ownerId, goldDrop: 0 });

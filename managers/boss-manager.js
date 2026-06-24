@@ -86,6 +86,15 @@ class BossManager {
       npcScale:     bossDef.scale      || null,
       npcYOffset:   bossDef.yOffset    || null,
       npcRotOffset: bossDef.rotOffset  ?? null,
+      moveType:     bossDef.moveType   || null,
+      closeRange:   bossDef.closeRange || 200,
+      moveState:    'idle',
+      // ── Aggro ────────────────────────────────────────────────────────────────
+      aggroState:   'passive',                       // 'passive' | 'aggressive'
+      _aggroRange:  (bossDef.aggroRange || 350),
+      _aggroTime:   (bossDef.aggroTime  || 20) * 1000, // ms
+      _proximityMap: new Map(),  // playerId → timestamp de entrada no raio
+      _lastCheckedDmgTime: 0,
       // dobrão drop range from MAP_DEFS
       _dobraoMin:  bossDef.dobraoMin || 5,
       _dobraoMax:  bossDef.dobraoMax || 10,
@@ -294,6 +303,10 @@ class BossManager {
           if (npc._damageMap) {
             npc._damageMap.clear();
             npc._damageMap = null;
+          }
+          if (npc._proximityMap) {
+            npc._proximityMap.clear();
+            npc._proximityMap = null;
           }
           this.npcs.delete(id);
         }

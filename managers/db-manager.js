@@ -1,33 +1,54 @@
 // managers/db-manager.js
-const { Pool } = require('pg');
+const mysql = require('mysql2/promise');
 
-// Local dev uses public URL, Railway hosting uses internal URL
-const rawConn = process.env.DATABASE_URL || process.env.DATABASE_PUBLIC_URL || process.env.VITE_DATABASE_PUBLIC_URL || '';
+// Local dev uses public proxy URL, Railway hosting uses internal URL
+const rawConn =
+  process.env.DATABASE_URL ||
+  process.env.MYSQL_URL ||
+  process.env.DATABASE_PUBLIC_URL ||
+  process.env.MYSQL_PUBLIC_URL ||
+  process.env.VITE_DATABASE_PUBLIC_URL ||
+  '';
 // Strip surrounding quotes if dotenv included them
 const connStr = rawConn.replace(/^["']|["']$/g, '').trim();
 
 if (!connStr) {
-  console.error('❌ No database URL found! Set DATABASE_PUBLIC_URL in your .env file');
+  console.error('❌ No database URL found! Set DATABASE_PUBLIC_URL (mysql://...) in your .env file');
   process.exit(1);
 }
 
 // Log sanitized URL
 const maskedUrl = connStr.replace(/:([^:@]+)@/, ':***@');
 console.log(`🔌 Connecting to DB: ${maskedUrl}`);
-const pool = new Pool({
-  connectionString: connStr,
-  ssl: { rejectUnauthorized: false },
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+
+// Parse the connection string so we can pass explicit pool options
+const dbUrl = new URL(connStr);
+const pool = mysql.createPool({
+  host: dbUrl.hostname,
+  port: Number(dbUrl.port || 3306),
+  user: decodeURIComponent(dbUrl.username),
+  password: decodeURIComponent(dbUrl.password),
+  database: dbUrl.pathname.replace(/^\//, '') || 'railway',
+  waitForConnections: true,
+  connectionLimit: 20,
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000,
+  // mysql2 auto-parses JSON columns into JS objects on read and accepts
+  // JSON.stringify'd strings on write — so the _parse/_flush logic below
+  // works the same way it did under PostgreSQL/JSONB.
 });
 
-// Prevent unhandled 'error' event from crashing the process when a pooled
-// connection is terminated unexpectedly (e.g. Railway / Supabase idle cutoff).
-// The error will still surface as a rejected promise in _flush().
+// Prevent an unhandled 'error' event from crashing the process when a pooled
+// connection is terminated unexpectedly (e.g. Railway idle cutoff).
 pool.on('error', (err) => {
-  console.error('[DB] Pool idle client error (connection dropped):', err.message);
+  console.error('[DB] Pool error (connection dropped):', err.message);
 });
+
+// Default JSON blobs (kept in one place so save/batchSave stay consistent)
+const DEFAULT_SKILLS = { ataque: { level: 1, xp: 0 }, velocidade: { level: 1, xp: 0 }, defesa: { level: 1, xp: 0 }, vida: { level: 1, xp: 0 } };
+const DEFAULT_TALENTS = { hp: 0, defesa: 0, canhoes: 0, dano: 0, dano_relic: 0, riqueza: 0, ganancioso: 0, mestre: 0, totalSpent: 0 };
+const DEFAULT_ISLAND_UPGRADES = { hpBonus: 0, defenseBonus: 0 };
 
 class DBManager {
   constructor() {
@@ -58,7 +79,7 @@ class DBManager {
     // Debounce com timestamp
     const now = Date.now();
     const existing = this._pending.get(player.name);
-    
+
     if (existing) {
       clearTimeout(existing.timer);
       // Atualiza o player mas marca como atualizado
@@ -105,7 +126,7 @@ class DBManager {
   _cleanupStaleEntries() {
     const now = Date.now();
     const MAX_AGE = 10000; // 10 segundos
-    
+
     for (const [name, pending] of this._pending.entries()) {
       // Se o timer já expirou ou passou do tempo máximo
       if (!pending.timer._idleNext || (now - pending.createdAt) > MAX_AGE) {
@@ -128,33 +149,36 @@ class DBManager {
     delete ammoToSave.bala_ferro;
 
     try {
-      const result = await pool.query(
+      const [result] = await pool.query(
         `UPDATE players
-         SET gold=$2, dobroes=$3, cannons=$4, pirates=$5, ammo=$6,
-             equipped_cannons=$7, equipped_pirates=$8,
-             ships=$9, active_ship=$10,
-             skills=$11, npc_kills=$12,
-             equipped_sails=$13, sails_inv=$14,
-             map_xp=$15, map_level=$16,
-             map_fragments=$17,
-             relics_inv=$18, relics_equipped=$19,
-             talents=$20,
-             ship_island_upgrades=$21,
-             cannon_upgrades_data=$22,
-             iron_plates=$23, gold_dust=$24, gunpowder=$25,
-             bonus_maps_unlocked=$26,
-             cannon_research_level=$27, ship_material_level=$28,
-             map_pieces=$29, rare_ships=$30,
-             hp=$31,
-             current_ammo=$32,
-             bank_gold=$33,
-             bank_unlocked=$34,
-             bonus_inventory=$35,
-             active_bonus_ship_stats=$36,
+         SET gold=?, dobroes=?, cannons=?, pirates=?, ammo=?,
+             equipped_cannons=?, equipped_pirates=?,
+             ships=?, active_ship=?,
+             skills=?, npc_kills=?, difficulty=?,
+             equipped_sails=?, sails_inv=?,
+             map_xp=?, map_level=?,
+             map_fragments=?,
+             relics_inv=?, relics_equipped=?,
+             talents=?,
+             ship_island_upgrades=?,
+             cannon_upgrades_data=?,
+             iron_plates=?, gold_dust=?, gunpowder=?,
+             bonus_maps_unlocked=?,
+             cannon_research_level=?, ship_material_level=?,
+             map_pieces=?, rare_ships=?,
+             hp=?,
+             current_ammo=?,
+             bank_gold=?,
+             bank_unlocked=?,
+             bonus_inventory=?,
+             active_bonus_ship_stats=?,
+             owned_pets=?,
+             equipped_pet=?,
+             pet_levels=?,
+             pet_xp=?,
              last_seen=NOW()
-         WHERE name=$1`,
+         WHERE name=?`,
         [
-          player.name,
           player.gold || 0,
           player.dobroes || 0,
           JSON.stringify(inventory.cannons || []),
@@ -164,8 +188,9 @@ class DBManager {
           JSON.stringify(player.pirates || []),
           JSON.stringify(inventory.ships || ['fragata']),
           player.activeShip || 'fragata',
-          JSON.stringify(player.skills || { ataque: { level: 1, xp: 0 }, velocidade: { level: 1, xp: 0 }, defesa: { level: 1, xp: 0 }, vida: { level: 1, xp: 0 } }),
+          JSON.stringify(player.skills || DEFAULT_SKILLS),
           player.npcKills || 0,
+          player.difficulty || 0,
           JSON.stringify(player.equippedSails || []),
           JSON.stringify(inventory.sails || []),
           player.mapXp || 0,
@@ -173,8 +198,8 @@ class DBManager {
           player.mapFragments || 0,
           JSON.stringify(inventory.relics || []),
           JSON.stringify(player.relicDeck || []),
-          JSON.stringify(player.talents || { hp: 0, defesa: 0, canhoes: 0, dano: 0, dano_relic: 0, riqueza: 0, ganancioso: 0, mestre: 0, totalSpent: 0 }),
-          JSON.stringify(player.shipIslandUpgrades || { hpBonus: 0, defenseBonus: 0 }),
+          JSON.stringify(player.talents || DEFAULT_TALENTS),
+          JSON.stringify(player.shipIslandUpgrades || DEFAULT_ISLAND_UPGRADES),
           JSON.stringify(player.cannonUpgradesData || []),
           player.ironPlates          || 0,
           player.goldDust            || 0,
@@ -187,13 +212,18 @@ class DBManager {
           player.hp != null ? player.hp : (player.maxHp || 100),
           player.currentAmmo || 'bala_ferro',
           player.bankGold    || 0,
-          player.bankUnlocked ? true : false,
+          player.bankUnlocked ? 1 : 0,
           JSON.stringify(player.bonusInventory || []),
           player.activeBonusShipStats ? JSON.stringify(player.activeBonusShipStats) : null,
+          JSON.stringify(player.ownedPets   || []),
+          player.equippedPet || '',
+          JSON.stringify(player.petLevels   || {}),
+          JSON.stringify(player.petXp       || {}),
+          player.name, // WHERE name=?
         ]
       );
 
-      if (result.rowCount === 0) {
+      if (result.affectedRows === 0) {
         console.warn(`[DB] No rows updated for "${player.name}"`);
       }
     } catch (error) {
@@ -205,41 +235,41 @@ class DBManager {
   async init() {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS players (
-        name TEXT PRIMARY KEY,
-        gold INTEGER NOT NULL DEFAULT 100,
-        dobroes INTEGER NOT NULL DEFAULT 0,
-        cannons JSONB NOT NULL DEFAULT '[]',
-        pirates JSONB NOT NULL DEFAULT '[]',
-        ammo JSONB NOT NULL DEFAULT '{}',
-        equipped_cannons JSONB NOT NULL DEFAULT '[]',
-        equipped_pirates JSONB NOT NULL DEFAULT '[]',
-        equipped_sails JSONB NOT NULL DEFAULT '[]',
-        sails_inv JSONB NOT NULL DEFAULT '[]',
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        last_seen TIMESTAMPTZ DEFAULT NOW()
-      );
+        name VARCHAR(255) PRIMARY KEY,
+        gold INT NOT NULL DEFAULT 100,
+        dobroes INT NOT NULL DEFAULT 0,
+        cannons JSON,
+        pirates JSON,
+        ammo JSON,
+        equipped_cannons JSON,
+        equipped_pirates JSON,
+        equipped_sails JSON,
+        sails_inv JSON,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
-    
+
     // Add columns (mantido seu código de migração)
     await this._addColumns();
     await this._ensureAuctionsTable();
 
-    console.log('💾 PostgreSQL ready');
+    console.log('💾 MySQL ready');
   }
 
   async _ensureAuctionsTable() {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS auctions (
-        id          TEXT PRIMARY KEY,
-        ship_data   JSONB NOT NULL,
-        owner_id    TEXT NOT NULL,
-        owner_name  TEXT NOT NULL,
-        min_bid     INTEGER NOT NULL DEFAULT 0,
-        top_bid     INTEGER NOT NULL DEFAULT 0,
-        bids        JSONB NOT NULL DEFAULT '[]',
+        id          VARCHAR(255) PRIMARY KEY,
+        ship_data   JSON NOT NULL,
+        owner_id    VARCHAR(255) NOT NULL,
+        owner_name  VARCHAR(255) NOT NULL,
+        min_bid     INT NOT NULL DEFAULT 0,
+        top_bid     INT NOT NULL DEFAULT 0,
+        bids        JSON,
         ends_at     BIGINT NOT NULL,
         created_at  BIGINT NOT NULL
-      );
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
   }
 
@@ -250,9 +280,11 @@ class DBManager {
       for (const [id, a] of auctionsMap) {
         await pool.query(
           `INSERT INTO auctions (id, ship_data, owner_id, owner_name, min_bid, top_bid, bids, ends_at, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-           ON CONFLICT (id) DO UPDATE
-             SET ship_data=$2, top_bid=$6, bids=$7`,
+           VALUES (?,?,?,?,?,?,?,?,?)
+           ON DUPLICATE KEY UPDATE
+             ship_data = VALUES(ship_data),
+             top_bid   = VALUES(top_bid),
+             bids      = VALUES(bids)`,
           [
             id,
             JSON.stringify(a.shipData),
@@ -274,7 +306,7 @@ class DBManager {
   // Carrega todos os leilões do DB (chamado no startup)
   async loadAuctions() {
     try {
-      const { rows } = await pool.query('SELECT * FROM auctions WHERE ends_at > $1', [Date.now()]);
+      const [rows] = await pool.query('SELECT * FROM auctions WHERE ends_at > ?', [Date.now()]);
       return rows.map(r => ({
         id:        r.id,
         shipData:  r.ship_data,
@@ -294,76 +326,84 @@ class DBManager {
 
   async deleteAuction(auctionId) {
     try {
-      await pool.query('DELETE FROM auctions WHERE id = $1', [auctionId]);
+      await pool.query('DELETE FROM auctions WHERE id = ?', [auctionId]);
     } catch (err) {
       console.error('[DB] Error deleting auction:', err);
     }
   }
 
   async _addColumns() {
+    // MySQL não tem "ADD COLUMN IF NOT EXISTS" — erros de coluna duplicada
+    // (ER_DUP_FIELDNAME / errno 1060) são ignorados abaixo.
     const columns = [
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS equipped_cannons JSONB NOT NULL DEFAULT \'[]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS equipped_sails JSONB NOT NULL DEFAULT \'[]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS sails_inv JSONB NOT NULL DEFAULT \'[]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS equipped_pirates JSONB NOT NULL DEFAULT \'[]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS ships JSONB NOT NULL DEFAULT \'["fragata"]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS active_ship TEXT NOT NULL DEFAULT \'fragata\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS npc_kills INTEGER NOT NULL DEFAULT 0',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS skills JSONB NOT NULL DEFAULT \'{"ataque":{"level":1,"xp":0},"velocidade":{"level":1,"xp":0},"defesa":{"level":1,"xp":0}}\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS map_xp INTEGER NOT NULL DEFAULT 0',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS map_level INTEGER NOT NULL DEFAULT 1',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS map_fragments INTEGER NOT NULL DEFAULT 0',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS relics_inv JSONB NOT NULL DEFAULT \'[]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS relics_equipped JSONB NOT NULL DEFAULT \'[]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS talents JSONB NOT NULL DEFAULT \'{"hp":0,"defesa":0,"canhoes":0,"dano":0,"dano_relic":0,"riqueza":0,"ganancioso":0,"mestre":0,"totalSpent":0}\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS ship_island_upgrades JSONB NOT NULL DEFAULT \'{"hpBonus":0,"defenseBonus":0}\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS cannon_upgrades_data JSONB NOT NULL DEFAULT \'[]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS iron_plates INTEGER NOT NULL DEFAULT 0',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS gold_dust INTEGER NOT NULL DEFAULT 0',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS gunpowder INTEGER NOT NULL DEFAULT 0',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS bonus_maps_unlocked JSONB NOT NULL DEFAULT \'[]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS cannon_research_level INTEGER NOT NULL DEFAULT 0',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS ship_material_level INTEGER NOT NULL DEFAULT 0',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS map_pieces JSONB NOT NULL DEFAULT \'{}\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS rare_ships JSONB DEFAULT \'[]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS bonus_inventory JSONB DEFAULT \'[]\'',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS active_bonus_ship_stats JSONB DEFAULT NULL',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS hp INTEGER NOT NULL DEFAULT 100',
-      "ALTER TABLE players ADD COLUMN IF NOT EXISTS current_ammo TEXT NOT NULL DEFAULT 'bala_ferro'",
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS bank_gold INTEGER NOT NULL DEFAULT 0',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS bank_unlocked BOOLEAN NOT NULL DEFAULT FALSE',
+      "ALTER TABLE players ADD COLUMN equipped_cannons JSON",
+      "ALTER TABLE players ADD COLUMN equipped_sails JSON",
+      "ALTER TABLE players ADD COLUMN sails_inv JSON",
+      "ALTER TABLE players ADD COLUMN equipped_pirates JSON",
+      "ALTER TABLE players ADD COLUMN ships JSON",
+      "ALTER TABLE players ADD COLUMN active_ship VARCHAR(64) NOT NULL DEFAULT 'fragata'",
+      "ALTER TABLE players ADD COLUMN npc_kills INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN difficulty INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN skills JSON",
+      "ALTER TABLE players ADD COLUMN map_xp INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN map_level INT NOT NULL DEFAULT 1",
+      "ALTER TABLE players ADD COLUMN map_fragments INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN relics_inv JSON",
+      "ALTER TABLE players ADD COLUMN relics_equipped JSON",
+      "ALTER TABLE players ADD COLUMN talents JSON",
+      "ALTER TABLE players ADD COLUMN ship_island_upgrades JSON",
+      "ALTER TABLE players ADD COLUMN cannon_upgrades_data JSON",
+      "ALTER TABLE players ADD COLUMN iron_plates INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN gold_dust INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN gunpowder INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN bonus_maps_unlocked JSON",
+      "ALTER TABLE players ADD COLUMN cannon_research_level INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN ship_material_level INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN map_pieces JSON",
+      "ALTER TABLE players ADD COLUMN rare_ships JSON",
+      "ALTER TABLE players ADD COLUMN bonus_inventory JSON",
+      "ALTER TABLE players ADD COLUMN active_bonus_ship_stats JSON",
+      "ALTER TABLE players ADD COLUMN hp INT NOT NULL DEFAULT 100",
+      "ALTER TABLE players ADD COLUMN current_ammo VARCHAR(64) NOT NULL DEFAULT 'bala_ferro'",
+      "ALTER TABLE players ADD COLUMN bank_gold INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN bank_unlocked TINYINT(1) NOT NULL DEFAULT 0",
+      // ── Pets (Session 12) ─────────────────────────────────────────────────
+      "ALTER TABLE players ADD COLUMN owned_pets    JSON",
+      "ALTER TABLE players ADD COLUMN equipped_pet  VARCHAR(64) NOT NULL DEFAULT ''",
+      "ALTER TABLE players ADD COLUMN pet_levels    JSON",
+      "ALTER TABLE players ADD COLUMN pet_xp        JSON",
     ];
-    
+
     for (const sql of columns) {
       try {
         await pool.query(sql);
       } catch (err) {
         // Ignora erros de coluna já existente
-        if (!err.message.includes('already exists')) {
-          console.error('Error adding column:', err);
+        if (err.code !== 'ER_DUP_FIELDNAME' && err.errno !== 1060) {
+          console.error('Error adding column:', err.message);
         }
       }
     }
   }
 
   async loadOrCreate(name) {
-    const { rows } = await pool.query(
-      'SELECT * FROM players WHERE name = $1',
+    const [rows] = await pool.query(
+      'SELECT * FROM players WHERE name = ?',
       [name]
     );
     if (rows.length === 0) {
-      const { rows: [row] } = await pool.query(
-        `INSERT INTO players (name, cannons, ships, active_ship) 
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (name) DO UPDATE SET last_seen = NOW()
-         RETURNING *`,
+      await pool.query(
+        `INSERT INTO players (name, cannons, ships, active_ship)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE last_seen = NOW()`,
         [name, JSON.stringify(['c1', 'c1', 'c1']), JSON.stringify(['fragata']), 'fragata']
       );
+      const [created] = await pool.query('SELECT * FROM players WHERE name = ?', [name]);
       console.log(`💾 New player: ${name}`);
-      return this._parse(row);
+      return this._parse(created[0]);
     }
 
-    await pool.query('UPDATE players SET last_seen = NOW() WHERE name = $1', [name]);
+    await pool.query('UPDATE players SET last_seen = NOW() WHERE name = ?', [name]);
     console.log(`💾 Player loaded: ${name}`);
     return this._parse(rows[0]);
   }
@@ -387,13 +427,14 @@ class DBManager {
         ship: row.active_ship || 'fragata',
         relics: row.relics_equipped || [],
       },
-      skills: row.skills || { ataque: { level: 1, xp: 0 }, velocidade: { level: 1, xp: 0 }, defesa: { level: 1, xp: 0 }, vida: { level: 1, xp: 0 } },
+      skills: row.skills || { ...DEFAULT_SKILLS },
       npcKills: row.npc_kills || 0,
+      difficulty: row.difficulty || 0,
       mapXp: row.map_xp || 0,
       mapLevel: row.map_level || 1,
       mapFragments: row.map_fragments || 0,
-      talents: row.talents || { hp: 0, defesa: 0, canhoes: 0, dano: 0, dano_relic: 0, riqueza: 0, ganancioso: 0, mestre: 0, totalSpent: 0 },
-      shipIslandUpgrades: row.ship_island_upgrades || { hpBonus: 0, defenseBonus: 0 },
+      talents: row.talents || { ...DEFAULT_TALENTS },
+      shipIslandUpgrades: row.ship_island_upgrades || { ...DEFAULT_ISLAND_UPGRADES },
       cannonUpgradesData: row.cannon_upgrades_data || [],
       ironPlates:          row.iron_plates          || 0,
       goldDust:            row.gold_dust            || 0,
@@ -406,13 +447,20 @@ class DBManager {
       hp:                  row.hp != null ? row.hp : 100,
       currentAmmo:         row.current_ammo || 'bala_ferro',
       bankGold:            row.bank_gold    || 0,
-      bankUnlocked:        row.bank_unlocked || false,
+      bankUnlocked:        !!row.bank_unlocked,
       cannonResearchLevel: row.cannon_research_level || 0,
       shipMaterialLevel:   row.ship_material_level  || 0,
+      // ── Pets ────────────────────────────────────────────────────────────
+      ownedPets:    row.owned_pets   || [],
+      equippedPet:  row.equipped_pet || '',
+      petLevels:    row.pet_levels   || {},
+      petXp:        row.pet_xp       || {},
     };
   }
 
-  // Batch save para múltiplos jogadores em uma única query (uso no setInterval periódico)
+  // Batch save para múltiplos jogadores (uso no setInterval periódico).
+  // rare_ships e pets NÃO são salvos aqui — apenas via _flush urgente
+  // (evita a race condition que apagava navios raros — ver memória Session 8).
   async batchSave(playersMap) {
     const playersToSave = [];
     for (const p of playersMap.values()) {
@@ -420,181 +468,69 @@ class DBManager {
     }
     if (playersToSave.length === 0) return;
 
-    // Monta arrays paralelos para UNNEST
-    const names        = [], golds      = [], dobroes_arr = [];
-    const cannons_arr  = [], pirates_arr = [], ammo_arr   = [];
-    const eq_cannons   = [], eq_pirates  = [];
-    const ships_arr    = [], active_ship = [];
-    const skills_arr   = [], npc_kills   = [];
-    const eq_sails     = [], sails_inv   = [];
-    const map_xp       = [], map_level   = [], map_frag   = [];
-    const relics_inv   = [], relics_eq   = [];
-    const talents_arr  = [], island_up   = [], cannon_up  = [];
-    const iron_plates  = [], gold_dust   = [], gunpowder_arr = [];
-    const bonus_maps   = [], cannon_res  = [], ship_mat   = [];
-    const map_pieces_arr = [], hp_arr = [], current_ammo_arr = [], bank_gold_arr = [], bank_unlocked_arr = [], bonus_inv_arr = [], active_bonus_stats_arr = [];
-
-    for (const p of playersToSave) {
-      const inventory = p.inventory || {};
-      const ammoToSave = { ...(inventory.ammo || {}) };
-      delete ammoToSave.bala_pedra;
-      delete ammoToSave.bala_ferro;
-
-      names.push(p.name);
-      golds.push(p.gold || 0);
-      dobroes_arr.push(p.dobroes || 0);
-      cannons_arr.push(JSON.stringify(inventory.cannons || []));
-      pirates_arr.push(JSON.stringify(inventory.pirates || []));
-      ammo_arr.push(JSON.stringify(ammoToSave));
-      eq_cannons.push(JSON.stringify(p.cannons || []));
-      eq_pirates.push(JSON.stringify(p.pirates || []));
-      ships_arr.push(JSON.stringify(inventory.ships || ['fragata']));
-      active_ship.push(p.activeShip || 'fragata');
-      skills_arr.push(JSON.stringify(p.skills || { ataque: { level: 1, xp: 0 }, velocidade: { level: 1, xp: 0 }, defesa: { level: 1, xp: 0 }, vida: { level: 1, xp: 0 } }));
-      npc_kills.push(p.npcKills || 0);
-      eq_sails.push(JSON.stringify(p.equippedSails || []));
-      sails_inv.push(JSON.stringify(inventory.sails || []));
-      map_xp.push(p.mapXp || 0);
-      map_level.push(p.mapLevel || 1);
-      map_frag.push(p.mapFragments || 0);
-      relics_inv.push(JSON.stringify(inventory.relics || []));
-      relics_eq.push(JSON.stringify(p.relicDeck || []));
-      talents_arr.push(JSON.stringify(p.talents || { hp: 0, defesa: 0, canhoes: 0, dano: 0, dano_relic: 0, riqueza: 0, ganancioso: 0, mestre: 0, totalSpent: 0 }));
-      island_up.push(JSON.stringify(p.shipIslandUpgrades || { hpBonus: 0, defenseBonus: 0 }));
-      cannon_up.push(JSON.stringify(p.cannonUpgradesData || []));
-      iron_plates.push(p.ironPlates          || 0);
-      gold_dust.push(p.goldDust              || 0);
-      gunpowder_arr.push(p.gunpowder         || 0);
-      bonus_maps.push(JSON.stringify(p.bonusMapsUnlocked   || []));
-      cannon_res.push(p.cannonResearchLevel  || 0);
-      ship_mat.push(p.shipMaterialLevel      || 0);
-      map_pieces_arr.push(JSON.stringify(p.mapPieces   || {}));
-      // rare_ships NÃO é salvo no batchSave — apenas via _flush urgente (evita race condition)
-      bonus_inv_arr.push(JSON.stringify(p.bonusInventory || []));
-      active_bonus_stats_arr.push(p.activeBonusShipStats ? JSON.stringify(p.activeBonusShipStats) : null);
-      hp_arr.push(p.hp != null ? p.hp : (p.maxHp || 100));
-      current_ammo_arr.push(p.currentAmmo || 'bala_ferro');
-      bank_gold_arr.push(p.bankGold || 0);
-      bank_unlocked_arr.push(p.bankUnlocked ? true : false);
-    }
+    const sql = `UPDATE players SET
+        gold=?, dobroes=?, cannons=?, pirates=?, ammo=?,
+        equipped_cannons=?, equipped_pirates=?,
+        ships=?, active_ship=?,
+        skills=?, npc_kills=?,
+        equipped_sails=?, sails_inv=?,
+        map_xp=?, map_level=?, map_fragments=?,
+        relics_inv=?, relics_equipped=?,
+        talents=?, ship_island_upgrades=?, cannon_upgrades_data=?,
+        iron_plates=?, gold_dust=?, gunpowder=?,
+        bonus_maps_unlocked=?, cannon_research_level=?, ship_material_level=?,
+        map_pieces=?,
+        hp=?, current_ammo=?, bank_gold=?, bank_unlocked=?,
+        bonus_inventory=?, active_bonus_ship_stats=?,
+        last_seen=NOW()
+      WHERE name=?`;
 
     try {
       const start = Date.now();
-      await pool.query(
-        `UPDATE players SET
-           gold                 = v.gold::integer,
-           dobroes              = v.dobroes::integer,
-           cannons              = v.cannons::jsonb,
-           pirates              = v.pirates::jsonb,
-           ammo                 = v.ammo::jsonb,
-           equipped_cannons     = v.eq_cannons::jsonb,
-           equipped_pirates     = v.eq_pirates::jsonb,
-           ships                = v.ships::jsonb,
-           active_ship          = v.active_ship,
-           skills               = v.skills::jsonb,
-           npc_kills            = v.npc_kills::integer,
-           equipped_sails       = v.eq_sails::jsonb,
-           sails_inv            = v.sails_inv::jsonb,
-           map_xp               = v.map_xp::integer,
-           map_level            = v.map_level::integer,
-           map_fragments        = v.map_frag::integer,
-           relics_inv           = v.relics_inv::jsonb,
-           relics_equipped      = v.relics_eq::jsonb,
-           talents              = v.talents::jsonb,
-           ship_island_upgrades = v.island_up::jsonb,
-           cannon_upgrades_data = v.cannon_up::jsonb,
-           iron_plates          = v.iron_plates::integer,
-           gold_dust            = v.gold_dust::integer,
-           gunpowder            = v.gunpowder::integer,
-           bonus_maps_unlocked  = v.bonus_maps::jsonb,
-           cannon_research_level = v.cannon_res::integer,
-           ship_material_level  = v.ship_mat::integer,
-           map_pieces           = v.map_pieces::jsonb,
-           -- rare_ships NÃO atualizado aqui (apenas via _flush urgente)
-           hp                   = v.hp::integer,
-           current_ammo         = v.current_ammo,
-           bank_gold            = v.bank_gold::integer,
-           bank_unlocked            = v.bank_unlocked::boolean,
-           bonus_inventory          = v.bonus_inv::jsonb,
-           active_bonus_ship_stats  = v.active_bonus_stats::jsonb,
-           last_seen                = NOW()
-         FROM (
-           SELECT
-             UNNEST($1::text[])    AS name,
-             UNNEST($2::text[])    AS gold,
-             UNNEST($3::text[])    AS dobroes,
-             UNNEST($4::text[])    AS cannons,
-             UNNEST($5::text[])    AS pirates,
-             UNNEST($6::text[])    AS ammo,
-             UNNEST($7::text[])    AS eq_cannons,
-             UNNEST($8::text[])    AS eq_pirates,
-             UNNEST($9::text[])    AS ships,
-             UNNEST($10::text[])   AS active_ship,
-             UNNEST($11::text[])   AS skills,
-             UNNEST($12::text[])   AS npc_kills,
-             UNNEST($13::text[])   AS eq_sails,
-             UNNEST($14::text[])   AS sails_inv,
-             UNNEST($15::text[])   AS map_xp,
-             UNNEST($16::text[])   AS map_level,
-             UNNEST($17::text[])   AS map_frag,
-             UNNEST($18::text[])   AS relics_inv,
-             UNNEST($19::text[])   AS relics_eq,
-             UNNEST($20::text[])   AS talents,
-             UNNEST($21::text[])   AS island_up,
-             UNNEST($22::text[])   AS cannon_up,
-             UNNEST($23::text[])   AS iron_plates,
-             UNNEST($24::text[])   AS gold_dust,
-             UNNEST($25::text[])   AS gunpowder,
-             UNNEST($26::text[])   AS bonus_maps,
-             UNNEST($27::text[])   AS cannon_res,
-             UNNEST($28::text[])   AS ship_mat,
-             UNNEST($29::text[])   AS map_pieces,
-             UNNEST($30::text[])   AS hp,
-             UNNEST($31::text[])   AS current_ammo,
-             UNNEST($32::text[])   AS bank_gold,
-             UNNEST($33::text[])   AS bank_unlocked,
-             UNNEST($34::text[])   AS bonus_inv,
-             UNNEST($35::text[])   AS active_bonus_stats
-         ) AS v
-         WHERE players.name = v.name`,
-        [
-          names,
-          golds.map(String),
-          dobroes_arr.map(String),
-          cannons_arr,
-          pirates_arr,
-          ammo_arr,
-          eq_cannons,
-          eq_pirates,
-          ships_arr,
-          active_ship,
-          skills_arr,
-          npc_kills.map(String),
-          eq_sails,
-          sails_inv,
-          map_xp.map(String),
-          map_level.map(String),
-          map_frag.map(String),
-          relics_inv,
-          relics_eq,
-          talents_arr,
-          island_up,
-          cannon_up,
-          iron_plates.map(String),
-          gold_dust.map(String),
-          gunpowder_arr.map(String),
-          bonus_maps,
-          cannon_res.map(String),
-          ship_mat.map(String),
-          map_pieces_arr,
-          hp_arr.map(String),
-          current_ammo_arr,
-          bank_gold_arr.map(String),
-          bank_unlocked_arr.map(String),
-          bonus_inv_arr,
-          active_bonus_stats_arr,
-        ]
-      );
+      await Promise.all(playersToSave.map((p) => {
+        const inventory = p.inventory || {};
+        const ammoToSave = { ...(inventory.ammo || {}) };
+        delete ammoToSave.bala_pedra;
+        delete ammoToSave.bala_ferro;
+
+        return pool.query(sql, [
+          p.gold || 0,
+          p.dobroes || 0,
+          JSON.stringify(inventory.cannons || []),
+          JSON.stringify(inventory.pirates || []),
+          JSON.stringify(ammoToSave),
+          JSON.stringify(p.cannons || []),
+          JSON.stringify(p.pirates || []),
+          JSON.stringify(inventory.ships || ['fragata']),
+          p.activeShip || 'fragata',
+          JSON.stringify(p.skills || DEFAULT_SKILLS),
+          p.npcKills || 0,
+          JSON.stringify(p.equippedSails || []),
+          JSON.stringify(inventory.sails || []),
+          p.mapXp || 0,
+          p.mapLevel || 1,
+          p.mapFragments || 0,
+          JSON.stringify(inventory.relics || []),
+          JSON.stringify(p.relicDeck || []),
+          JSON.stringify(p.talents || DEFAULT_TALENTS),
+          JSON.stringify(p.shipIslandUpgrades || DEFAULT_ISLAND_UPGRADES),
+          JSON.stringify(p.cannonUpgradesData || []),
+          p.ironPlates          || 0,
+          p.goldDust            || 0,
+          p.gunpowder           || 0,
+          JSON.stringify(p.bonusMapsUnlocked   || []),
+          p.cannonResearchLevel || 0,
+          p.shipMaterialLevel   || 0,
+          JSON.stringify(p.mapPieces   || {}),
+          p.hp != null ? p.hp : (p.maxHp || 100),
+          p.currentAmmo || 'bala_ferro',
+          p.bankGold || 0,
+          p.bankUnlocked ? 1 : 0,
+          JSON.stringify(p.bonusInventory || []),
+          p.activeBonusShipStats ? JSON.stringify(p.activeBonusShipStats) : null,
+          p.name, // WHERE name=?
+        ]);
+      }));
       console.log(`💾 Batch save: ${playersToSave.length} players in ${Date.now() - start}ms`);
     } catch (err) {
       console.error('[DB] Batch save error:', err);
@@ -607,7 +543,7 @@ class DBManager {
 
   _shutdown() {
     console.log('[DB] Shutting down, flushing pending saves...');
-    
+
     // Limpar todos os timers pendentes
     for (const [name, pending] of this._pending.entries()) {
       clearTimeout(pending.timer);
@@ -617,14 +553,14 @@ class DBManager {
       }
       pending.player = null;
     }
-    
+
     this._pending.clear();
     clearInterval(this._cleanupInterval);
-    
+
     // Fecha o pool
     pool.end().then(() => {
       console.log('[DB] Pool closed');
-    });
+    }).catch(() => {});
   }
 }
 
