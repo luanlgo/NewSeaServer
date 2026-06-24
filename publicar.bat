@@ -1,16 +1,14 @@
 @echo off
-chcp 65001 >nul
 setlocal enabledelayedexpansion
-title Sea of Code — Publicar Build
+title Sea of Code - Publicar Build
 cd /d "%~dp0"
 
 echo.
-echo  ╔══════════════════════════════════════════╗
-echo  ║   Sea of Code — Publicar nova versao     ║
-echo  ╚══════════════════════════════════════════╝
+echo  ==========================================
+echo     Sea of Code - Publicar nova versao
+echo  ==========================================
 echo.
 
-:: ── Lê versão atual do manifest (via PowerShell) ─────────────────────────────
 for /f "usebackq delims=" %%v in (
   `powershell -NoProfile -Command "(Get-Content 'launcher-manifest.json' | ConvertFrom-Json).version"`
 ) do set CURRENT_VER=%%v
@@ -20,7 +18,6 @@ if "!CURRENT_VER!"=="" (
   pause & exit /b 1
 )
 
-:: ── Incrementa patch (major.minor.PATCH++) ───────────────────────────────────
 for /f "tokens=1,2,3 delims=." %%a in ("!CURRENT_VER!") do (
   set VER_MAJ=%%a
   set VER_MIN=%%b
@@ -30,62 +27,39 @@ set /a VER_PAT_NEW=!VER_PAT!+1
 set NEW_VER=!VER_MAJ!.!VER_MIN!.!VER_PAT_NEW!
 
 echo  Versao atual : !CURRENT_VER!
-echo  Nova versao  : !NEW_VER!
-echo.
-echo  Pressione Enter para aceitar, ou digite outra versao (ex: 0.3.0):
+echo  Nova versao  : !NEW_VER!  (Enter para confirmar, ou digite outra ex: 0.3.0)
 set /p CUSTOM_VER="  > "
 if not "!CUSTOM_VER!"=="" set NEW_VER=!CUSTOM_VER!
+echo  Publicando v!NEW_VER!...
 
-:: ── Pasta do build ────────────────────────────────────────────────────────────
-set DEFAULT_BUILD=C:\Work\NewSeaGodot\builds\windows
-echo.
-echo  Pasta do build (Enter para padrao):
-echo    %DEFAULT_BUILD%
-set /p BUILD_DIR="  > "
-if "!BUILD_DIR!"=="" set BUILD_DIR=%DEFAULT_BUILD%
+set BUILD_DIR=C:\Work\NewSeaGodot\builds\windows
 
-:: ── (Opcional) Exportar via Godot headless ───────────────────────────────────
 echo.
-set /p DO_EXPORT="  Exportar o jogo pelo Godot agora? (s/n): "
+set /p DO_EXPORT="  Exportar o jogo agora? (s/n): "
 if /i "!DO_EXPORT!"=="s" (
-  set GODOT_EXE=
-  for %%G in (
-    "C:\Program Files\Godot\Godot_v4.6.1-stable_win64.exe"
-    "C:\Program Files\Godot\Godot.exe"
-    "C:\tools\godot\Godot.exe"
-  ) do if exist %%~G (if "!GODOT_EXE!"=="" set GODOT_EXE=%%~G)
-
-  if "!GODOT_EXE!"=="" (
-    set /p GODOT_EXE="  Caminho do Godot.exe: "
-  )
-  echo.
+  set GODOT_EXE=C:\Users\luang\Downloads\Godot_v4.6.1-stable_win64.exe\Godot_v4.6.1-stable_win64.exe
   echo  Exportando com Godot headless...
-  if not exist "!BUILD_DIR!" mkdir "!BUILD_DIR!"
-  "!GODOT_EXE!" --headless --path "C:\Work\NewSeaGodot" ^
-    --export-release "Windows Desktop" "!BUILD_DIR!\SeaOfCode.exe"
+  "!GODOT_EXE!" --headless --path "C:\Work\NewSeaGodot" --export-release "Windows Desktop" "!BUILD_DIR!\SeaOfCode.exe"
   if errorlevel 1 (
-    echo [ERRO] Falha ao exportar. Verifique o preset "Windows Desktop" no Godot.
+    echo [ERRO] Falha ao exportar.
     pause & exit /b 1
   )
   echo  Exportacao concluida!
 )
 
-:: ── Verifica arquivos do build ────────────────────────────────────────────────
 echo.
 echo  Verificando arquivos...
 if not exist "!BUILD_DIR!\SeaOfCode.exe" (
   echo [ERRO] SeaOfCode.exe nao encontrado em: !BUILD_DIR!
-  echo        Exporte o projeto Godot antes de publicar.
-  pause & exit /b 1
-)
-if not exist "!BUILD_DIR!\SeaOfCode.pck" (
-  echo [ERRO] SeaOfCode.pck nao encontrado em: !BUILD_DIR!
   pause & exit /b 1
 )
 echo   [OK] SeaOfCode.exe
-echo   [OK] SeaOfCode.pck
+if exist "!BUILD_DIR!\SeaOfCode.pck" (
+  echo   [OK] SeaOfCode.pck
+) else (
+  echo   [INFO] PCK embutido no exe.
+)
 
-:: ── Calcula SHA-256 e atualiza manifest ──────────────────────────────────────
 echo.
 echo  Calculando SHA-256 e atualizando manifest...
 node scripts\publish.js !NEW_VER! "!BUILD_DIR!"
@@ -94,71 +68,71 @@ if errorlevel 1 (
   pause & exit /b 1
 )
 
-:: ── Edita changelog no Notepad ───────────────────────────────────────────────
 echo.
-echo  Abrindo launcher-manifest.json para editar o changelog...
-echo  (Feche o Notepad quando terminar)
-notepad launcher-manifest.json
-echo  Changelog salvo.
+echo  Gerando changelog dos commits recentes...
+for /f "usebackq delims=" %%t in (
+  `git describe --tags --abbrev=0 2^>nul`
+) do set LAST_TAG=%%t
 
-:: ── Git commit + push do manifest ────────────────────────────────────────────
-echo.
-set /p DO_GIT="  Commitar e enviar manifest (s/n)? "
-if /i "!DO_GIT!"=="s" (
-  git add launcher-manifest.json
-  git commit -m "release: v!NEW_VER!"
-  git push
-  if errorlevel 1 (
-    echo  AVISO: git push falhou. Envie o manifest manualmente.
-  ) else (
-    echo  Manifest enviado!
-  )
+if "!LAST_TAG!"=="" (
+  set GIT_LOG_CMD=git log --oneline -10 --pretty=format:"%%s"
+) else (
+  set GIT_LOG_CMD=git log !LAST_TAG!..HEAD --oneline --pretty=format:"%%s"
 )
 
-:: ── GitHub Release ────────────────────────────────────────────────────────────
+powershell -NoProfile -Command ^
+  "$ver = '!NEW_VER!'; ^
+   $lastTag = '!LAST_TAG!'; ^
+   $range = if ($lastTag) { '$lastTag..HEAD' } else { '-10' }; ^
+   $logs = git log $(if ($lastTag) { \"$lastTag..HEAD\" } else { '-10' }) --pretty=format:'%%s' 2>$null; ^
+   $entries = @(\"[v$ver] - $(Get-Date -Format 'yyyy-MM-dd')\") + $logs; ^
+   $json = Get-Content 'launcher-manifest.json' | ConvertFrom-Json; ^
+   $json.changelog = $entries; ^
+   $json | ConvertTo-Json -Depth 5 | Set-Content 'launcher-manifest.json' -Encoding UTF8; ^
+   Write-Host '  [OK] Changelog gerado com' $entries.Count 'entradas.'"
+
+echo.
+echo  Commitando manifest...
+git add launcher-manifest.json
+git commit -m "release: v!NEW_VER!"
+git push
+if errorlevel 1 (
+  echo  AVISO: git push falhou.
+) else (
+  echo  Manifest enviado!
+)
+
 echo.
 echo  Criando GitHub Release v!NEW_VER!...
 where gh >nul 2>&1
 if errorlevel 1 (
-  echo  gh CLI nao encontrado. Abra o link manualmente e faca upload de:
-  echo    - !BUILD_DIR!\SeaOfCode.exe
-  echo    - !BUILD_DIR!\SeaOfCode.pck
-  echo.
-  start https://github.com/luanlgo/NewSea/releases/new
+  echo  gh CLI nao encontrado. Faca upload manual em:
+  echo    https://github.com/luanlgo/NewSeaGodot/releases/new
 ) else (
-  gh release create "v!NEW_VER!" ^
-    "!BUILD_DIR!\SeaOfCode.exe" ^
-    "!BUILD_DIR!\SeaOfCode.pck" ^
-    --repo luanlgo/NewSea ^
-    --title "Sea of Code v!NEW_VER!" ^
-    --notes "Build !NEW_VER! — veja launcher-manifest.json para o changelog."
+  set GH_FILES="!BUILD_DIR!\SeaOfCode.exe"
+  if exist "!BUILD_DIR!\SeaOfCode.pck" set GH_FILES=!GH_FILES! "!BUILD_DIR!\SeaOfCode.pck"
+  gh release create "v!NEW_VER!" !GH_FILES! --repo luanlgo/NewSeaGodot --title "Sea of Code v!NEW_VER!" --notes "Build !NEW_VER!"
   if errorlevel 1 (
-    echo  AVISO: erro ao criar release. Tente manualmente.
-    start https://github.com/luanlgo/NewSea/releases/new
+    echo  AVISO: erro ao criar release.
   ) else (
-    echo  Release criado! Jogadores vao receber o update automaticamente.
+    echo  Release criado!
   )
 )
 
-:: ── Deploy no servidor de producao ──────────────────────────────────────────
 echo.
-set /p DO_DEPLOY="  Atualizar servidor de producao via SSH? (s/n): "
-if /i "!DO_DEPLOY!"=="s" (
-  echo  Conectando em root@164.163.9.91...
-  ssh root@164.163.9.91 "cd ~/NewSeaServer && git pull"
+set /p TEM_SERVER="  Teve alteracoes no servidor? (s/n): "
+if /i "!TEM_SERVER!"=="s" (
+  ssh root@164.163.9.91 "cd ~/NewSeaServer && git pull && pm2 restart server"
   if errorlevel 1 (
-    echo  AVISO: SSH falhou. Atualize o servidor manualmente:
-    echo    ssh root@164.163.9.91
-    echo    cd ~/NewSeaServer ^&^& git pull
+    echo  AVISO: SSH falhou.
   ) else (
-    echo  Servidor atualizado! Manifest v!NEW_VER! ativo.
+    echo  Servidor atualizado!
   )
 )
 
-:: ── Fim ───────────────────────────────────────────────────────────────────────
 echo.
-echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo  ==========================================
 echo    v!NEW_VER! publicada com sucesso!
-echo  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo  ==========================================
 echo.
 pause

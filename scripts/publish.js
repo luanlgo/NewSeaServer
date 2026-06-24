@@ -43,7 +43,7 @@ if (!fs.existsSync(buildDir)) {
 
 // ── Config ───────────────────────────────────────────────────────────────────
 // Altere para o seu repositório GitHub
-const GITHUB_REPO  = 'luanlgo/NewSea';
+const GITHUB_REPO  = 'luanlgo/NewSeaGodot';
 const FILES_TO_PACK = ['SeaOfCode.exe', 'SeaOfCode.pck'];
 
 const manifestPath = path.join(__dirname, '..', 'launcher-manifest.json');
