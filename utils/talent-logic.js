@@ -6,10 +6,11 @@
 
 /**
  * XP mínimo para a n-ésima compra de talento (0-indexed).
- * Fórmula: floor(xpBase * xpGrowth^totalSpent)
+ * Fórmula: min(floor(xpBase * xpGrowth^totalSpent), xpCap)
+ * O teto evita que a exponencial exploda nos últimos pontos (1.3^40 ≈ 14,4M).
  */
-function calcXpRequired(totalSpent, xpBase, xpGrowth) {
-  return Math.floor(xpBase * Math.pow(xpGrowth, totalSpent));
+function calcXpRequired(totalSpent, xpBase, xpGrowth, xpCap = Infinity) {
+  return Math.min(Math.floor(xpBase * Math.pow(xpGrowth, totalSpent)), xpCap);
 }
 
 /**
@@ -55,7 +56,7 @@ function recalcMaxHp(player, shipDefs, talentDefs) {
  * Retorna uma string de erro, ou null se a compra é válida.
  * Não faz nenhum I/O — apenas lê o estado do player e retorna.
  */
-function validateBuyTalent(player, talentId, { talentDefs, costTiers, xpBase, xpGrowth }) {
+function validateBuyTalent(player, talentId, { talentDefs, costTiers, xpBase, xpGrowth, xpCap = Infinity }) {
   const tDef = talentDefs[talentId];
   if (!tDef) return 'Talento inválido.';
 
@@ -65,7 +66,7 @@ function validateBuyTalent(player, talentId, { talentDefs, costTiers, xpBase, xp
 
   if (curLevel >= tDef.max) return `${tDef.name} já está no nível máximo!`;
 
-  const xpReq = calcXpRequired(totalSpent, xpBase, xpGrowth);
+  const xpReq = calcXpRequired(totalSpent, xpBase, xpGrowth, xpCap);
   if ((player.mapXp || 0) < xpReq) {
     return `XP insuficiente! Necessário: ${xpReq.toLocaleString()} XP de mapa`;
   }

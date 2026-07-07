@@ -26,8 +26,11 @@ const TALENT_COST_TIERS = [
 ];
 
 // ── XP mínimo para a n-ésima compra (0-indexed) ──────────────────────────────
-// Fórmula: TALENT_XP_BASE × TALENT_XP_GROWTH^n → 400, 520, 676, …
+// Fórmula: min(TALENT_XP_BASE × TALENT_XP_GROWTH^n, TALENT_XP_CAP) → 400, 520, 676, …
+// Sem o teto, 1.3^40 exigia ~14,4M de XP no último ponto — inalcançável.
+// Com o teto, a curva cresce normal até ~2M (n≈32) e trava lá.
 const TALENT_XP_BASE   = 400;
 const TALENT_XP_GROWTH = 1.3;
+const TALENT_XP_CAP    = 2_000_000;
 
-module.exports = { TALENT_DEFS, TALENT_COST_TIERS, TALENT_XP_BASE, TALENT_XP_GROWTH };
+module.exports = { TALENT_DEFS, TALENT_COST_TIERS, TALENT_XP_BASE, TALENT_XP_GROWTH, TALENT_XP_CAP };
