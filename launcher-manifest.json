@@ -1,7 +1,9 @@
 {
-  "version": "0.1.4",
-  "date": "2026-06-27",
+  "version": "0.1.6",
+  "date": "2026-07-08",
   "changelog": [
+    "[v0.1.6] — descreva as mudanças aqui",
+    "[v0.1.5] — descreva as mudanças aqui",
     "[v0.1.4] — descreva as mudanças aqui",
     "[v0.1.3] — descreva as mudanças aqui",
     "[v0.1.2] — descreva as mudanças aqui",
@@ -15,9 +17,9 @@
   "files": [
     {
       "name": "SeaOfCode.exe",
-      "url": "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.4/SeaOfCode.exe",
-      "sha256": "45ef053925d46ddf67f4ad5741ed9dc6fef593afb62e43191d6df9a98e0f1ede",
-      "size": 297510056
+      "url": "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.6/SeaOfCode.exe",
+      "sha256": "235752b47e67cfe62e3e1f511863d741f7db0cd288a6ca5454509e34b6e73b5f",
+      "size": 297966048
     }
   ]
 }

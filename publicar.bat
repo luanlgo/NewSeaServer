@@ -80,16 +80,7 @@ if "!LAST_TAG!"=="" (
   set GIT_LOG_CMD=git log !LAST_TAG!..HEAD --oneline --pretty=format:"%%s"
 )
 
-powershell -NoProfile -Command ^
-  "$ver = '!NEW_VER!'; ^
-   $lastTag = '!LAST_TAG!'; ^
-   $range = if ($lastTag) { '$lastTag..HEAD' } else { '-10' }; ^
-   $logs = git log $(if ($lastTag) { \"$lastTag..HEAD\" } else { '-10' }) --pretty=format:'%%s' 2>$null; ^
-   $entries = @(\"[v$ver] - $(Get-Date -Format 'yyyy-MM-dd')\") + $logs; ^
-   $json = Get-Content 'launcher-manifest.json' | ConvertFrom-Json; ^
-   $json.changelog = $entries; ^
-   $json | ConvertTo-Json -Depth 5 | Set-Content 'launcher-manifest.json' -Encoding UTF8; ^
-   Write-Host '  [OK] Changelog gerado com' $entries.Count 'entradas.'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ver='!NEW_VER!'; $tag='!LAST_TAG!'; if ($tag) { $logs=@(git log \"$tag..HEAD\" --pretty=format:'%%s') } else { $logs=@(git log -10 --pretty=format:'%%s') }; $entries=@('[v'+$ver+'] - '+(Get-Date -Format 'yyyy-MM-dd')) + $logs; $j=Get-Content 'launcher-manifest.json' -Raw | ConvertFrom-Json; $j.changelog=$entries; $j | ConvertTo-Json -Depth 5 | Set-Content 'launcher-manifest.json' -Encoding UTF8; Write-Host ('  [OK] Changelog gerado com '+$entries.Count+' entradas.')"
 
 echo.
 echo  Commitando manifest...
