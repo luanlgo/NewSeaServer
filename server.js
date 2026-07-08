@@ -9,6 +9,25 @@ const path    = require('path');
 const DEBUG = !!process.env.DEBUG;
 function debugServer(...args) { if (DEBUG) console.log(...args); }
 
+// Cheat/debug game commands (spawn pet, give food, level pet) — OFF by default.
+// Enable only in dev with ALLOW_DEBUG_CMDS=1; never in production.
+const ALLOW_DEBUG_CMDS = process.env.ALLOW_DEBUG_CMDS === '1';
+
+// WebSocket anti-flood (token bucket por conexão). Cliente legítimo manda ~10-20
+// msg/s (input a 10 Hz + ações esporádicas); estes limites são bem folgados e só
+// atingem floods reais. Ajustável por env.
+const WS_MSG_BUCKET_CAP    = parseInt(process.env.WS_MSG_BUCKET_CAP)   || 120; // rajada máxima
+const WS_MSG_REFILL_RATE   = parseInt(process.env.WS_MSG_REFILL_RATE)  || 60;  // msgs/s sustentado
+const WS_MSG_MAX_VIOLATIONS = parseInt(process.env.WS_MSG_MAX_VIOLATIONS) || 300; // descartes seguidos antes de derrubar
+const WS_MAX_PAYLOAD       = parseInt(process.env.WS_MAX_PAYLOAD)      || 32 * 1024; // 32 KB — msgs legítimas têm < 2 KB
+
+// Server-side secret for hashing device tokens (defense in depth). Optional.
+const crypto = require('crypto');
+const AUTH_PEPPER = process.env.AUTH_PEPPER || '';
+function hashSecret(secret) {
+  return crypto.createHash('sha256').update(String(secret) + AUTH_PEPPER).digest('hex');
+}
+
 // ─── Map Definitions ─────────────────────────────────────────────────────────
 // Each map defines NPC base stats, XP requirements, and visual hints for the client
 
@@ -29,8 +48,9 @@ const app    = express();
 
 app.use(compression());
 const server = http.createServer(app);
-const wss    = new WebSocket.Server({ 
+const wss    = new WebSocket.Server({
   server,
+  maxPayload: WS_MAX_PAYLOAD, // rejeita frames gigantes (anti-DoS de memória)
   perMessageDeflate: {
     zlibDeflateOptions: {
       chunkSize: 1024,
@@ -117,6 +137,7 @@ const {
   TALENT_COST_TIERS,
   TALENT_XP_BASE,
   TALENT_XP_GROWTH,
+  TALENT_XP_CAP,
   DIFFICULTIES,
   difficultyDef,
   isDifficultyUnlocked,
@@ -1695,9 +1716,31 @@ wss.on('connection', (ws) => {
   let player = null;
 
   ws.isAlive = true;
+  // Estado do anti-flood (token bucket)
+  ws._rlTokens     = WS_MSG_BUCKET_CAP;
+  ws._rlLast       = Date.now();
+  ws._rlViolations = 0;
   ws.on('pong', () => { ws.isAlive = true; });
 
   ws.on('message', async (raw) => {
+    // ── Anti-flood: recarrega tokens e descarta excesso ──────────────────────
+    const _rlNow = Date.now();
+    ws._rlTokens = Math.min(
+      WS_MSG_BUCKET_CAP,
+      ws._rlTokens + ((_rlNow - ws._rlLast) / 1000) * WS_MSG_REFILL_RATE
+    );
+    ws._rlLast = _rlNow;
+    if (ws._rlTokens < 1) {
+      if (++ws._rlViolations > WS_MSG_MAX_VIOLATIONS) {
+        console.warn(`[SECURITY] Flood de "${player?.name || 'desconhecido'}" — encerrando conexão`);
+        return ws.terminate();
+      }
+      return; // descarta a mensagem excedente
+    }
+    ws._rlTokens -= 1;
+    ws._rlViolations = 0;
+    _serverMetrics.messagesReceived++;
+
     try {
       const msg = JSON.parse(raw);
       if (!player && msg.type !== 'login') return;
@@ -1707,12 +1750,6 @@ wss.on('connection', (ws) => {
         case 'login': {
           const result = await handleLogin(ws, msg);
           if (result) player = result; // null = DB load falhou, cliente recebeu erro
-          break;
-        }
-
-        case 'speed_buff': {
-          if (!player) break;
-          handleSpeedBuff(player, msg);
           break;
         }
 
@@ -1929,15 +1966,6 @@ wss.on('connection', (ws) => {
             sendTo(ws, { type: 'respawn', x: player.x, z: player.z, hp: player.hp, maxHp: player.maxHp });
             sendTo(ws, { type: 'cannon_state', charges: totalCharges, maxCharges: totalCharges, cooldown: 0, cooldownMax: player.cannonCooldownMax, homingCharges: 0 });
             sendTo(ws, { type: 'safe_period', duration: SAFE_MS });
-          }
-          break;
-        }
-
-        case 'chat': {
-          // broadcast chat message to all connected players (global chat)
-          const text = (msg.text || '').toString().substring(0, 200);
-          if (text && player) {
-            addEvent({ type: 'chat', from: player.name || 'Anon', text });
           }
           break;
         }
@@ -2191,11 +2219,21 @@ wss.on('connection', (ws) => {
         case 'pet_equip':
         case 'pet_attack':
         case 'pet_skill':
-        case 'pet_capture':
+        case 'pet_capture': {
+          if (!player || !player._dbLoaded) break;
+          petManager.handleMessage(player, msg);
+          break;
+        }
+
+        // ── Debug/cheat commands — só quando ALLOW_DEBUG_CMDS=1 ───────────────
         case 'debug_spawn_pet':
         case 'debug_give_food':
         case 'debug_level_pet': {
           if (!player || !player._dbLoaded) break;
+          if (!ALLOW_DEBUG_CMDS) {
+            console.warn(`[SECURITY] '${msg.type}' bloqueado de ${player.name} (ALLOW_DEBUG_CMDS off)`);
+            break;
+          }
           petManager.handleMessage(player, msg);
           break;
         }
@@ -2239,6 +2277,43 @@ async function handleLogin(ws, msg) {
     sendTo(ws, { type: 'error', message: 'Erro ao carregar dados. Tente reconectar.' });
     return null;
   }
+
+  // ── Autenticação por token de dispositivo (trust-on-first-use) ─────────────
+  // O cliente gera um token aleatório na 1ª vez e o guarda localmente. O servidor
+  // vincula o token à conta no primeiro login e passa a exigi-lo nos próximos.
+  // Contas antigas (sem token) permanecem acessíveis até o 1º login com token.
+  const provided     = (typeof msg.secret === 'string' && msg.secret.length >= 8) ? msg.secret : null;
+  const providedHash = provided ? hashSecret(provided) : null;
+  if (saved.secretHash) {
+    if (!providedHash || providedHash !== saved.secretHash) {
+      console.warn(`[SECURITY] Login negado para "${player.name}" (token inválido/ausente)`);
+      players.delete(player.id);
+      playerManager.remove(player.id);
+      sendTo(ws, { type: 'auth_error', message: 'Nome já registrado em outro dispositivo.' });
+      return null;
+    }
+  } else if (providedHash) {
+    try {
+      await db.setSecretHash(player.name, providedHash);
+      console.log(`🔐 Token vinculado à conta "${player.name}"`);
+    } catch (e) {
+      console.error(`[login] setSecretHash falhou para ${player.name}:`, e);
+    }
+  }
+
+  // ── Sessão única: derruba conexão anterior de mesmo nome (anti-dupe) ────────
+  for (const [pid, other] of players) {
+    if (pid === player.id || other.name !== player.name) continue;
+    console.log(`[login] Derrubando sessão anterior de "${player.name}"`);
+    try { sendTo(other.ws, { type: 'kicked', message: 'Sua conta entrou em outra sessão.' }); } catch (_) {}
+    if (other._dbLoaded) db.save(other, true).catch(() => {});
+    partyManager.removePlayer(other.id, players);
+    partyManager.clearInvites(other.id);
+    playerManager.remove(other.id);
+    players.delete(other.id);
+    try { other.ws?.terminate?.(); } catch (_) {}
+  }
+
   // Garante que os managers do mapa do jogador existam
   ensureManagersForMap(saved.mapLevel || 1);
 
@@ -2475,30 +2550,6 @@ async function handleLogin(ws, msg) {
 
   console.log(`[+] ${player.name} joined`);
   return player;
-}
-
-function handleSpeedBuff(player, msg) {
-  const { targetId, bonus, duration } = msg;
-
-  // Aplica buff de velocidade
-  const target = players.get(targetId) || players.get(Number(targetId));
-  if (target) {
-    // Salva velocidade original se não tiver
-    if (!target._originalSpeed) {
-      target._originalSpeed = target.speed || 1.0;
-    }
-
-    // Aplica buff
-    target.speed = target._originalSpeed * (1 + bonus);
-    target._speedBuffUntil = Date.now() + duration;
-
-    // Notifica o cliente
-    sendTo(target.ws, {
-      type: 'speed_buff_applied',
-      bonus: bonus,
-      duration: duration
-    });
-  }
 }
 
 function handleGoldShieldCost(player, msg) {
@@ -4008,7 +4059,7 @@ function handleBuyTalent(player, msg) {
   }
 
   // Requisito de XP (não gasta XP, apenas verifica o mínimo)
-  const xpReq = Math.floor(TALENT_XP_BASE * Math.pow(TALENT_XP_GROWTH, totalSpent));
+  const xpReq = _calcXpRequired(totalSpent, TALENT_XP_BASE, TALENT_XP_GROWTH, TALENT_XP_CAP);
   if ((player.mapXp || 0) < xpReq) {
     sendTo(player.ws, { type: 'error', message: `XP insuficiente! Necessário: ${xpReq.toLocaleString()} XP de mapa` });
     return;
