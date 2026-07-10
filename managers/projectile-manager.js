@@ -400,7 +400,11 @@ class ProjectileManager {
     const now = Date.now();
 
     // ── Relic: invincibility (r2) ────────────────────────────────────────────
-    if (!isNPC && target.relicInvincibleExpires && now < target.relicInvincibleExpires) return;
+    if (!isNPC && target.relicInvincibleExpires && now < target.relicInvincibleExpires) {
+      // Avisa o mapa que o escudo absorveu o golpe — a bolha pulsa em branco
+      this._broadcastToMap(target.mapLevel || 1, { type: 'shield_block', targetId: target.id });
+      return;
+    }
 
     // ── Relic: gold shield (r5) — 30% DR, 10% of blocked gold cost ──────────
     let finalDmg = dmg;

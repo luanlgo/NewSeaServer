@@ -1198,7 +1198,7 @@ setInterval(() => {
             if (!npc._damageMap) npc._damageMap = new Map();
             npc._damageMap.set(p.id, (npc._damageMap.get(p.id) || 0) + aDamage);
           }
-          aHits.push({ id: npc.id, hp: npc.hp, isNPC: true });
+          aHits.push({ id: npc.id, dmg: aDamage, hp: npc.hp, isNPC: true });
           if (npc.hp <= 0 && !npc.dead) {
             npc.dead = true;
             if (npc.isBoss) {
@@ -1244,7 +1244,7 @@ setInterval(() => {
           if (Math.hypot(target.x - p.x, target.z - p.z) > aRange) return;
           target.hp = Math.max(0, target.hp - aDamage);
           target.lastCombatTime = now;
-          aHits.push({ id: target.id, hp: target.hp, isNPC: false });
+          aHits.push({ id: target.id, dmg: aDamage, hp: target.hp, isNPC: false });
           if (target.hp <= 0 && !target.dead) {
             target.dead = true;
             addEvent({ type: 'entity_dead', id: target.id, isNPC: false, killerId: p.id }, target.mapLevel);
@@ -3600,7 +3600,16 @@ function handleUnequipRelic(player, msg) {
     const uInst = (player.inventory.relics || []).find(r => r.instanceId === uInstanceId);
     if (uInst) {
       const uDef = RELIC_DEFS[uInst.relicId];
-      if (uDef?.effect === 'gold_shield') player.relicGoldShieldActive = false;
+      if (uDef?.effect === 'gold_shield' && player.relicGoldShieldActive) {
+        player.relicGoldShieldActive = false;
+        // Todos do mapa (incluindo o dono) desligam a bolha dourada
+        addEvent({
+          type:     'relic_effect',
+          casterId: player.id,
+          effect:   'gold_shield',
+          active:   false,
+        }, player.mapLevel || 1);
+      }
     }
   }
   player.relicDeck.splice(uPos, 1);
@@ -3648,6 +3657,13 @@ function handleUseRelic(player, msg) {
         mana:        player.mana,
         maxMana:     player.maxMana,
       });
+      // Broadcast para todos do mapa verem a bolha dourada no barco
+      addEvent({
+        type:     'relic_effect',
+        casterId: player.id,
+        effect:   'gold_shield',
+        active:   player.relicGoldShieldActive,
+      }, player.mapLevel || 1);
     }
     return;
   }
@@ -3670,10 +3686,23 @@ function handleUseRelic(player, msg) {
     effectPayload.maxHp = player.maxHp;
     effectPayload.healed = healed;
     if (healed > 0) grantSkillXp(player, 'vida', Math.floor(healed / 10), wss);
+    // Broadcast para todos verem a cura no barco desse jogador
+    addEvent({
+      type:     'relic_effect',
+      casterId: player.id,
+      effect:   'heal_ship',
+    }, player.mapLevel || 1);
 
   } else if (relicDef.effect === 'invincible') {
     player.relicInvincibleExpires = now2 + relicDef.duration;
     effectPayload.duration = relicDef.duration;
+    // Broadcast para todos verem a bolha de invencibilidade
+    addEvent({
+      type:     'relic_effect',
+      casterId: player.id,
+      effect:   'invincible',
+      duration: relicDef.duration,
+    }, player.mapLevel || 1);
 
   } else if (relicDef.effect === 'lightning') {
     const LIGHTNING_RADIUS = relicDef.radius || 20;
@@ -3876,6 +3905,13 @@ function handleUseRelic(player, msg) {
     player.relicSpeedExpires = now2 + relicDef.duration;
     player.relicSpeedBonus   = relicDef.speedBonus;
     effectPayload.duration   = relicDef.duration;
+    // Broadcast para todos verem o rastro de vento no barco
+    addEvent({
+      type:     'relic_effect',
+      casterId: player.id,
+      effect:   'speed_boost',
+      duration: relicDef.duration,
+    }, player.mapLevel || 1);
 
   } else if (relicDef.effect === 'attract') {
     // Attract all NPCs within range toward this player for `duration` ms
