@@ -430,7 +430,9 @@ MAP_DEFS[5] = {
     fireInterval:   3000,
     dummy: { x: 0, z: -120 },
     collisionRadius: 18,
-    detectionRadius: 150,
+    // Precisa cobrir o spawn do treino (0, 50) → distância 170 da torre.
+    // Com 150 a torre nunca atirava em quem entrava e ficava parado.
+    detectionRadius: 250,
     model: '/models/places/massive_defensive_sea_tower.glb',
     scale: 1.5,
     yOffset: 0,
