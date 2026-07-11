@@ -1,8 +1,9 @@
 {
-    "version":  "0.1.8",
+    "version":  "0.1.9",
     "date":  "2026-07-11",
     "changelog":  [
-                      "[v0.1.8] - 2026-07-11",
+                      "[v0.1.9] - 2026-07-11",
+                      "release: v0.1.8",
                       "fix: BOM no launcher-manifest.json quebrava publish.js",
                       "fix(publicar): export do publicar.bat injeta URL de producao",
                       "release: v0.1.7",
@@ -11,15 +12,14 @@
                       "release: v0.1.6 + fix no publicar.bat",
                       "feat: migração MySQL, anti-flood, auth TOFU por dispositivo e sessão única",
                       "fix: teto no XP exigido para comprar talentos (1.3^n explodia p/ ~14,4M)",
-                      "release: v0.1.3 - fix repo luanlgo/NewSeaGodot",
-                      "release: v0.1.3"
+                      "release: v0.1.3 - fix repo luanlgo/NewSeaGodot"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.8/SeaOfCode.exe",
-                      "sha256":  "84dccfd7a3dd9f566b23f6a43f5d5540a7235d7a79f4ff870c447a137696dc19",
-                      "size":  293904912
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.9/SeaOfCode.exe",
+                      "sha256":  "8ee40c369c92707263a053f4b08c2a4d74084b91cbd9258445ab5833e8881dd3",
+                      "size":  293918944
                   }
               ]
 }
