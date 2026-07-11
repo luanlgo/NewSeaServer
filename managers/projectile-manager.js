@@ -357,8 +357,12 @@ class ProjectileManager {
       const shooter2 = this.players.get(proj.ownerId);
       const isAlly   = shooter2 && this.partyManager && this.partyManager.areAllies(shooter2.id, target.id);
       if (isAlly) {
-        const ammo        = AMMO_DEFS['bala_cura'] || {};
-        const HEAL_AMOUNT = ammo.healAmount || 5;
+        const ammo = AMMO_DEFS['bala_cura'] || {};
+        // Cura escala com o poder de fogo do atirante (healMult × cannonDamage).
+        // O valor fixo antigo (5 HP) era imperceptível na escala atual de HP.
+        const healMult    = ammo.healMult || 3;
+        const HEAL_AMOUNT = Math.max(ammo.healAmount || 5,
+                                     Math.round((shooter2.cannonDamage || 0) * healMult));
         target.hp = Math.min(target.maxHp, target.hp + HEAL_AMOUNT);
         this._broadcastToMap(target.mapLevel || 1, {
           type: 'heal', targetId: target.id,

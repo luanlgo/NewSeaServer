@@ -8,6 +8,7 @@ const MAP_DEFS = {};
 // ── Mapa 1: Mar dos Corsários ─────────────────────────────────────────────────
 MAP_DEFS[1] = {
   name:        'Mar dos Corsários',
+  weather:     'clear',   // clima FIXO do mapa (igual p/ todos): clear|fog|rain|storm
   hasShop:     true,
   xpRequired:  0,
   xpToAdvance: 1800,
@@ -94,6 +95,7 @@ MAP_DEFS[1] = {
 // ── Mapa 2: Baía das Sombras ──────────────────────────────────────────────────
 MAP_DEFS[2] = {
   name:        'Baía das Sombras',
+  weather:     'fog',
   hasShop:     true,
   xpRequired:  1800,
   xpToAdvance: 8000,
@@ -175,6 +177,7 @@ MAP_DEFS[2] = {
 // ── Mapa 3: Ilha do Comércio ──────────────────────────────────────────────────
 MAP_DEFS[3] = {
   name:        'Ilha do Comércio',
+  weather:     'clear',
   proximityIsland: { x: 0, z: 0, radius: 250 },
   xpRequired:  13000,
   xpToAdvance: 20000,
@@ -320,6 +323,7 @@ MAP_DEFS[3] = {
 // ── Mapa 4: Ilha do Farol ─────────────────────────────────────────────────────
 MAP_DEFS[4] = {
   name:         'Ilha do Farol',
+  weather:      'clear',
   proximityFarol: { x: 0, z: 0, radius: 160 },
   sideMap: [{norte: 6, right: 3}],
   xpRequired:   20000,
@@ -403,6 +407,7 @@ MAP_DEFS[4] = {
 // ── Mapa 5: Campo de Treino AFK ───────────────────────────────────────────────
 MAP_DEFS[5] = {
   name:          'Campo de Treino',
+  weather:       'clear',
   isTrainingMap: true,
   sideMap:       null,
   xpRequired:  0,
@@ -443,6 +448,7 @@ MAP_DEFS[5] = {
 // ── Mapa 6: Mar das Lamentações ───────────────────────────────────────────────
 MAP_DEFS[6] = {
   name:        'Mar das Lamentações',
+  weather:     'storm',
   sideMap:     [{sul: 4, right: 10}],
   xpRequired:  30000,
   xpToAdvance: null,
@@ -516,6 +522,7 @@ MAP_DEFS[6] = {
 
 MAP_DEFS[7] = {
   name:        'Baía dos Naufragados',
+  weather:     'rain',
   bonusMapId:  'bonus_map_1',
   isBonusMap:  true,
   xpRequired:  0,
@@ -570,6 +577,7 @@ MAP_DEFS[7] = {
 
 MAP_DEFS[8] = {
   name:        'Fortaleza do Esquecimento',
+  weather:     'fog',
   bonusMapId:  'bonus_map_2',
   isBonusMap:  true,
   xpRequired:  0,
@@ -624,6 +632,7 @@ MAP_DEFS[8] = {
 
 MAP_DEFS[9] = {
   name:        'Abismo dos Afundados',
+  weather:     'storm',
   bonusMapId:  'bonus_map_3',
   isBonusMap:  true,
   xpRequired:  0,
@@ -679,6 +688,7 @@ MAP_DEFS[9] = {
 // ── Mapa 10: Ilha do Banco ────────────────────────────────────────────────────
 MAP_DEFS[10] = {
   name:        'Ilha do Banco',
+  weather:     'clear',
   xpRequired:  0,
   xpToAdvance: null,
   size:        MAP_SIZE * 2,

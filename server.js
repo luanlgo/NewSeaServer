@@ -2812,8 +2812,10 @@ function handleAcceptWanted(player, msg) {
     targetId:     wTarget.id,
     targetName:   wTarget.name,
     targetMapLevel: wTarget.mapLevel || 1,
-    rewardGold:   1000 * (wTarget.npcKills || 0),
-    rewardDobrao: 10   * (wTarget.npcKills || 0),
+    // Piso garantido: presas com poucos/zero kills davam recompensa ZERO,
+    // fazendo a caçada parecer "sem recompensa" ao matar o alvo.
+    rewardGold:   Math.max(2000, 1000 * (wTarget.npcKills || 0)),
+    rewardDobrao: Math.max(20,   10   * (wTarget.npcKills || 0)),
   };
   sendTo(player.ws, {
     type:         'wanted_accepted',
@@ -3724,7 +3726,9 @@ function handleUseRelic(player, msg) {
     const lx = rTx != null ? rTx : player.x;
     const lz = rTz != null ? rTz : player.z;
 
-    // 1. Avisa TODOS os clientes imediatamente para mostrar o indicador visual
+    // 1. Avisa os clientes DO MESMO MAPA para mostrar o indicador visual.
+    //    Sem o mapLevel, addEvent bufferiza como evento global (key 0) e o VFX
+    //    do relâmpago aparecia para jogadores em TODOS os mapas.
     addEvent({
       type:     'lightning_cast',
       casterId: player.id,
@@ -3732,7 +3736,7 @@ function handleUseRelic(player, msg) {
       targetZ:  lz,
       radius:   LIGHTNING_RADIUS,
       castMs,
-    });
+    }, player.mapLevel || 1);
 
     // 1b. Notifica o NPC manager do mapa do jogador para que NPCs tentem desviar
     {
@@ -3824,12 +3828,19 @@ function handleUseRelic(player, msg) {
     effectPayload.castMs  = castMs;
 
   } else if (relicDef.effect === 'rocket') {
-    const castMs      = relicDef.castTime || 600;
     const ROCKET_RADIUS = relicDef.radius || 8;
     const rkTx = rTx != null ? rTx : player.x + Math.sin(player.rotation || 0) * 80;
     const rkTz = rTz != null ? rTz : player.z + Math.cos(player.rotation || 0) * 80;
 
-    // 1. Avisa TODOS os clientes imediatamente para mostrar o arco visual
+    // Tempo de voo escala com a distância (velocidade ~constante), com piso/teto —
+    // antes era fixo em castTime, então tiros longos "teleportavam". O dano é
+    // aplicado no fim desse castMs, então visual e impacto ficam sincronizados.
+    const rkDist  = Math.hypot(rkTx - player.x, rkTz - player.z);
+    const ROCKET_SPEED = 320; // unidades/segundo
+    const castMs = Math.round(Math.max(relicDef.castTime || 600, Math.min(2600, rkDist / ROCKET_SPEED * 1000)));
+
+    // 1. Avisa os clientes DO MESMO MAPA para mostrar o arco visual (sem mapLevel
+    //    o foguete aparecia em todos os mapas).
     addEvent({
       type:     'rocket_cast',
       casterId: player.id,
@@ -3839,7 +3850,7 @@ function handleUseRelic(player, msg) {
       targetZ:  rkTz,
       radius:   ROCKET_RADIUS,
       castMs,
-    });
+    }, player.mapLevel || 1);
 
     // 2. Aplica dano após o cast time (permite desviar)
     setTimeout(() => {
