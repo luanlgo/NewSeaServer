@@ -33,19 +33,37 @@ if not "!CUSTOM_VER!"=="" set NEW_VER=!CUSTOM_VER!
 echo  Publicando v!NEW_VER!...
 
 set BUILD_DIR=C:\Work\NewSeaGodot\builds\windows
+set CONFIG_FILE=C:\Work\NewSeaGodot\scripts\config.gd
+set "URL_PROD=ws://164.163.9.91:3001"
+set "URL_DEV=ws://localhost:3001"
 
 echo.
 set /p DO_EXPORT="  Exportar o jogo agora? (s/n): "
-if /i "!DO_EXPORT!"=="s" (
-  set GODOT_EXE=C:\Users\luang\Downloads\Godot_v4.6.1-stable_win64.exe\Godot_v4.6.1-stable_win64.exe
-  echo  Exportando com Godot headless...
-  "!GODOT_EXE!" --headless --path "C:\Work\NewSeaGodot" --export-release "Windows Desktop" "!BUILD_DIR!\SeaOfCode.exe"
-  if errorlevel 1 (
-    echo [ERRO] Falha ao exportar.
-    pause & exit /b 1
-  )
-  echo  Exportacao concluida!
+if /i not "!DO_EXPORT!"=="s" goto skip_export
+
+set GODOT_EXE=C:\Users\luang\Downloads\Godot_v4.6.1-stable_win64.exe\Godot_v4.6.1-stable_win64.exe
+
+:: Injeta a URL de PRODUCAO no config.gd antes de exportar. O export.bat
+:: restaura o config para localhost ao terminar, entao sem isto o build
+:: gerado aqui sairia apontando para dev local.
+echo  Definindo host para Producao (!URL_PROD!)...
+powershell -ExecutionPolicy Bypass -Command "$q=[char]34; (Get-Content '!CONFIG_FILE!') -replace '^const SERVER_URL :=.*', ('const SERVER_URL := ' + $q + '!URL_PROD!' + $q) | Set-Content '!CONFIG_FILE!'"
+
+echo  Exportando com Godot headless...
+"!GODOT_EXE!" --headless --path "C:\Work\NewSeaGodot" --export-release "Windows Desktop" "!BUILD_DIR!\SeaOfCode.exe"
+set EXPORT_CODE=!errorlevel!
+
+:: Restaura o config para dev local (mesmo se o export falhar).
+echo  Restaurando host para dev local (!URL_DEV!)...
+powershell -ExecutionPolicy Bypass -Command "$q=[char]34; (Get-Content '!CONFIG_FILE!') -replace '^const SERVER_URL :=.*', ('const SERVER_URL := ' + $q + '!URL_DEV!' + $q) | Set-Content '!CONFIG_FILE!'"
+
+if not "!EXPORT_CODE!"=="0" (
+  echo [ERRO] Falha ao exportar.
+  pause & exit /b 1
 )
+echo  Exportacao concluida!
+
+:skip_export
 
 echo.
 echo  Verificando arquivos...
