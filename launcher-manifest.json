@@ -1,25 +1,25 @@
-{
-  "version": "0.1.6",
-  "date": "2026-07-08",
-  "changelog": [
-    "[v0.1.6] — descreva as mudanças aqui",
-    "[v0.1.5] — descreva as mudanças aqui",
-    "[v0.1.4] — descreva as mudanças aqui",
-    "[v0.1.3] — descreva as mudanças aqui",
-    "[v0.1.2] — descreva as mudanças aqui",
-    "[v0.1.1] — descreva as mudanças aqui",
-    "Período de segurança de 30s após respawn",
-    "Sistema de grupo com até 5 membros",
-    "Bala de cura para aliados do grupo",
-    "Shader de oceano melhorado",
-    "Múltiplos biomas e mapas"
-  ],
-  "files": [
-    {
-      "name": "SeaOfCode.exe",
-      "url": "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.6/SeaOfCode.exe",
-      "sha256": "235752b47e67cfe62e3e1f511863d741f7db0cd288a6ca5454509e34b6e73b5f",
-      "size": 297966048
-    }
-  ]
+﻿{
+    "version":  "0.1.7",
+    "date":  "2026-07-11",
+    "changelog":  [
+                      "[v0.1.7] - 2026-07-11",
+                      "feat(balance): escala de NPC/boss só pela dificuldade + fixes de fragmentos e compra",
+                      "feat(relics): broadcasts de VFX para todos verem os efeitos self",
+                      "release: v0.1.6 + fix no publicar.bat",
+                      "feat: migração MySQL, anti-flood, auth TOFU por dispositivo e sessão única",
+                      "fix: teto no XP exigido para comprar talentos (1.3^n explodia p/ ~14,4M)",
+                      "release: v0.1.3 - fix repo luanlgo/NewSeaGodot",
+                      "release: v0.1.3",
+                      "fix: reverter db-manager para pg/PostgreSQL (producao usa PostgreSQL)",
+                      "feat: dificuldade, pets, MySQL, boss aggro, deploy SSH",
+                      "fix: healingZones atreladas aos naufrágios reais (broken_pirate_shipwreck)"
+                  ],
+    "files":  [
+                  {
+                      "name":  "SeaOfCode.exe",
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.7/SeaOfCode.exe",
+                      "sha256":  "4a20f3e36a01b08a57478547639bbc4647efc15d51e77f0e811d1e45df46724c",
+                      "size":  293904912
+                  }
+              ]
 }
