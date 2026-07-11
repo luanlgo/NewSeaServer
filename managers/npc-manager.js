@@ -127,7 +127,8 @@ class NPCManager {
       _currentCast:     null,
       _castTimer:       null,
       _nextCannonShot:  0,
-      _scaledForKills:  0,
+      _scaledForDiff:   1,   // dungeon boss tem stats fixos; guard de _rescaleBoss
+      diffMult:         1,
       _lastRescaleTime: 0,
       _lastDamageTime:  0,
       _cachedNearest:   null,
@@ -189,9 +190,9 @@ class NPCManager {
       npcScale:     npcDef.scale     ?? null,
       npcYOffset:   npcDef.yOffset   ?? null,
       npcRotOffset: npcDef.rotOffset ?? null,
-      _scaledForKills: -1,
-      _scaledForDiff:  1,    // dificuldade aplicada (multiplicador) — ver _rescaleNPC
+      _scaledForDiff:  null, // sentinela: força o 1º rescale (define cannonCount/ammo base)
       diffMult:        1,    // multiplicador de dificuldade atual (recompensa usa este)
+      diffIdx:         0,    // índice da dificuldade atual (seleção de munição)
       _lastRescaleTime: 0,
       _lastDamageTime: 0,
 
@@ -253,7 +254,9 @@ class NPCManager {
       if (this.npcs.size >= maxCount) return;
       
       const npc = this.spawn(mapLevel || this.zoneLevel || 1);
-      this._rescaleNPC(npc, killerKills);
+      // Nasce na dificuldade base; o update() reescala para a dificuldade do
+      // jogador mais próximo assim que alguém entra em alcance.
+      this._rescaleNPC(npc);
       npc.hp = npc.maxHp;
       
       this._broadcast({
@@ -273,24 +276,20 @@ class NPCManager {
     return Array.from(this.npcs.values());
   }
 
-  // Rescales boss stats — keeps HP proportional, NEVER resets to full
-  _rescaleBoss(boss, kills) {
-    if (boss._scaledForKills === kills) return;
-    // Dungeon bosses têm stats fixos definidos em spawnWithDef — não escalam com kills do jogador.
+  // Rescales boss stats — keeps HP proportional, NEVER resets to full.
+  // Escala APENAS pela dificuldade escolhida pelo jogador (não por kills).
+  _rescaleBoss(boss, diffMult = boss.diffMult || 1) {
+    if (boss._scaledForDiff === diffMult) return;
+    // Dungeon bosses têm stats fixos definidos em spawnWithDef — não escalam.
     // Sem esse guard, _rescaleBoss zeraria cannonDmg e resetaria HP para 600 (fallback).
     if (boss.isDungeonBoss) {
-      boss._scaledForKills = kills;
+      boss._scaledForDiff = diffMult;
       return;
     }
-    const bossDef  = (this.mapDefs[boss.mapLevel || this.zoneLevel] || {}).boss || {};
-    const tier     = Math.floor(kills / 10);
-    const hpTier   = Math.min(tier, 300);
-    const dmgTier  = Math.min(tier, 250);
-    const hpScale  = 1 + hpTier  * (bossDef.hpPerTier  || 0);
-    const dmgScale = 1 + dmgTier * (bossDef.dmgPerTier  || 0);
-    const rarities = bossDef.rarities || [];
+    const bossDef   = (this.mapDefs[boss.mapLevel || this.zoneLevel] || {}).boss || {};
+    const rarities  = bossDef.rarities || [];
     const rarityDef = rarities.find(r => r.id === boss.rarity) || { hpMult: 1 };
-    const newMax   = Math.round((bossDef.baseHp || 600) * hpScale * (rarityDef.hpMult || 1));
+    const newMax    = Math.round((bossDef.baseHp || 600) * diffMult * (rarityDef.hpMult || 1));
 
     if (newMax !== boss.maxHp) {
       const frac = boss.maxHp > 0 ? boss.hp / boss.maxHp : 1;
@@ -298,30 +297,26 @@ class NPCManager {
       boss.hp    = Math.min(Math.floor(newMax * frac), newMax);
     }
 
-    boss.cannonDmg      = Math.round((bossDef.baseDamage || 0) * dmgScale);
-    boss.spawnTier      = tier;
-    boss._scaledForKills = kills;
+    boss.cannonDmg      = Math.round((bossDef.baseDamage || 0) * diffMult);
+    boss.diffMult       = diffMult;
+    boss.spawnTier      = 0;
+    boss._scaledForDiff = diffMult;
   }
 
-  // Rescales stats only — NEVER resets HP
-  _rescaleNPC(npc, kills, diffMult = npc.diffMult || 1) {
-    if (npc._scaledForKills === kills && npc._scaledForDiff === diffMult) return;
+  // Rescales stats only — NEVER resets HP.
+  // Escala APENAS pela dificuldade escolhida pelo jogador (não pela quantidade de kills).
+  _rescaleNPC(npc, diffMult = npc.diffMult || 1, diffIdx = npc.diffIdx || 0) {
+    if (npc._scaledForDiff === diffMult) return;
 
     const mapNpcDef = (this.mapDefs[npc.mapLevel || this.zoneLevel] || {}).npc || {};
-    const tier    = Math.floor(kills / 10);
-    const hpTier  = Math.min(tier, 300);
-    const dmgTier = Math.min(tier, 250);
-    const hpPerTier  = mapNpcDef.hpPerTier  ?? 0.05;
-    const dmgPerTier = mapNpcDef.dmgPerTier ?? 0.08;
-    // Dificuldade multiplica HP e dano por projétil (não o nº de projéteis,
-    // para não inundar a tela — o DPS total já escala via dano × HP).
-    const newMax = Math.floor(npc.baseHp * (1 + hpTier * hpPerTier) * diffMult);
-    // Para NPCs com canhões: usa count do MAP_DEFS como base + tier
-    // Para monstros (ATTACK_DEFS): cannonCount não é usado, linear de 1
+    // HP e dano por projétil escalam somente pela dificuldade.
+    const newMax = Math.floor(npc.baseHp * diffMult);
+    // cannonCount é fixo pela base do mapa (não cresce mais com kills).
     const baseCannonCount = npc.usesCannons ? (mapNpcDef.cannonCount || 1) : 1;
-    npc.cannonCount = Math.min(20, baseCannonCount + dmgTier);
-    npc.cannonDmg   = Math.round(npc.baseDmg * (1 + dmgTier * dmgPerTier) * diffMult);
+    npc.cannonCount = Math.min(20, baseCannonCount);
+    npc.cannonDmg   = Math.round(npc.baseDmg * diffMult);
     npc.diffMult    = diffMult;
+    npc.diffIdx     = diffIdx;
     npc._scaledForDiff = diffMult;
 
     if (newMax !== npc.maxHp) {
@@ -330,19 +325,16 @@ class NPCManager {
       npc.hp = Math.floor(newMax * frac);
     }
 
-    const tiers = [...(mapNpcDef.ammoTiers || [])].sort((a, b) => b.minKills - a.minKills);
+    // Munição escala pela dificuldade: cada nível libera o próximo tier de munição.
+    const tiers = [...(mapNpcDef.ammoTiers || [])].sort((a, b) => a.minKills - b.minKills);
     let chosenAmmo = 'bala_ferro';
-    for (const t of tiers) {
-      if (kills >= t.minKills) {
-        chosenAmmo = t.ammo === 'random_special'
-          ? (['bala_gelo', 'bala_fogo', 'bala_luz', 'bala_sangue'])[Math.floor(Math.random() * 4)]
-          : t.ammo;
-        break;
-      }
+    if (tiers.length > 0) {
+      const t = tiers[Math.min(diffIdx, tiers.length - 1)];
+      chosenAmmo = t.ammo === 'random_special'
+        ? (['bala_gelo', 'bala_fogo', 'bala_luz', 'bala_sangue'])[Math.floor(Math.random() * 4)]
+        : t.ammo;
     }
-    
     npc.ammoType = chosenAmmo;
-    npc._scaledForKills = kills;
   }
 
 
@@ -394,22 +386,22 @@ class NPCManager {
       }
 
       // NPC rescale
-      // Escala do NPC = tier (kills do alvo) × dificuldade do alvo.
+      // Escala do NPC = dificuldade escolhida pelo alvo (não escala mais por kills).
       // Só re-escala fora de combate (20s sem dano): ao tomar dano o NPC TRAVA
-      // sua dificuldade/tier até passar esse tempo sem sofrer ação — evita que
+      // sua dificuldade até passar esse tempo sem sofrer ação — evita que
       // o jogador troque a dificuldade no meio da luta para mudar a recompensa.
       const noRecentDamage = !npc.lastDamageTime || (now - npc.lastDamageTime > 20000);
       if (nearest && nearest.id !== npc.targetId && noRecentDamage && !npc.isBoss) {
-        const kills    = nearest.npcKills || 0;
-        const diffMult = difficultyMult(nearest.difficulty || 0);
-        if (kills !== npc._scaledForKills || diffMult !== npc._scaledForDiff) {
-          this._rescaleNPC(npc, kills, diffMult);
+        const diffIdx  = nearest.difficulty || 0;
+        const diffMult = difficultyMult(diffIdx);
+        if (diffMult !== npc._scaledForDiff) {
+          this._rescaleNPC(npc, diffMult, diffIdx);
           this._broadcast({
             type: 'entity_rescale',
             id: npc.id,
             hp: npc.hp,
             maxHp: npc.maxHp,
-            tier: Math.floor(kills / 10)
+            tier: 0
           });
         }
       }
@@ -423,22 +415,22 @@ class NPCManager {
 
         if (outOfCombat) {
           if (nearest && nearest.id !== npc.targetId) {
-            // Fora de combate e novo target em range → rescala para o tier dele
-            const kills = nearest.npcKills || 0;
-            if (kills !== npc._scaledForKills) {
-              this._rescaleBoss(npc, kills);
+            // Fora de combate e novo target em range → rescala para a dificuldade dele
+            const diffMult = difficultyMult(nearest.difficulty || 0);
+            if (diffMult !== npc._scaledForDiff) {
+              this._rescaleBoss(npc, diffMult);
               this._broadcast({
                 type: 'entity_rescale',
                 id: npc.id,
                 hp: npc.hp,
                 maxHp: npc.maxHp,
-                tier: npc.spawnTier,
+                tier: 0,
               });
-              console.log(`👹 Boss map${npc.mapLevel} rescaled → tier ${npc.spawnTier} (OOC, target: ${nearest.id})`);
+              console.log(`👹 Boss map${npc.mapLevel} rescaled → diff ${nearest.difficulty || 0} (OOC, target: ${nearest.id})`);
             }
-          } else if (!nearest && (npc._scaledForKills || 0) !== 0) {
-            // Fora de combate e sem ninguém por perto → reset para tier 0
-            this._rescaleBoss(npc, 0);
+          } else if (!nearest && (npc._scaledForDiff || 1) !== 1) {
+            // Fora de combate e sem ninguém por perto → reset para dificuldade base
+            this._rescaleBoss(npc, 1);
             this._broadcast({
               type: 'entity_rescale',
               id: npc.id,
@@ -446,7 +438,7 @@ class NPCManager {
               maxHp: npc.maxHp,
               tier: 0,
             });
-            console.log(`👹 Boss map${npc.mapLevel} reset → tier 0 (OOC, idle)`);
+            console.log(`👹 Boss map${npc.mapLevel} reset → base (OOC, idle)`);
           }
         }
       }

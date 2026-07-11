@@ -1338,8 +1338,18 @@ setInterval(() => {
               } else {
                 killer._mapUnlockNotified = false;
               }
-              // Fragment drop (DOT kill path)
-              killer.mapFragments = (killer.mapFragments || 0) + Math.floor(FRAGMENT_DROP_NPC * dotDiff);
+              // Fragment drop (DOT kill path) — cada membro do grupo recebe o total
+              // de fragmentos por kill (não dividido), inclusive quem não matou.
+              const dotFragGain = Math.floor(FRAGMENT_DROP_NPC * dotDiff);
+              killer.mapFragments = (killer.mapFragments || 0) + dotFragGain;
+              const dotPartyMembers = partyManager.getPartyMembersInZone(killer.id, e.mapLevel || 1, players);
+              for (const m of dotPartyMembers) {
+                m.mapFragments = (m.mapFragments || 0) + dotFragGain;
+                if (m.ws?.readyState === 1) {
+                  sendTo(m.ws, { type: 'currency_update', gold: m.gold, dobroes: m.dobroes, mapFragments: m.mapFragments });
+                }
+                db.save(m).catch(err => console.error('Save error:', err));
+              }
               db.save(killer).catch(e => console.error('Save error:', e));
               const curXpNeeded = (MAP_DEFS[killer.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
               sendTo(killer.ws, { type: 'currency_update', gold: killer.gold, dobroes: killer.dobroes, reward: { type:'gold', amount: gold }, npcKills: killer.npcKills, mapXp: killer.mapXp, mapLevel: killer.mapLevel || 1, mapXpNeeded: curXpNeeded, mapFragments: killer.mapFragments });
@@ -2601,17 +2611,21 @@ function handleShoot(player, msg) {
 function handleBuyCannon(player, msg, ws) {
   const def = CANNON_DEFS[msg.cannonId];
   if (!def) return;
+  const qty       = Math.max(1, Math.min(99999, parseInt(msg.qty) || 1));
+  const totalCost = def.price * qty;
   if (def.currency === 'gold') {
-    if (player.gold < def.price) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
-    player.gold -= def.price;
+    if (player.gold < totalCost) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
+    player.gold -= totalCost;
   } else {
-    if (player.dobroes < def.price) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
-    player.dobroes -= def.price;
+    if (player.dobroes < totalCost) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
+    player.dobroes -= totalCost;
   }
-  player.inventory.cannons.push(msg.cannonId);
-  // Keep cannonUpgradesData in sync with inventory
   if (!player.cannonUpgradesData) player.cannonUpgradesData = [];
-  player.cannonUpgradesData.push({ as: 0, rn: 0, dm: 0 });
+  for (let i = 0; i < qty; i++) {
+    player.inventory.cannons.push(msg.cannonId);
+    // Keep cannonUpgradesData in sync with inventory
+    player.cannonUpgradesData.push({ as: 0, rn: 0, dm: 0 });
+  }
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(ws, {
     type: 'inventory_update', inventory: player.inventory,

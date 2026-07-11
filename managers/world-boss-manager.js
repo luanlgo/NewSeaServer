@@ -1,6 +1,6 @@
 // managers/world-boss-manager.js
 const { uid, rand, broadcast, sendTo } = require('../utils/helpers');
-const { WORLD_BOSS_DEF, MAP_DEFS } = require('../constants');
+const { WORLD_BOSS_DEF, MAP_DEFS, difficultyMult } = require('../constants');
 const db = require('./db-manager');
 
 class WorldBossManager {
@@ -75,21 +75,19 @@ class WorldBossManager {
     }
     const id = uid();
 
-    // Calcular tier baseado na média de kills dos jogadores online
-    let totalKills = 0, onlineCount = 0;
+    // Escala pela dificuldade média dos jogadores online (não mais por kills).
+    let sumMult = 0, onlineCount = 0;
     this.players.forEach(p => {
-      if (!p.dead) { 
-        totalKills += (p.npcKills || 0); 
-        onlineCount++; 
+      if (!p.dead) {
+        sumMult += difficultyMult(p.difficulty || 0);
+        onlineCount++;
       }
     });
-    const avgKills = onlineCount > 0 ? totalKills / onlineCount : 0;
-    const tier = Math.floor(avgKills / 10);
-    const hpScale = 1 + tier * (def.hpPerTier || 0);
-    const dmgScale = 1 + tier * (def.dmgPerTier || 0);
+    const diffMult = onlineCount > 0 ? sumMult / onlineCount : 1;
+    const tier = 0;
 
-    const scaledHp = Math.round(def.baseHp * hpScale);
-    const scaledDmg = Math.round((def.baseDamage || 0) * dmgScale);
+    const scaledHp = Math.round(def.baseHp * diffMult);
+    const scaledDmg = Math.round((def.baseDamage || 0) * diffMult);
 
     // use map-specific size to choose spawn coordinates
     const mapSize = (MAP_DEFS[mapLvl] && MAP_DEFS[mapLvl].size);
@@ -116,6 +114,7 @@ class WorldBossManager {
       cannonDmg: scaledDmg,
       hitRadius: def.hitRadius || 16,
       spawnTier: tier,
+      diffMult,                 // dificuldade média aplicada — usada nas recompensas
       npcModel: def.model || null,
       npcScale: def.scale || 1,
       npcYOffset: def.yOffset || 0,
@@ -224,8 +223,9 @@ class WorldBossManager {
     
     const totalDmg = Math.max(1, [...dmgMap.values()].reduce((a, b) => a + b, 0));
     const baseDrops = Math.floor(def.dobraoMin + Math.random() * (def.dobraoMax - def.dobraoMin));
-    const tierScale = 1 + (boss.spawnTier || 0) * (def.rewardPerTier || 0.50);
-    const totalDrops = Math.round(baseDrops * tierScale);
+    // Recompensa escala pela dificuldade média (não mais pela quantidade de kills).
+    const diffScale = boss.diffMult || 1;
+    const totalDrops = Math.round(baseDrops * diffScale);
 
     let killerName = '???';
     

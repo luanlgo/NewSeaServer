@@ -581,7 +581,9 @@ class ProjectileManager {
       const totalMembers = partyMembers.length + 1;
       const memberGold   = Math.floor(finalGold / totalMembers);
       const memberXp     = Math.floor(xpGained  / totalMembers);
-      const memberFrags  = Math.floor(FRAGMENT_DROP_NPC * diffMult / totalMembers);
+      // Fragmentos NÃO são divididos: cada membro (e o killer) recebe o total por
+      // kill de qualquer um do grupo. Ex.: 3 membros matando 1 NPC cada → todos +3.
+      const memberFrags  = Math.floor(FRAGMENT_DROP_NPC * diffMult);
 
       killer.gold  += memberGold;
       killer.mapXp  = (killer.mapXp || 0) + memberXp;

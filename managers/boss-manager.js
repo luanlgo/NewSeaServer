@@ -36,10 +36,12 @@ class BossManager {
   }
 
   /**
-   * Spawna o boss escalando com os kills do jogador que ativou o spawn.
-   * @param {number} killerKills  npcKills do jogador que causou o spawn (0 = sem escala)
+   * Spawna o boss em stats base (× raridade). A dificuldade é aplicada logo em
+   * seguida pelo NPCManager.update(), que reescala o boss para a dificuldade do
+   * jogador mais próximo. Não escala mais pela quantidade de kills.
+   * @param {number} _killerKills  ignorado (mantido por compatibilidade de assinatura)
    */
-  spawn(killerKills = 0) {
+  spawn(_killerKills = 0) {
     if (this.bossAlive) return null;
     this.bossAlive = true;
 
@@ -48,13 +50,8 @@ class BossManager {
     const rarity    = this.pendingRarity || rollRarity(rarities);
     this.pendingRarity = null;
 
-    // ── Escalagem por tier do killer ─────────────────────────────────────────
-    const tier     = Math.floor(killerKills / 10);
-    const hpScale  = 1 + tier * (bossDef.hpPerTier  || 0);
-    const dmgScale = 1 + tier * (bossDef.dmgPerTier  || 0);
-
     const baseHp  = bossDef.baseHp || 600;
-    const bossHp  = Math.round(baseHp * hpScale * (rarity.hpMult || 1));
+    const bossHp  = Math.round(baseHp * (rarity.hpMult || 1)); // dificuldade aplicada no update()
     const id      = uid();
 
     const mapSize = (MAP_DEFS[this.zoneLevel] && MAP_DEFS[this.zoneLevel].size);
@@ -77,9 +74,11 @@ class BossManager {
       rarity:      rarity.id,
       dmgMult:     rarity.hpMult || 1,   // use hpMult as proxy for dmgMult
       rewardMult:  rarity.rewardMult || 1,
-      cannonDmg:   Math.round((bossDef.baseDamage || 0) * dmgScale), // escala com tier
+      cannonDmg:   Math.round(bossDef.baseDamage || 0), // dificuldade aplicada no update()
       hitRadius:   bossDef.hitRadius || HIT_RADIUS,
-      spawnTier:   tier,                  // guarda o tier para logs/debug
+      spawnTier:   0,
+      diffMult:    1,                     // reescalado pela dificuldade no update()
+      _scaledForDiff: 1,
       npcModel:     bossDef.model     || null,
       npcHullColor: bossDef.hullColor  || null,
       npcSailColor: bossDef.sailColor  || null,
@@ -124,10 +123,10 @@ class BossManager {
         rarity: rarity.id, rarityLabel: rarity.label, rarityColor: rarity.color,
         npcModel: boss.npcModel,
         npcHullColor: boss.npcHullColor, npcSailColor: boss.npcSailColor,
-        spawnTier: tier,
+        spawnTier: boss.spawnTier,
       }
     });
-    console.log(`👹 Boss [${rarity.label.toUpperCase()}] spawned on map ${this.zoneLevel}! HP:${bossHp} Tier:${tier}`);
+    console.log(`👹 Boss [${rarity.label.toUpperCase()}] spawned on map ${this.zoneLevel}! HP:${bossHp} Tier:${boss.spawnTier}`);
     return boss;
   }
 
@@ -150,8 +149,9 @@ class BossManager {
     const dobraoMin = boss._dobraoMin || bossDef.dobraoMin || 5;
     const dobraoMax = boss._dobraoMax || bossDef.dobraoMax || 10;
     const baseDrops = Math.floor(rand(dobraoMin, dobraoMax + 1));
-    const tierScale = 1 + (boss.spawnTier || 0) * (bossDef.rewardPerTier || 0.30);
-    const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * tierScale);
+    // Recompensa escala pela dificuldade do boss (não mais pela quantidade de kills).
+    const diffScale = boss.diffMult || 1;
+    const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * diffScale);
 
     const share = damage / totalDamage;
     let drops    = Math.max(1, Math.round(totalDrops * share));
@@ -215,9 +215,9 @@ class BossManager {
     const dobraoMin  = boss._dobraoMin || bossDef.dobraoMin || 5;
     const dobraoMax  = boss._dobraoMax || bossDef.dobraoMax || 10;
     const baseDrops  = Math.floor(rand(dobraoMin, dobraoMax + 1));
-    // Escala a recompensa com o tier do boss (calculado no spawn)
-    const tierScale  = 1 + (boss.spawnTier || 0) * (bossDef.rewardPerTier || 0.30);
-    const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * tierScale);
+    // Escala a recompensa pela dificuldade do boss (não mais pela quantidade de kills).
+    const diffScale  = boss.diffMult || 1;
+    const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * diffScale);
 
     // ── Calcular share de cada jogador pelo dano causado ─────────────────────
     const dmgMap = boss._damageMap || new Map();
