@@ -96,7 +96,9 @@ if (files.length === 0) {
 // ── Atualizar manifest ────────────────────────────────────────────────────────
 let manifest = {};
 if (fs.existsSync(manifestPath)) {
-  manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  // Remove BOM (o Set-Content -Encoding UTF8 do PowerShell 5.1 grava BOM,
+  // que quebra o JSON.parse).  = o caractere BOM.
+  manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^﻿/, ''));
 }
 
 const prevVersion = manifest.version || '0.0.0';
