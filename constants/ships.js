@@ -75,10 +75,10 @@ const SHIP_DEFS = {
     scale: 0.6, yOffset: 4.3, rotOffset: 0,
   },
 
-  // ── Navios Elite (comprados com dobrões na Ilha do Comércio) ────────────────
+  // ── Navios Elite (comprados na Ilha do Comércio; moeda varia por navio) ─────
   ghost_pirate_ship: {
-    price: 20000, 
-    currency: 'dobrao', isElite: true,
+    price: 500000,
+    currency: 'gold', isElite: true,
     hp: 5000, 
     maxCannons: 30, 
     sails: 3,

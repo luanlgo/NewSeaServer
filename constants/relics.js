@@ -7,16 +7,21 @@
 // targetMouse: true = cliente envia targetX/targetZ junto com use_relic
 // castTime: ms de penalidade de velocidade (15%) ao usar; ausente = sem penalidade
 const RELIC_DEFS = {
-  r1:  { name: 'Âncora Sagrada',    icon: '⚓',  rarity: 'comum',    effect: 'heal_ship',   manaCost: 5, toggle: false, healAmount: 2000 },
+  // Relíquias de dano/cura escalam com o PODER DE FOGO do barco (dano de uma salva
+  // = dano médio por canhão × nº de canhões). Ver relicDamageFor() no server.js.
+  //   damagePct: fração da salva por acerto (aura = por tick)
+  //   healPct:   fração do HP máximo curado
+  // Os campos damage/healAmount ficam como fallback caso o pct seja removido.
+  r1:  { name: 'Âncora Sagrada',    icon: '⚓',  rarity: 'comum',    effect: 'heal_ship',   manaCost: 5, toggle: false, healAmount: 2000, healPct: 0.30 },
   r2:  { name: 'Névoa Espectral',   icon: '🌫️',  rarity: 'épico',    effect: 'invincible',  manaCost: 6, toggle: false, duration: 5000 },
-  r3:  { name: 'Raio Divino',       icon: '⚡',  rarity: 'raro',     effect: 'lightning',   manaCost: 5, toggle: false, damage: 2000, targetMouse: true, radius: 45,  castTime: 700 },
-  r4:  { name: 'Foguete Naval',     icon: '🚀',  rarity: 'incomum',  effect: 'rocket',      manaCost: 4, toggle: false, damage: 3000, targetMouse: true, radius: 20,  castTime: 500 },
+  r3:  { name: 'Raio Divino',       icon: '⚡',  rarity: 'raro',     effect: 'lightning',   manaCost: 5, toggle: false, damage: 2000, damagePct: 0.80, targetMouse: true, radius: 45,  castTime: 700 },
+  r4:  { name: 'Foguete Naval',     icon: '🚀',  rarity: 'incomum',  effect: 'rocket',      manaCost: 4, toggle: false, damage: 3000, damagePct: 1.10, targetMouse: true, radius: 20,  castTime: 500 },
   r5:  { name: 'Escudo de Ouro',    icon: '🛡️',  rarity: 'lendário', effect: 'gold_shield', manaCost: 4, toggle: true,  damageReduction: 0.50, goldCostPct: 0.10 },
   r6:  { name: 'Vento Furioso',     icon: '💨',  rarity: 'comum',    effect: 'speed_boost', manaCost: 4, toggle: false, duration: 5000, speedBonus: 0.50 },
   r7:  { name: 'Corneta do Abismo', icon: '📯',  rarity: 'raro',     effect: 'attract',     manaCost: 5, toggle: false, duration: 6000, range: 900 },
-  r8:  { name: 'Meteoro',           icon: '☄️',  rarity: 'épico',    effect: 'meteor',      manaCost: 7, toggle: false, damage: 2400, targetMouse: true, radius: 55,  castTime: 700, count: 1 },
+  r8:  { name: 'Meteoro',           icon: '☄️',  rarity: 'épico',    effect: 'meteor',      manaCost: 7, toggle: false, damage: 2400, damagePct: 1.30, targetMouse: true, radius: 55,  castTime: 700, count: 1 },
   r9:  { name: 'Teleporte',         icon: '🌀',  rarity: 'raro',     effect: 'teleport',    manaCost: 5, toggle: false, targetMouse: true, maxRange: 150 },
-  r10: { name: 'Aura Mortal',       icon: '🔥',  rarity: 'lendário', effect: 'aura',        manaCost: 8, toggle: false, duration: 5000, range: 100, damage: 200, tickInterval: 300 },
+  r10: { name: 'Aura Mortal',       icon: '🔥',  rarity: 'lendário', effect: 'aura',        manaCost: 8, toggle: false, duration: 5000, range: 100, damage: 200, damagePct: 0.12, tickInterval: 300 },
 };
 
 // ── RELIC_RARITIES — peso de drop por raridade ────────────────────────────────

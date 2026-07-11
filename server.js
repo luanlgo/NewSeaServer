@@ -3639,6 +3639,24 @@ function handleUnequipRelic(player, msg) {
   });
 }
 
+// Poder de fogo do barco = dano de uma salva completa = dano médio por canhão ×
+// número de canhões equipados (mesma base que o jogador vê ao atirar).
+function shipFirepower(player) {
+  const perCannon = player.cannonDamage || 0;
+  const nCannons  = (player.cannons && player.cannons.length) || 1;
+  return perCannon * nCannons;
+}
+
+// Dano de uma relíquia = fração (damagePct) do poder de fogo do barco, com os
+// mesmos bônus de relíquia (talento/skill). Se a relíquia não define damagePct,
+// cai no dano fixo antigo (relicDef.damage) — mantém compatibilidade.
+function relicDamageFor(player, relicDef) {
+  const pct   = relicDef.damagePct;
+  const raw   = (pct != null) ? shipFirepower(player) * pct : (relicDef.damage || 0);
+  const bonus = 1 + (player.talentRelicBonus || 0) + (player.skillRelicBonus || 0);
+  return Math.max(1, Math.round(raw * bonus));
+}
+
 function handleUseRelic(player, msg) {
   const { instanceId: useInstanceId, targetX: rTx, targetZ: rTz } = msg;
   if (!useInstanceId) return;
@@ -3696,8 +3714,13 @@ function handleUseRelic(player, msg) {
   let effectPayload = { type: 'relic_used', instanceId: instanceId2, effect: relicDef.effect, mana: player.mana, maxMana: player.maxMana };
 
   if (relicDef.effect === 'heal_ship') {
-    const healed = Math.min(relicDef.healAmount, player.maxHp - player.hp);
-    player.hp = Math.min(player.maxHp, player.hp + relicDef.healAmount);
+    // Cura escala com o HP máximo (healPct) em vez de valor fixo — sempre
+    // relevante independente do tamanho do barco. Fallback para healAmount fixo.
+    const healValue = (relicDef.healPct != null)
+      ? Math.round(player.maxHp * relicDef.healPct)
+      : (relicDef.healAmount || 0);
+    const healed = Math.min(healValue, player.maxHp - player.hp);
+    player.hp = Math.min(player.maxHp, player.hp + healValue);
     effectPayload.hp    = player.hp;
     effectPayload.maxHp = player.maxHp;
     effectPayload.healed = healed;
@@ -3750,7 +3773,7 @@ function handleUseRelic(player, msg) {
     // 2. Aplica dano após o cast time (permite desviar)
     setTimeout(() => {
       if (player.dead) return; // caster morreu durante o cast
-      const relicDamage = Math.round(relicDef.damage * (1 + (player.talentRelicBonus || 0) + (player.skillRelicBonus || 0)));
+      const relicDamage = relicDamageFor(player, relicDef);
       const hits2 = [];
       projectileManager.npcs.forEach(npc => {
         if (npc.dead) return;
@@ -3855,7 +3878,7 @@ function handleUseRelic(player, msg) {
     // 2. Aplica dano após o cast time (permite desviar)
     setTimeout(() => {
       if (player.dead) return;
-      const relicDamage = Math.round(relicDef.damage * (1 + (player.talentRelicBonus || 0) + (player.skillRelicBonus || 0)));
+      const relicDamage = relicDamageFor(player, relicDef);
       const hitsRkt = [];
       projectileManager.npcs.forEach(npc => {
         if (npc.dead) return;
@@ -4019,7 +4042,7 @@ function handleUseRelic(player, msg) {
       return hitsM;
     };
 
-    const relicDmg = Math.round(relicDef.damage * (1 + (player.talentRelicBonus || 0) + (player.skillRelicBonus || 0)));
+    const relicDmg = relicDamageFor(player, relicDef);
 
     // Single meteor — show incoming indicator, land after castMs
     addEvent({ type: 'meteor_incoming', x: pos.x, z: pos.z, radius: baseRadius, castMs }, player.mapLevel);
@@ -4079,14 +4102,16 @@ function handleUseRelic(player, msg) {
   } else if (relicDef.effect === 'aura') {
     // ── Aura Mortal ───────────────────────────────────────────────────
     // Activa uma aura ao redor do barco que pulsa dano em NPCs próximos
+    // Dano por tick da aura também escala com o poder de fogo (damagePct por tick).
+    const auraTickDmg           = relicDamageFor(player, relicDef);
     player.relicAuraExpires     = now2 + (relicDef.duration || 20000);
     player.relicAuraRange       = relicDef.range        || 80;
-    player.relicAuraDamage      = relicDef.damage       || 30;
+    player.relicAuraDamage      = auraTickDmg;
     player.relicAuraTickInterval= relicDef.tickInterval || 1000;
     player.relicAuraLastTick    = now2;   // tick imediato na ativação
     effectPayload.duration      = relicDef.duration;
     effectPayload.range         = relicDef.range;
-    effectPayload.damage        = relicDef.damage;
+    effectPayload.damage        = auraTickDmg;
     effectPayload.tickInterval  = relicDef.tickInterval;
     // Broadcast para todos verem a aura no barco desse jogador
     addEvent({
