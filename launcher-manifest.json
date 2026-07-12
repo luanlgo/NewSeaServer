@@ -1,25 +1,25 @@
 {
-    "version":  "0.1.10",
-    "date":  "2026-07-11",
+    "version":  "0.1.11",
+    "date":  "2026-07-12",
     "changelog":  [
-                      "[v0.1.10] - 2026-07-11",
+                      "[v0.1.11] - 2026-07-12",
+                      "feat(balance): navio ghost com gold + relíquias escalam com poder de fogo",
+                      "fix(gameplay): cura, caça, foguete, VFX por mapa e clima fixo por mapa",
+                      "release: v0.1.10",
                       "fix(treino): torre não atirava — raio de detecção não cobria o spawn",
                       "release: v0.1.9",
                       "release: v0.1.8",
                       "fix: BOM no launcher-manifest.json quebrava publish.js",
                       "fix(publicar): export do publicar.bat injeta URL de producao",
                       "release: v0.1.7",
-                      "feat(balance): escala de NPC/boss só pela dificuldade + fixes de fragmentos e compra",
-                      "feat(relics): broadcasts de VFX para todos verem os efeitos self",
-                      "release: v0.1.6 + fix no publicar.bat",
-                      "feat: migração MySQL, anti-flood, auth TOFU por dispositivo e sessão única"
+                      "feat(balance): escala de NPC/boss só pela dificuldade + fixes de fragmentos e compra"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.10/SeaOfCode.exe",
-                      "sha256":  "8ee40c369c92707263a053f4b08c2a4d74084b91cbd9258445ab5833e8881dd3",
-                      "size":  293918944
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.11/SeaOfCode.exe",
+                      "sha256":  "d4d4953df6c73b335dc64b8f00102949bac8e87c744578fe5ee9825ae14ed8d8",
+                      "size":  443146776
                   }
               ]
 }
