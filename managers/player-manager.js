@@ -1,5 +1,6 @@
 // managers/player-manager.js
 const { uid, rand, clamp, sendTo } = require('../utils/helpers');
+const { pushOutOfIslands } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, MAX_CANNON_SLOTS, CANNON_DEFS, PIRATE_DEFS, MAP_DEFS } = require('../constants');
 
 class PlayerManager {
@@ -254,36 +255,10 @@ class PlayerManager {
       const _mapLvl = player.mapLevel || 1;
       const _mapDef = MAP_DEFS[_mapLvl];
       if (_mapDef) {
-        // Ilhas com islandRadius + center (market, lighthouse, banking, etc.)
-        for (const val of Object.values(_mapDef)) {
-          if (!val || typeof val !== 'object' || !val.islandRadius || !val.center) continue;
-          const cx = val.center.x || 0;
-          const cz = val.center.z || 0;
-          const r  = val.islandRadius + 6;
-          const dx = player.x - cx;
-          const dz = player.z - cz;
-
-          if (val.islandShape === 'square') {
-            // AABB: empurra pelo eixo de menor penetração
-            if (Math.abs(dx) < r && Math.abs(dz) < r) {
-              const penX = r - Math.abs(dx);
-              const penZ = r - Math.abs(dz);
-              if (penX < penZ) {
-                player.x = cx + Math.sign(dx || 1) * r;
-              } else {
-                player.z = cz + Math.sign(dz || 1) * r;
-              }
-            }
-          } else {
-            // Círculo
-            const dist2 = dx * dx + dz * dz;
-            if (dist2 < r * r && dist2 > 0) {
-              const dist = Math.sqrt(dist2);
-              player.x = cx + (dx / dist) * r;
-              player.z = cz + (dz / dist) * r;
-            }
-          }
-        }
+        // Ilhas (market/lighthouse/banking...) — formas do editor de colisão
+        // (tecla 2) ou fallback círculo/quadrado do islandRadius. A lógica vive
+        // em utils/collision.js e é COMPARTILHADA com os NPCs.
+        pushOutOfIslands(player, _mapDef, 6);
         // Torre de treino: usa dummy.x/z + collisionRadius (estrutura diferente)
         if (_mapDef.training?.dummy !== undefined) {
           const tr = _mapDef.training;

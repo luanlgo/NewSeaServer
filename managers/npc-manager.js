@@ -1,5 +1,6 @@
 // managers/NPCManager.js
 const { uid, rand, clamp, dist2D } = require('../utils/helpers');
+const { pushOutOfIslands } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, NPC_COUNT, MAP_DEFS, WORLD_BOSS_DEF, HIT_RADIUS, difficultyMult } = require('../constants');
 
 // ── Equilíbrio de aggro dos NPCs normais (navios piratas / monstros) ─────────
@@ -498,21 +499,9 @@ class NPCManager {
           npc.x = clamp(npc.x, -ms / 2, ms / 2);
           npc.z = clamp(npc.z, -ms / 2, ms / 2);
         }
-        // Island avoidance on attract path (Map 3)
-        if ((npc.mapLevel || 1) === 3) {
-          const mkt = MAP_DEFS[3]?.market;
-          if (mkt) {
-            const cx = mkt.center?.x || 0; const cz = mkt.center?.z || 0;
-            const iR = (mkt.islandRadius || 100) + 8;
-            const ddx = npc.x - cx; const ddz = npc.z - cz;
-            const dd2 = ddx * ddx + ddz * ddz;
-            if (dd2 < iR * iR && dd2 > 0) {
-              const dd = Math.sqrt(dd2);
-              npc.x = cx + (ddx / dd) * iR;
-              npc.z = cz + (ddz / dd) * iR;
-            }
-          }
-        }
+        // Ilhas intangíveis também no caminho de atração — mesmas formas de
+        // colisão dos jogadores (utils/collision.js), em qualquer mapa
+        pushOutOfIslands(npc, MAP_DEFS[npc.mapLevel || 1], 8);
         return;
       }
 
@@ -795,24 +784,11 @@ class NPCManager {
         npc.z = clamp(npc.z, -ms / 2, ms / 2);
       }
 
-      // Island avoidance (Map 3) — ilha intangível para NPCs
-      if ((npc.mapLevel || 1) === 3) {
-        const market = MAP_DEFS[3]?.market;
-        if (market) {
-          const cx = market.center?.x || 0;
-          const cz = market.center?.z || 0;
-          const iRad = (market.islandRadius || 100) + 8;
-          const dx = npc.x - cx;
-          const dz = npc.z - cz;
-          const dist2 = dx * dx + dz * dz;
-          if (dist2 < iRad * iRad && dist2 > 0) {
-            const dist = Math.sqrt(dist2);
-            npc.x = cx + (dx / dist) * iRad;
-            npc.z = cz + (dz / dist) * iRad;
-            // Deflect NPC rotation away from island
-            npc.rotation += Math.PI * 0.5 + rand(-0.3, 0.3);
-          }
-        }
+      // Ilhas intangíveis para NPCs — em QUALQUER mapa, respeitando as mesmas
+      // formas de colisão dos jogadores (colliders do editor ou islandRadius)
+      if (pushOutOfIslands(npc, MAP_DEFS[npc.mapLevel || 1], 8)) {
+        // Deflete a rota para longe da ilha (evita ficar "raspando" na borda)
+        npc.rotation += Math.PI * 0.5 + rand(-0.3, 0.3);
       }
 
       // Auras tickam sempre, independente de haver alvo
