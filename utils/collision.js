@@ -63,6 +63,32 @@ function pushOutOfIslands(ent, mapDef, margin = 6) {
   return pushed;
 }
 
+/**
+ * Empurra a entidade para fora de todos os obstáculos TEMPORÁRIOS ativos
+ * (ex.: muro de pedra de uma relíquia) — mesma forma `{shape:'box', x, z,
+ * hw, hh, rot}` dos colliders de ilha, mas vindos de um registro dinâmico
+ * (ver managers/wall-manager.js) em vez do MAP_DEF estático.
+ *
+ * Chame nos MESMOS pontos onde `pushOutOfIslands` já é chamada, com o mesmo
+ * `margin`, para que jogador e NPC respeitem o muro exatamente igual.
+ *
+ * @param {Object} ent    entidade com .x/.z (mutada in-place)
+ * @param {Array}  walls  array de obstáculos {x, z, hw, hh, rot} já filtrado
+ *                        por mapLevel/expiração (ver WallManager.getActive)
+ * @param {number} margin folga extra (≈ meia-largura do casco)
+ * @returns {boolean} true se a entidade foi empurrada por algum muro
+ */
+function pushOutOfWalls(ent, walls, margin = 6) {
+  if (!walls || walls.length === 0) return false;
+  let pushed = false;
+  for (const w of walls) {
+    if (_pushOutOfShape(ent, w.x || 0, w.z || 0, { shape: 'box', hw: w.hw, hh: w.hh, rot: w.rot }, margin)) {
+      pushed = true;
+    }
+  }
+  return pushed;
+}
+
 /** Empurra a entidade para fora de UMA forma (círculo ou caixa rotacionada). */
 function _pushOutOfShape(ent, ccx, ccz, col, margin) {
   if (col.shape === 'box') {
@@ -95,4 +121,4 @@ function _pushOutOfShape(ent, ccx, ccz, col, margin) {
   return false;
 }
 
-module.exports = { pushOutOfIslands };
+module.exports = { pushOutOfIslands, pushOutOfWalls };

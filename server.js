@@ -41,6 +41,8 @@ const ProjectileManager = require('./managers/projectile-manager');
 const AttackManager     = require('./managers/attack-manager');
 const PartyManager      = require('./managers/party-manager');
 const PetManager        = require('./managers/pet-manager');
+const WallManager       = require('./managers/wall-manager');
+const { pushOutOfIslands, pushOutOfWalls } = require('./utils/collision');
 
 
 const compression = require('compression');
@@ -324,6 +326,11 @@ const npcs    = new Map();
 const playerManager     = new PlayerManager();
 const partyManager      = new PartyManager();
 const petManager        = new PetManager(wss, players, db);
+// Obstáculos temporários (ex.: Muro de Pedra) — único registro pra TODOS os
+// mapas, injetado em playerManager e em cada NPCManager (mesmo padrão do
+// partyManager); ver managers/wall-manager.js e utils/collision.js.
+const wallManager        = new WallManager();
+playerManager.wallManager = wallManager;
 
 // 1. ProjectileManager first (no npcs yet — injected after)
 const projectileManager = new ProjectileManager(wss, players, null, null, null, MAP_DEFS);
@@ -335,6 +342,8 @@ const attackManager = new AttackManager(addEvent, projectileManager);
 // 3. NPC managers (need projectileManager + attackManager for broadcasting)
 let   npcManager  = new NPCManager(projectileManager, MAP_DEFS, 1, attackManager); // map 1 NPCs (let — pode ser recriado)
 let   npcManager2 = new NPCManager(projectileManager, MAP_DEFS, 2, attackManager); // map 2 NPCs (let — pode ser recriado)
+npcManager.wallManager  = wallManager;
+npcManager2.wallManager = wallManager;
 // Maps 3+ são criados sob demanda via regularManagers (elimina npcManager3/4/6 hardcoded)
 const regularManagers = new Map(); // mapLevel (3-6) → { npc: NPCManager, boss: BossManager|null }
 // Mapas bônus (7+) — mesma lógica, managers separados para dungeon complete detection
@@ -436,9 +445,12 @@ bossManager2.partyManager = partyManager;
 
 // 5. Wire everything into projectileManager
 projectileManager.npcs          = allNpcs;
-// Wire petManager ↔ projectileManager para wild pets
-petManager.projectileManager       = projectileManager;
-projectileManager._onWildPetKill   = (wildNpc, killer) => petManager.onWildPetKilled(wildNpc, killer);
+// Wire petManager: lookup de NPCs (validação de alvo), broadcast em lote e
+// intercept defensivo (relíquia do pet dispara ANTES do dano chegar no dono)
+petManager.projectileManager    = projectileManager;
+petManager.addEvent             = addEvent;
+projectileManager.petManager    = petManager;
+attackManager.petManager        = petManager;
 projectileManager.grantSkillXp  = grantSkillXp;
 projectileManager.npcManagers   = [npcManager, npcManager2];
 projectileManager.bossManager   = bossManager;
@@ -1287,6 +1299,8 @@ setInterval(() => {
 
   function processDots(e, isNPC) {
     if (!e.dots || e.dots.length === 0 || e.dead) return;
+    // Névoa Espectral (do jogador ou do pet): invencível também pausa DoT
+    if (!isNPC && e.relicInvincibleExpires && now < e.relicInvincibleExpires) return;
     e.dots = e.dots.filter(dot => {
       if (now < dot.next) return true;
       e.hp = Math.max(0, e.hp - dot.dmg);
@@ -1566,6 +1580,7 @@ function ensureBonusMapManager(level) {
   mgr.destroyed    = false;
   mgr._phase       = 'npcs'; // 'npcs' → 'boss' → 'complete'
   mgr._bossSpawnedAt = 0;
+  mgr.wallManager  = wallManager;
   bonusNpcManagers.set(level, mgr);
   _rewireProjectileManager();
   return mgr;
@@ -1627,6 +1642,7 @@ function ensureRegularManager(level) {
   console.log(`🔄 Criando managers do Mapa ${level}`);
   const npc  = new NPCManager(projectileManager, MAP_DEFS, level, attackManager);
   npc.destroyed = false;
+  npc.wallManager = wallManager;
 
   const mapDef = MAP_DEFS[level] || {};
   let boss = null;
@@ -1694,6 +1710,7 @@ function ensureManagersForMap(level) {
       console.log('🔄 Recriando managers do Mapa 1');
       npcManager = new NPCManager(projectileManager, MAP_DEFS, 1, attackManager);
       npcManager.destroyed = false;
+      npcManager.wallManager = wallManager;
       bossManager = new BossManager(wss, players, npcManager.npcs, 1);
       bossManager.destroyed = false;
       bossManager.partyManager = partyManager;
@@ -1706,6 +1723,7 @@ function ensureManagersForMap(level) {
       console.log('🔄 Recriando managers do Mapa 2');
       npcManager2 = new NPCManager(projectileManager, MAP_DEFS, 2, attackManager);
       npcManager2.destroyed = false;
+      npcManager2.wallManager = wallManager;
       bossManager2 = new BossManager(wss, players, npcManager2.npcs, 2);
       bossManager2.destroyed = false;
       bossManager2.partyManager = partyManager;
@@ -2170,9 +2188,9 @@ wss.on('connection', (ws) => {
         case 'buy_pet_food': {
           if (!player) break;
           const foodId = String(msg.foodId || '');
-          const qty    = Math.max(1, Math.min(999, Math.floor(Number(msg.qty || 0))));
+          const qty    = Math.max(1, Math.min(999999, Math.floor(Number(msg.qty || 0))));
           // Preço é autoritativo no servidor — ignora msg.price do cliente
-          const FOOD_PRICES_SRV = { frutas: 30, cerveja: 50 };
+          const FOOD_PRICES_SRV = { uva: 30 };
           const unitPrice = FOOD_PRICES_SRV[foodId];
           if (!unitPrice || qty <= 0) {
             sendTo(ws, { type: 'pet_error', reason: 'Item inválido.' });
@@ -2186,6 +2204,8 @@ wss.on('connection', (ws) => {
           player.gold -= totalCost;
           if (!player.inventory) player.inventory = {};
           player.inventory[foodId] = (player.inventory[foodId] || 0) + qty;
+          // Pet inativo por falta de comida volta à ativa automaticamente
+          petManager.onFoodPurchased(player);
           sendTo(ws, {
             type:         'inventory_update',
             inventory:    player.inventory,
@@ -2227,9 +2247,26 @@ wss.on('connection', (ws) => {
 
         // ── Pets ────────────────────────────────────────────────────────────
         case 'pet_equip':
-        case 'pet_attack':
-        case 'pet_skill':
-        case 'pet_capture': {
+        case 'pet_relic_equip':
+        case 'pet_relic_unequip': {
+          if (!player || !player._dbLoaded) break;
+          petManager.handleMessage(player, msg);
+          break;
+        }
+
+        // Pet usa relíquia OFENSIVA no alvo (validação no petManager, execução aqui)
+        case 'pet_use_relic': {
+          if (!player || !player._dbLoaded) break;
+          handlePetUseRelic(player, msg);
+          break;
+        }
+
+        // ── Localizador de pets (tecla 3) — leitura pura, sempre liberado ─────
+        // Não é cheat: só informa onde estão pets já existentes no mundo.
+        // O spawn de teste (debug_spawn_test_pets) também é liberado para
+        // facilitar playtest — respeita o cap global e pets são de todos.
+        case 'debug_list_pets':
+        case 'debug_spawn_test_pets': {
           if (!player || !player._dbLoaded) break;
           petManager.handleMessage(player, msg);
           break;
@@ -2416,6 +2453,14 @@ async function handleLogin(ws, msg) {
   player.bankUnlocked        = saved.bankUnlocked        || false;
   player.cannonResearchLevel = saved.cannonResearchLevel || 0;
   player.shipMaterialLevel   = saved.shipMaterialLevel   || 0;
+  // ── Pets — sem isso o pet "some" a cada relogin (o _parse retorna mas
+  //    ninguém aplicava no player; mesma classe de bug do bonusShips) ────────
+  player.ownedPets   = saved.ownedPets   || [];
+  player.equippedPet = saved.equippedPet || '';
+  player.petLevels   = saved.petLevels   || {};
+  player.petXp       = saved.petXp       || {};
+  player.petRelics   = saved.petRelics   || {};
+  player.inventory.uva = Number(saved.petFood || 0);   // comida (coluna pet_food)
   // Pad cannonUpgradesData to match inventory.cannons length
   while (player.cannonUpgradesData.length < player.inventory.cannons.length) {
     player.cannonUpgradesData.push({ as: 0, rn: 0, dm: 0 });
@@ -3591,6 +3636,7 @@ function handleEquipRelic(player, msg) {
   const relicInv = player.inventory.relics || [];
   const instance = relicInv.find(r => r.instanceId === instanceId);
   if (!instance) return;
+  // (Relíquia pode estar no deck E no pet ao mesmo tempo — usos independentes)
   if (!player.relicDeck) player.relicDeck = [];
   // Remove from current deck position if already equipped
   player.relicDeck = player.relicDeck.filter(id => id !== instanceId);
@@ -4099,6 +4145,301 @@ function handleUseRelic(player, msg) {
     effectPayload.x = tpTx;
     effectPayload.z = tpTz;
 
+  } else if (relicDef.effect === 'ice_zone') {
+    // ── Prisão de Gelo ────────────────────────────────────────────────
+    // Zona circular: slow instantâneo em quem está dentro; quem AINDA
+    // estiver dentro quando o fill completar (zoneMs) congela por stunMs.
+    const ICE_RADIUS = relicDef.radius || 40;
+    const iceZoneMs  = relicDef.zoneMs || 2000;
+    const iceStunMs  = relicDef.stunMs || 2000;
+    const gx = rTx != null ? rTx : player.x;
+    const gz = rTz != null ? rTz : player.z;
+
+    // 1. Avisa TODOS os clientes: zona no chão com fill até o stun
+    addEvent({
+      type:     'ice_cast',
+      casterId: player.id,
+      targetX:  gx,
+      targetZ:  gz,
+      radius:   ICE_RADIUS,
+      zoneMs:   iceZoneMs,
+      stunMs:   iceStunMs,
+    }, player.mapLevel || 1);
+
+    // 1b. NPCs tentam desviar da zona (mesmo hook do raio)
+    {
+      const _pLvl = player.mapLevel || 1;
+      const _gMgr = _pLvl === 1 ? npcManager
+                  : _pLvl === 2 ? npcManager2
+                  : getMapManager(_pLvl);
+      _gMgr?.notifyDangerZone(gx, gz, ICE_RADIUS, iceZoneMs);
+    }
+
+    // 2. Slow instantâneo em NPCs e jogadores inimigos dentro do círculo
+    const iceSlowMult = 1 - (relicDef.slowPct || 0.5);
+    projectileManager.npcs.forEach(npc => {
+      if (npc.dead) return;
+      if (Math.hypot(npc.x - gx, npc.z - gz) > ICE_RADIUS) return;
+      npc.slowMult    = Math.min(npc.slowMult || 1, iceSlowMult);
+      npc.slowExpires = now2 + iceZoneMs;
+    });
+    players.forEach(p => {
+      if (p.dead || p.id === player.id) return;
+      if (Math.hypot(p.x - gx, p.z - gz) > ICE_RADIUS) return;
+      p.slowMult       = Math.min(p.slowMult || 1, iceSlowMult);
+      p.slowExpires    = now2 + iceZoneMs;
+      p.lastCombatTime = Date.now();
+    });
+
+    // 3. Stun em quem ainda estiver dentro quando a zona completa
+    setTimeout(() => {
+      if (player.dead) return; // caster morreu durante a zona
+      const tnow    = Date.now();
+      const hitsIce = [];
+      projectileManager.npcs.forEach(npc => {
+        if (npc.dead) return;
+        if (npc.isBoss) return; // bosses são imunes a stun (só levam o slow)
+        if (Math.hypot(npc.x - gx, npc.z - gz) > ICE_RADIUS) return;
+        npc.stunExpires = tnow + iceStunMs;
+        hitsIce.push({ id: npc.id, isNPC: true });
+      });
+      players.forEach(p => {
+        if (p.dead || p.id === player.id) return;
+        if (Math.hypot(p.x - gx, p.z - gz) > ICE_RADIUS) return;
+        p.stunExpires    = tnow + iceStunMs;
+        p.lastCombatTime = tnow;
+        hitsIce.push({ id: p.id, isNPC: false });
+      });
+      addEvent({
+        type:     'ice_stun',
+        casterId: player.id,
+        targetX:  gx,
+        targetZ:  gz,
+        radius:   ICE_RADIUS,
+        stunMs:   iceStunMs,
+        hits:     hitsIce,
+      }, player.mapLevel || 1);
+      // XP de relíquia por NPC congelado (CC puro não mata — recompensa menor)
+      const iceNpcHits = hitsIce.filter(h => h.isNPC).length;
+      if (iceNpcHits > 0) grantSkillXp(player, 'reliquia', iceNpcHits * 12, wss);
+    }, iceZoneMs);
+
+    effectPayload.targetX = gx;
+    effectPayload.targetZ = gz;
+    effectPayload.zoneMs  = iceZoneMs;
+
+  } else if (relicDef.effect === 'stone_wall') {
+    // ── Muro de Pedra ───────────────────────────────────────────────────
+    // Mecânica NOVA (não é dano nem slow/stun via stat): registra um
+    // obstáculo retangular TEMPORÁRIO que jogador e NPC respeitam
+    // exatamente como uma ilha — ver managers/wall-manager.js e
+    // utils/collision.js (pushOutOfWalls, mesmo _pushOutOfShape das ilhas).
+    const wallLen   = relicDef.wallLength    || 100;
+    const wallThick = relicDef.wallThickness || 20;
+    const wallZoneMs = relicDef.zoneMs || 1200;
+    const wallDurMs  = relicDef.wallMs || 6000;
+    const wx = rTx != null ? rTx : player.x;
+    const wz = rTz != null ? rTz : player.z;
+    // Perpendicular à linha caster→alvo — o muro cruza o caminho de quem
+    // vem daquele lado. Na convenção da caixa de colisão (Basis_Y, ver
+    // _pushOutOfShape), o eixo do COMPRIMENTO (hw) é o basis.x =
+    // (cos rot, -sin rot); com rot = atan2(dx, dz) (o heading até o alvo,
+    // mesmo de player.rotation), esse eixo já fica perpendicular à linha —
+    // NÃO some π/2 aqui (fazia o muro ficar deitado AO LONGO da linha).
+    const wallRot = Math.atan2(wx - player.x, wz - player.z);
+
+    // 1. Broadcast IMEDIATO — todo mundo no mapa vê a marcação subindo
+    addEvent({
+      type:     'stone_wall_cast',
+      casterId: player.id,
+      targetX:  wx, targetZ: wz, rot: wallRot,
+      wallLength: wallLen, wallThickness: wallThick,
+      zoneMs: wallZoneMs, wallMs: wallDurMs,
+    }, player.mapLevel || 1);
+
+    // 1b. NPCs tentam desviar da área marcada (mesmo hook do raio/gelo)
+    {
+      const _pLvl = player.mapLevel || 1;
+      const _wMgr = _pLvl === 1 ? npcManager
+                  : _pLvl === 2 ? npcManager2
+                  : getMapManager(_pLvl);
+      _wMgr?.notifyDangerZone(wx, wz, Math.max(wallLen, wallThick) * 0.5, wallZoneMs);
+    }
+
+    // 2. Depois da marcação, registra o obstáculo físico de verdade
+    const wallId = `wall_${player.id}_${now2}`;
+    setTimeout(() => {
+      if (player.dead) return; // caster morreu durante a marcação — cancela
+      wallManager.addWall(player.mapLevel || 1, {
+        id: wallId, x: wx, z: wz,
+        hw: wallLen / 2, hh: wallThick / 2, rot: wallRot,
+        durationMs: wallDurMs,
+      });
+      addEvent({
+        type:     'stone_wall_up',
+        casterId: player.id,
+        targetX:  wx, targetZ: wz, rot: wallRot,
+        wallLength: wallLen, wallThickness: wallThick, wallMs: wallDurMs,
+      }, player.mapLevel || 1);
+    }, wallZoneMs);
+
+    effectPayload.targetX = wx;
+    effectPayload.targetZ = wz;
+    effectPayload.zoneMs  = wallZoneMs;
+
+  } else if (relicDef.effect === 'harpoon') {
+    // ── Arpão do Leviatã ────────────────────────────────────────────────
+    // Skillshot em linha (Q do Nautilus): o 1º inimigo dentro do corredor
+    // NO MOMENTO em que o arpão chega (travelMs = janela de desvio) é
+    // puxado até pullStopDist do caster + stun curto durante o arrasto.
+    // O "arrasto" visual é o lerp que o cliente já faz nas entidades —
+    // aqui só reposicionamos e stunamos. Boss leva o dano mas NÃO é puxado.
+    const H_RANGE  = relicDef.range        || 130;
+    const H_RADIUS = relicDef.hitRadius    || 14;
+    const H_TRAVEL = relicDef.travelMs     || 500;
+    const H_STOP   = relicDef.pullStopDist || 30;
+    const H_STUN   = relicDef.stunMs       || 800;
+
+    // Direção do arremesso (fallback: proa do navio)
+    let hdx = (rTx != null ? rTx : player.x) - player.x;
+    let hdz = (rTz != null ? rTz : player.z) - player.z;
+    const hLen = Math.hypot(hdx, hdz);
+    if (hLen < 1) { hdx = Math.sin(player.rotation || 0); hdz = Math.cos(player.rotation || 0); }
+    else          { hdx /= hLen; hdz /= hLen; }
+    const hx0 = player.x, hz0 = player.z;
+    const hEndX = hx0 + hdx * H_RANGE, hEndZ = hz0 + hdz * H_RANGE;
+
+    // 1. Broadcast IMEDIATO — todo mundo vê o arpão voando (e pode desviar)
+    addEvent({
+      type:     'harpoon_cast',
+      casterId: player.id,
+      fromX:    hx0, fromZ: hz0,
+      targetX:  hEndX, targetZ: hEndZ,
+      travelMs: H_TRAVEL,
+    }, player.mapLevel || 1);
+
+    // 2. Resolução no fim do voo: varre o corredor, 1º alvo ao longo da linha
+    setTimeout(() => {
+      if (player.dead) return;
+      const hMapLvl = player.mapLevel || 1;
+      // Distância ponto→segmento + posição normalizada t ao longo da linha
+      const distToSeg = (px, pz) => {
+        const wx2 = px - hx0, wz2 = pz - hz0;
+        let t = (wx2 * hdx + wz2 * hdz) / H_RANGE;
+        t = Math.max(0, Math.min(1, t));
+        const cx2 = hx0 + hdx * H_RANGE * t, cz2 = hz0 + hdz * H_RANGE * t;
+        return { d: Math.hypot(px - cx2, pz - cz2), t };
+      };
+      let best = null; // { ent, isNPC, t } — menor t = 1º na linha
+      projectileManager.npcs.forEach(npc => {
+        if (npc.dead) return;
+        if ((npc.mapLevel || 1) !== hMapLvl) return;
+        const { d, t } = distToSeg(npc.x, npc.z);
+        if (d > H_RADIUS || t < 0.05) return;
+        if (!best || t < best.t) best = { ent: npc, isNPC: true, t };
+      });
+      players.forEach(p => {
+        if (p.dead || p.id === player.id) return;
+        if ((p.mapLevel || 1) !== hMapLvl) return;
+        const { d, t } = distToSeg(p.x, p.z);
+        if (d > H_RADIUS || t < 0.05) return;
+        if (!best || t < best.t) best = { ent: p, isNPC: false, t };
+      });
+      if (!best) return; // errou — o VFX do cliente recolhe frouxo sozinho
+
+      // ── Dano (escala com poder de fogo) + kill-flow ─────────────────────
+      const target = best.ent;
+      const hDmg = relicDamageFor(player, relicDef);
+      const hitsH = [];
+      target.hp = Math.max(0, target.hp - hDmg);
+      if (best.isNPC) {
+        const npc = target;
+        npc.lastDamageTime = Date.now();
+        hitsH.push({ id: npc.id, hp: npc.hp, isNPC: true, dmg: hDmg });
+        if (npc.isBoss) {
+          if (!npc._damageMap) npc._damageMap = new Map();
+          npc._damageMap.set(player.id, (npc._damageMap.get(player.id) || 0) + hDmg);
+        }
+        if (npc.hp <= 0 && !npc.dead) {
+          npc.dead = true;
+          if (npc.isBoss) {
+            addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, isBoss: true, killerId: player.id }, npc.mapLevel);
+            if (npc.isWorldBoss) {
+              worldBossManager.onWorldBossDead(npc, player.id);
+            } else {
+              const _hpBossLvl = npc.mapLevel || 1;
+              const hpBossMgr = projectileManager.bossManagers.get(_hpBossLvl)
+                              || (_hpBossLvl === 2 ? bossManager2 : bossManager);
+              hpBossMgr && hpBossMgr.onBossDead(npc, player.id);
+              worldBossManager.onZoneBossDead(npc, player.id);
+            }
+            projectileManager.npcs.delete(npc.id);
+          } else {
+            const rewards = projectileManager.grantNpcKillRewards(player, npc);
+            addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: player.id, goldDrop: rewards.goldDrop }, npc.mapLevel);
+            const _nLvlH = npc.mapLevel || 1;
+            const hpMgr = _nLvlH === 1 ? npcManager : _nLvlH === 2 ? npcManager2 : getMapManager(_nLvlH);
+            hpMgr && hpMgr.respawnScaled(npc.id, player.npcKills || 0, _nLvlH);
+            _npcKillBossAccounting(_nLvlH, player.npcKills || 0);
+            db.save(player).catch(e => console.error('Save error:', e));
+            const curMapDef = MAP_DEFS[player.mapLevel || 1] || {};
+            sendTo(player.ws, {
+              type: 'currency_update', gold: player.gold, dobroes: player.dobroes,
+              reward: { type: 'gold', amount: rewards.finalGold },
+              npcKills: player.npcKills, mapXp: player.mapXp,
+              mapLevel: player.mapLevel || 1, mapXpNeeded: curMapDef.xpToAdvance || 99999,
+              mapFragments: player.mapFragments || 0,
+            });
+          }
+        }
+        grantSkillXp(player, 'reliquia', 18, wss);
+      } else {
+        target.lastCombatTime = Date.now();
+        hitsH.push({ id: target.id, hp: target.hp, isNPC: false, dmg: hDmg });
+      }
+
+      // ── Puxão: reposiciona perto do caster + stun durante o arrasto ────
+      const grabX = target.x, grabZ = target.z;
+      const canPull = !target.dead && !(best.isNPC && target.isBoss);
+      let pullX = grabX, pullZ = grabZ;
+      if (canPull) {
+        const pdx = target.x - player.x, pdz = target.z - player.z;
+        const pd = Math.hypot(pdx, pdz) || 1;
+        const pulled = {
+          x: player.x + (pdx / pd) * H_STOP,
+          z: player.z + (pdz / pd) * H_STOP,
+        };
+        // Nunca puxa pra dentro de ilha/muro nem pra fora do mapa
+        const hMs = (MAP_DEFS[hMapLvl] && MAP_DEFS[hMapLvl].size) || 2000;
+        pulled.x = Math.max(-hMs / 2, Math.min(hMs / 2, pulled.x));
+        pulled.z = Math.max(-hMs / 2, Math.min(hMs / 2, pulled.z));
+        pushOutOfIslands(pulled, MAP_DEFS[hMapLvl], 8);
+        pushOutOfWalls(pulled, wallManager.getActive(hMapLvl), 8);
+        target.x = pulled.x;
+        target.z = pulled.z;
+        target.stunExpires = Date.now() + H_STUN;
+        if (!best.isNPC) target.moveTarget = null; // cancela click-to-move
+        pullX = pulled.x;
+        pullZ = pulled.z;
+      }
+
+      addEvent({
+        type:     'harpoon_hit',
+        casterId: player.id,
+        fromX:    hx0, fromZ: hz0,
+        targetId: target.id,
+        isNPC:    best.isNPC,
+        grabX, grabZ,
+        toX: pullX, toZ: pullZ,
+        stunMs: canPull ? H_STUN : 0,
+        hits:   hitsH,
+      }, hMapLvl);
+    }, H_TRAVEL);
+
+    effectPayload.targetX = hEndX;
+    effectPayload.targetZ = hEndZ;
+    effectPayload.castMs  = H_TRAVEL;
+
   } else if (relicDef.effect === 'aura') {
     // ── Aura Mortal ───────────────────────────────────────────────────
     // Activa uma aura ao redor do barco que pulsa dano em NPCs próximos
@@ -4128,6 +4469,110 @@ function handleUseRelic(player, msg) {
   }
 
   sendTo(player.ws, effectPayload);
+}
+
+// ── Pet: dano em área de relíquia usada pelo pet ──────────────────────────────
+// Mesmo tratamento de morte de NPC dos efeitos lightning/rocket/meteor do
+// handleUseRelic — o DONO do pet recebe as recompensas normalmente.
+function relicAreaDamage(player, cx, cz, radius, dmg) {
+  const hits = [];
+  projectileManager.npcs.forEach(npc => {
+    if (npc.dead) return;
+    if ((npc.mapLevel || 1) !== (player.mapLevel || 1)) return;
+    if (Math.hypot(npc.x - cx, npc.z - cz) > radius) return;
+    npc.hp = Math.max(0, npc.hp - dmg);
+    npc.lastDamageTime = Date.now();
+    hits.push({ id: npc.id, hp: npc.hp, isNPC: true, dmg });
+    if (npc.isBoss) {
+      if (!npc._damageMap) npc._damageMap = new Map();
+      npc._damageMap.set(player.id, (npc._damageMap.get(player.id) || 0) + dmg);
+    }
+    if (npc.hp <= 0 && !npc.dead) {
+      npc.dead = true;
+      if (npc.isBoss) {
+        addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, isBoss: true, killerId: player.id }, npc.mapLevel);
+        if (npc.isWorldBoss) {
+          worldBossManager.onWorldBossDead(npc, player.id);
+        } else {
+          const _bLvl = npc.mapLevel || 1;
+          const bMgr = projectileManager.bossManagers.get(_bLvl)
+                     || (_bLvl === 2 ? bossManager2 : bossManager);
+          bMgr && bMgr.onBossDead(npc, player.id);
+          worldBossManager.onZoneBossDead(npc, player.id);
+        }
+        projectileManager.npcs.delete(npc.id);
+      } else {
+        const rewards = projectileManager.grantNpcKillRewards(player, npc);
+        addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: player.id, goldDrop: rewards.goldDrop }, npc.mapLevel);
+        const _nLvl = npc.mapLevel || 1;
+        const mgr = _nLvl === 1 ? npcManager : _nLvl === 2 ? npcManager2 : getMapManager(_nLvl);
+        mgr && mgr.respawnScaled(npc.id, player.npcKills || 0, _nLvl);
+        _npcKillBossAccounting(_nLvl, player.npcKills || 0);
+        db.save(player).catch(e => console.error('Save error:', e));
+        const curMapDef = MAP_DEFS[player.mapLevel || 1] || {};
+        sendTo(player.ws, {
+          type: 'currency_update', gold: player.gold, dobroes: player.dobroes,
+          reward: { type: 'gold', amount: rewards.finalGold },
+          npcKills: player.npcKills, mapXp: player.mapXp,
+          mapLevel: player.mapLevel || 1, mapXpNeeded: curMapDef.xpToAdvance || 99999,
+          mapFragments: player.mapFragments || 0,
+        });
+      }
+    }
+  });
+  players.forEach(p => {
+    if (p.dead || p.id === player.id) return;
+    if ((p.mapLevel || 1) !== (player.mapLevel || 1)) return;
+    if (Math.hypot(p.x - cx, p.z - cz) > radius) return;
+    p.hp = Math.max(0, p.hp - dmg);
+    p.lastCombatTime = Date.now();
+    hits.push({ id: p.id, hp: p.hp, isNPC: false, dmg });
+  });
+  return hits;
+}
+
+// Pet usa relíquia ofensiva: petManager valida (pet ativo, relíquia no pet,
+// CD, range tolerante) e aqui executamos o efeito com os mesmos VFX das
+// relíquias do jogador (cliente já renderiza lightning/rocket/meteor).
+function handlePetUseRelic(player, msg) {
+  const v = petManager.validateOffensiveUse(player, msg);
+  if (!v) return;
+  const { relicDef, npc, dmgMult } = v;
+  const dmg    = Math.max(1, Math.round(relicDamageFor(player, relicDef) * dmgMult));
+  console.log(`[Pet] 🐾 ${player.name}: pet usou ${relicDef.effect} em ${npc.id} (dmg=${dmg}, mult=${dmgMult.toFixed(2)})`);
+  const tx     = npc.x, tz = npc.z;
+  const mapLvl = player.mapLevel || 1;
+  const radius = relicDef.radius || 30;
+
+  // Pet NÃO tem tempo de cast (flag fromPet): o telegraph fica só pro VFX
+  // fazer sentido visual — o dano cai quase instantâneo. Balanceamento: o CD
+  // por raridade (20/18/15/10s) é o custo, não a esquiva.
+  const PET_CAST_MS = 250;
+
+  if (relicDef.effect === 'lightning') {
+    addEvent({ type: 'lightning_cast', casterId: player.id, targetX: tx, targetZ: tz, radius, castMs: PET_CAST_MS, fromPet: true }, mapLvl);
+    setTimeout(() => {
+      if (player.dead) return;
+      const hits = relicAreaDamage(player, tx, tz, radius, dmg);
+      addEvent({ type: 'lightning_strike', casterId: player.id, targetX: tx, targetZ: tz, hits, fromPet: true }, mapLvl);
+    }, PET_CAST_MS);
+
+  } else if (relicDef.effect === 'rocket') {
+    addEvent({ type: 'rocket_cast', casterId: player.id, fromX: player.x, fromZ: player.z, targetX: tx, targetZ: tz, radius, castMs: PET_CAST_MS, fromPet: true }, mapLvl);
+    setTimeout(() => {
+      if (player.dead) return;
+      const hits = relicAreaDamage(player, tx, tz, radius, dmg);
+      addEvent({ type: 'rocket_strike', casterId: player.id, targetX: tx, targetZ: tz, hits, fromPet: true }, mapLvl);
+    }, PET_CAST_MS);
+
+  } else if (relicDef.effect === 'meteor') {
+    addEvent({ type: 'meteor_incoming', x: tx, z: tz, radius, castMs: PET_CAST_MS, fromPet: true }, mapLvl);
+    setTimeout(() => {
+      if (player.dead) return;
+      const hits = relicAreaDamage(player, tx, tz, radius, dmg);
+      addEvent({ type: 'meteor_strike', x: tx, z: tz, radius, hits, fromPet: true }, mapLvl);
+    }, PET_CAST_MS);
+  }
 }
 
 function handleBuyTalent(player, msg) {

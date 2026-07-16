@@ -180,6 +180,12 @@ class AttackManager {
 
     for (const p of mapPlayers) {
       if (this._isHit(p, attack, targetX, targetZ, npc)) {
+        // Névoa Espectral: invencível bloqueia também ataques em área
+        // (antes só projéteis respeitavam — necessário para a defensiva do pet)
+        if (p.relicInvincibleExpires && _hitNow < p.relicInvincibleExpires) {
+          this.addEvent({ type: 'shield_block', targetId: p.id }, mapLevel);
+          continue;
+        }
         let dmg = Math.max(1, Math.floor((npc.cannonDmg || 1) * attack.damageMult));
         // Aplica debuff de defesa se ativo
         const defDebuff = p.activeDebuffs?.find(d => d.type === 'defense_buff' && d.expiresAt > Date.now());
@@ -190,6 +196,14 @@ class AttackManager {
           dmg -= blocked;
           const goldCost = Math.round(blocked * 0.10);
           if (goldCost > 0) p.gold = Math.max(0, (p.gold || 0) - goldCost);
+        }
+        // Pet: relíquia defensiva intercepta ANTES do dano ser aplicado
+        if (this.petManager) {
+          dmg = this.petManager.interceptOwnerDamage(p, dmg);
+          if (dmg <= 0) {
+            this.addEvent({ type: 'shield_block', targetId: p.id }, mapLevel);
+            continue;
+          }
         }
         p.hp = Math.max(0, p.hp - dmg);
         p.lastCombatTime = Date.now();

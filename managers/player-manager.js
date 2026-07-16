@@ -1,6 +1,6 @@
 // managers/player-manager.js
 const { uid, rand, clamp, sendTo } = require('../utils/helpers');
-const { pushOutOfIslands } = require('../utils/collision');
+const { pushOutOfIslands, pushOutOfWalls } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, MAX_CANNON_SLOTS, CANNON_DEFS, PIRATE_DEFS, MAP_DEFS } = require('../constants');
 
 class PlayerManager {
@@ -259,6 +259,10 @@ class PlayerManager {
         // (tecla 2) ou fallback círculo/quadrado do islandRadius. A lógica vive
         // em utils/collision.js e é COMPARTILHADA com os NPCs.
         pushOutOfIslands(player, _mapDef, 6);
+        // Muros temporários de relíquia (ex.: Muro de Pedra) — mesmo formato
+        // de forma dos colliders de ilha, mas com expiração própria.
+        const _activeWalls = this.wallManager?.getActive(_mapLvl);
+        if (_activeWalls && _activeWalls.length) pushOutOfWalls(player, _activeWalls, 6);
         // Torre de treino: usa dummy.x/z + collisionRadius (estrutura diferente)
         if (_mapDef.training?.dummy !== undefined) {
           const tr = _mapDef.training;
@@ -284,8 +288,9 @@ class PlayerManager {
   }
 
   _processStatusEffects(player, now) {
-    // Dot (Damage over Time)
-    if (player.dot && now >= player.dot.next) {
+    // Dot (Damage over Time) — invencível (Névoa do jogador ou do pet) pausa o tick
+    if (player.dot && now >= player.dot.next
+        && !(player.relicInvincibleExpires && now < player.relicInvincibleExpires)) {
       player.hp = Math.max(0, player.hp - player.dot.dmg);
       player.dot.dur -= player.dot.tick;
       

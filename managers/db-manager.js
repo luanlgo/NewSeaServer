@@ -176,6 +176,8 @@ class DBManager {
              equipped_pet=?,
              pet_levels=?,
              pet_xp=?,
+             pet_relics=?,
+             pet_food=?,
              last_seen=NOW()
          WHERE name=?`,
         [
@@ -219,6 +221,8 @@ class DBManager {
           player.equippedPet || '',
           JSON.stringify(player.petLevels   || {}),
           JSON.stringify(player.petXp       || {}),
+          JSON.stringify(player.petRelics   || {}),
+          Number(player.inventory?.uva || 0),   // comida de pet (uva)
           player.name, // WHERE name=?
         ]
       );
@@ -372,6 +376,8 @@ class DBManager {
       "ALTER TABLE players ADD COLUMN equipped_pet  VARCHAR(64) NOT NULL DEFAULT ''",
       "ALTER TABLE players ADD COLUMN pet_levels    JSON",
       "ALTER TABLE players ADD COLUMN pet_xp        JSON",
+      "ALTER TABLE players ADD COLUMN pet_relics    JSON",
+      "ALTER TABLE players ADD COLUMN pet_food      FLOAT NOT NULL DEFAULT 0",
       // ── Auth (token de dispositivo, TOFU) ─────────────────────────────────
       "ALTER TABLE players ADD COLUMN secret_hash   VARCHAR(64) DEFAULT NULL",
     ];
@@ -457,6 +463,8 @@ class DBManager {
       equippedPet:  row.equipped_pet || '',
       petLevels:    row.pet_levels   || {},
       petXp:        row.pet_xp       || {},
+      petRelics:    row.pet_relics   || {},
+      petFood:      Number(row.pet_food || 0),
       // ── Auth ────────────────────────────────────────────────────────────
       secretHash:   row.secret_hash  || null,
     };

@@ -1,6 +1,6 @@
 // managers/NPCManager.js
 const { uid, rand, clamp, dist2D } = require('../utils/helpers');
-const { pushOutOfIslands } = require('../utils/collision');
+const { pushOutOfIslands, pushOutOfWalls } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, NPC_COUNT, MAP_DEFS, WORLD_BOSS_DEF, HIT_RADIUS, difficultyMult } = require('../constants');
 
 // ── Equilíbrio de aggro dos NPCs normais (navios piratas / monstros) ─────────
@@ -502,6 +502,9 @@ class NPCManager {
         // Ilhas intangíveis também no caminho de atração — mesmas formas de
         // colisão dos jogadores (utils/collision.js), em qualquer mapa
         pushOutOfIslands(npc, MAP_DEFS[npc.mapLevel || 1], 8);
+        // Muros temporários de relíquia — mesma consulta do loop principal.
+        const _attractWalls = this.wallManager?.getActive(npc.mapLevel || 1);
+        if (_attractWalls && _attractWalls.length) pushOutOfWalls(npc, _attractWalls, 8);
         return;
       }
 
@@ -650,7 +653,14 @@ class NPCManager {
                 for (const [pid, p] of playersMap) {
                   if (p.dead) continue;
                   if (dist2D(npc, p) > (atk.damageRadius || 220)) continue;
-                  const dmg = Math.round((atk.damage || 200) * (npc.dmgMult || 1));
+                  let dmg = Math.round((atk.damage || 200) * (npc.dmgMult || 1));
+                  // Invencível (Névoa) + defensiva do pet valem aqui também
+                  if (p.relicInvincibleExpires && Date.now() < p.relicInvincibleExpires) continue;
+                  const petMgr = this.projectileManager ? this.projectileManager.petManager : null;
+                  if (petMgr) {
+                    dmg = petMgr.interceptOwnerDamage(p, dmg);
+                    if (dmg <= 0) continue;
+                  }
                   p.hp = Math.max(0, p.hp - dmg);
                   if (p.hp <= 0 && !p.dead) p.dead = true;
                   this._broadcast({ type: 'npc_attack_hit', targetId: pid, damage: dmg, x: npc.x, z: npc.z, attackId: atk.id });
@@ -788,6 +798,12 @@ class NPCManager {
       // formas de colisão dos jogadores (colliders do editor ou islandRadius)
       if (pushOutOfIslands(npc, MAP_DEFS[npc.mapLevel || 1], 8)) {
         // Deflete a rota para longe da ilha (evita ficar "raspando" na borda)
+        npc.rotation += Math.PI * 0.5 + rand(-0.3, 0.3);
+      }
+      // Muros temporários de relíquia (ex.: Muro de Pedra) — o NPC é
+      // empurrado pra fora e deflete a rota, exatamente como numa ilha.
+      const _mainWalls = this.wallManager?.getActive(npc.mapLevel || 1);
+      if (_mainWalls && _mainWalls.length && pushOutOfWalls(npc, _mainWalls, 8)) {
         npc.rotation += Math.PI * 0.5 + rand(-0.3, 0.3);
       }
 

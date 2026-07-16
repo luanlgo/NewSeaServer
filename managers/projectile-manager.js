@@ -422,6 +422,15 @@ class ProjectileManager {
       }
     }
 
+    // ── Pet: relíquia defensiva intercepta ANTES do dano ser aplicado ───────
+    if (!isNPC && this.petManager) {
+      finalDmg = this.petManager.interceptOwnerDamage(target, finalDmg);
+      if (finalDmg <= 0) {
+        this._broadcastToMap(target.mapLevel || 1, { type: 'shield_block', targetId: target.id });
+        return;
+      }
+    }
+
     target.hp = Math.max(0, target.hp - finalDmg);
 
     // Apply state changes immediately (server-authoritative)
@@ -444,12 +453,6 @@ class ProjectileManager {
     } else {
       target._lastDamageTime = now;
       if (shooter2) { shooter2.lastActionTime = now; shooter2.lastCombatTime = now; }
-      // Wild pet: ativa aggro contra o primeiro jogador que atacar
-      if (target.isWildPet && shooter2 && !target.aggroTarget) {
-        target.aggroTarget    = shooter2.id;
-        target._lastAttackerId = shooter2.id;
-        console.log(`[Pet] 🐾 Wild pet ${target.petId || target.id} agro em ${shooter2.name}`);
-      }
     }
 
     // Accumulate into batch — merge hits on same target within this tick
@@ -720,16 +723,6 @@ class ProjectileManager {
         const killer = !proj.ownerIsNPC ? this.players.get(proj.ownerId) : null;
 
         if (isNPC) {
-          // ── Wild Pet: tratamento especial (sem gold rewards, apenas captura) ──
-          if (target.isWildPet) {
-            this._broadcastToMap(target.mapLevel || 1, {
-              type: 'entity_dead', id: targetId, isNPC: true, killerId: proj.ownerId,
-            });
-            this.npcs.delete(targetId);
-            if (this._onWildPetKill) this._onWildPetKill(target, killer);
-            return; // pula rewards normais
-          }
-
           if (target.isDungeonBoss) {
             // Dungeon Boss: chama handleDungeonComplete no servidor
             this._broadcastToMap(target.mapLevel || 1, { type: 'entity_dead', id: targetId, isNPC: true, killerId: proj.ownerId, goldDrop: 0 });
