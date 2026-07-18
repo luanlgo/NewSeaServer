@@ -129,13 +129,25 @@ if errorlevel 1 (
 )
 
 echo.
-set /p TEM_SERVER="  Teve alteracoes no servidor? (s/n): "
+echo  Publicando manifest no servidor de producao...
+:: O launcher le o manifest DO SERVIDOR (/launcher/manifest, relido do disco a
+:: cada request) — sem este git pull o launcher nunca enxerga a versao nova.
+:: Restart NAO e necessario para o manifest, so para mudanca de codigo.
+ssh root@164.163.9.91 "cd ~/NewSeaServer && git pull"
+if errorlevel 1 (
+  echo  AVISO: git pull no servidor falhou — o launcher NAO vai ver a v!NEW_VER!!
+) else (
+  echo  Manifest publicado! Launcher ja enxerga a v!NEW_VER!.
+)
+
+echo.
+set /p TEM_SERVER="  Teve alteracoes no CODIGO do servidor? Reiniciar? (s/n): "
 if /i "!TEM_SERVER!"=="s" (
-  ssh root@164.163.9.91 "cd ~/NewSeaServer && git pull && pm2 restart server"
+  ssh root@164.163.9.91 "cd ~/NewSeaServer && pm2 restart server"
   if errorlevel 1 (
     echo  AVISO: SSH falhou.
   ) else (
-    echo  Servidor atualizado!
+    echo  Servidor reiniciado!
   )
 )
 
