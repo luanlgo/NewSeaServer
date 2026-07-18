@@ -1,8 +1,10 @@
 {
-    "version":  "0.1.13",
-    "date":  "2026-07-16",
+    "version":  "0.1.14",
+    "date":  "2026-07-18",
     "changelog":  [
-                      "[v0.1.13] - 2026-07-16",
+                      "[v0.1.14] - 2026-07-18",
+                      "feat(auth,missoes,tutorial): cadastro com senha, barco de missões e onboarding guiado",
+                      "release: v0.1.13",
                       "feat(pets,relics): sistema de pets v2, relíquias de CC e wall-manager",
                       "release: v0.1.12",
                       "feat(mapas): novos modelos de ilha + colisão por formas (jogador e NPCs)",
@@ -10,16 +12,14 @@
                       "feat(balance): navio ghost com gold + relíquias escalam com poder de fogo",
                       "fix(gameplay): cura, caça, foguete, VFX por mapa e clima fixo por mapa",
                       "release: v0.1.10",
-                      "fix(treino): torre não atirava — raio de detecção não cobria o spawn",
-                      "release: v0.1.9",
-                      "release: v0.1.8"
+                      "fix(treino): torre não atirava — raio de detecção não cobria o spawn"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.13/SeaOfCode.exe",
-                      "sha256":  "764ba9394fdc2ff244c35f1d01ca36903a75b16d7b324c153c67d4ea4679feba",
-                      "size":  445602448
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.14/SeaOfCode.exe",
+                      "sha256":  "0951ce21c010f78577a25510aa1d3619189dec477679ae3920f830d52c06a233",
+                      "size":  482627872
                   }
               ]
 }
