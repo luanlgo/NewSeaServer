@@ -28,6 +28,15 @@ function hashSecret(secret) {
   return crypto.createHash('sha256').update(String(secret) + AUTH_PEPPER).digest('hex');
 }
 
+// ── Contas: senha (scrypt) + recuperação por e-mail ──────────────────────────
+const { hashPassword, verifyPassword } = require('./utils/password');
+const { sendRecoveryCode } = require('./utils/mailer');
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const RESET_CODE_TTL_MS   = 15 * 60_000; // validade do código de recuperação
+const RESET_MAX_ATTEMPTS  = 5;           // tentativas de código antes de invalidar
+const _recoveryCooldown = new Map();     // email → epoch ms do último envio
+const _resetAttempts    = new Map();     // email → tentativas erradas de código
+
 // ─── Map Definitions ─────────────────────────────────────────────────────────
 // Each map defines NPC base stats, XP requirements, and visual hints for the client
 
@@ -42,6 +51,7 @@ const AttackManager     = require('./managers/attack-manager');
 const PartyManager      = require('./managers/party-manager');
 const PetManager        = require('./managers/pet-manager');
 const WallManager       = require('./managers/wall-manager');
+const MissionBoatManager = require('./managers/mission-boat-manager');
 const { pushOutOfIslands, pushOutOfWalls } = require('./utils/collision');
 
 
@@ -143,6 +153,8 @@ const {
   DIFFICULTIES,
   difficultyDef,
   isDifficultyUnlocked,
+  DAILY_MISSIONS,
+  DAILY_MISSION_COUNT,
 } = require('./constants');
 const {
   calcXpRequired:     _calcXpRequired,
@@ -326,6 +338,8 @@ const npcs    = new Map();
 const playerManager     = new PlayerManager();
 const partyManager      = new PartyManager();
 const petManager        = new PetManager(wss, players, db);
+// Barco de Missões — NPC não-combatente que navega entre os mapas 1–4
+const missionBoatManager = new MissionBoatManager(players, MAP_DEFS);
 // Obstáculos temporários (ex.: Muro de Pedra) — único registro pra TODOS os
 // mapas, injetado em playerManager e em cada NPCManager (mesmo padrão do
 // partyManager); ver managers/wall-manager.js e utils/collision.js.
@@ -467,6 +481,32 @@ projectileManager.worldBossManager = worldBossManager;
 // Nomes dos monstros do recife (um por mapa 1-3)
 const _REEF_NPC_NAMES = ['Abyssal Stalker', 'Dreadfin Leviathan', 'Gilded Reef Manta'];
 
+// ── Tutorial: o primeiro abate de NPC concede o Foguete Naval (r4) ───────────
+// Estado 0→1 aqui; 1→2 só via mensagem tutorial_complete do cliente. A concessão
+// é server-side (e não a pedido do cliente) para não ser forjável.
+function maybeGrantTutorialRelic(killer) {
+  if (!killer || (killer.tutorialState || 0) !== 0) return;
+  killer.tutorialState = 1;
+  // +1500 de ouro de bônus — cobre o canhão c4 (1000) + Curandeiro (100) que os
+  // passos seguintes do tutorial mandam comprar, com folga para munição.
+  killer.gold = (killer.gold || 0) + 1500;
+  const instanceId = `rl_tut_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
+  if (!killer.inventory.relics) killer.inventory.relics = [];
+  killer.inventory.relics.push({ instanceId, relicId: 'r4' });
+  // Auto-equipa no slot 0 (tecla Q) se o deck está vazio — o passo seguinte do
+  // tutorial pede para usar o foguete sem passar pelo painel de relíquias.
+  if (!killer.relicDeck || killer.relicDeck.length === 0) killer.relicDeck = [instanceId];
+  db.save(killer, true).catch(e => console.error('Save error:', e));
+  sendTo(killer.ws, {
+    type:           'relic_state',
+    relicDeck:      killer.relicDeck,
+    relicInventory: killer.inventory.relics,
+    mana:           killer.mana,
+    maxMana:        killer.maxMana,
+  });
+  sendTo(killer.ws, { type: 'currency_update', gold: killer.gold, dobroes: killer.dobroes || 0 });
+}
+
 function _setupMissionCallbacks(pmgr, bmgr, bmgr2) {
   // Centro e raio de detecção da ilha mercado (mapa 3) para missão marketDefense
   const _marketCenter = MAP_DEFS[3]?.market?.center || { x: 0, z: 0 };
@@ -474,6 +514,7 @@ function _setupMissionCallbacks(pmgr, bmgr, bmgr2) {
 
   // ── NPC morto pelo jogador ─────────────────────────────────────────────────
   pmgr._onNpcKill = (killer, gold, npc) => {
+    maybeGrantTutorialRelic(killer);
     progressDailyMission(killer, 'npcKills',    1);
     progressDailyMission(killer, 'cannonKills', 1);   // todos os kills são com canhão
     progressDailyMission(killer, 'shipsSunk',   1);   // NPCs também são navios inimigos
@@ -707,8 +748,8 @@ function _notifyWantedHunters(targetPlayer) {
 
 // Sorteia N missões do dia (mesmas para todos — seed determinística pela data)
 function getDailyMissionPool() {
-  const allDefs = (MAP_DEFS[4] && MAP_DEFS[4].dailyMissions) || [];
-  const count   = (MAP_DEFS[4] && MAP_DEFS[4].dailyMissionCount) || 5;
+  const allDefs = DAILY_MISSIONS || [];
+  const count   = DAILY_MISSION_COUNT || 5;
   if (allDefs.length <= count) return allDefs;
 
   const today = todayDateStr();
@@ -804,6 +845,7 @@ setInterval(() => {
   lastTick  = now;
 
   playerManager.update(dt);
+  missionBoatManager.update(now, dt);
 
   // ── World time — avança e transmite periodicamente ────────────────────────
   worldTimeHour = (worldTimeHour + dt * 24.0 / DAY_DURATION_S) % 24.0;
@@ -1503,11 +1545,14 @@ setInterval(() => {
       const myNpcs  = npcSnapByZone.get(zone) || [];
       const myBoss  = bossesByZone.get(zone) || [];
       const myPlayers = playersByZone.get(zone) || [];
-      sendTo(p.ws, {
+      const myBoat  = missionBoatManager.snapshotFor(zone);
+      const stateMsg = {
         type:    'state',
         players: myPlayers,
         npcs:    [...myNpcs, ...myBoss],
-      });
+      };
+      if (myBoat) stateMsg.missionBoat = myBoat;
+      sendTo(p.ws, stateMsg);
     });
   }
 
@@ -1771,13 +1816,33 @@ wss.on('connection', (ws) => {
 
     try {
       const msg = JSON.parse(raw);
-      if (!player && msg.type !== 'login') return;
+      // Mensagens permitidas antes do login (fluxo de conta)
+      const PRE_LOGIN = msg.type === 'login' || msg.type === 'register'
+        || msg.type === 'forgot_password' || msg.type === 'reset_password';
+      if (!player && !PRE_LOGIN) return;
 
       switch (msg.type) {
 
         case 'login': {
           const result = await handleLogin(ws, msg);
-          if (result) player = result; // null = DB load falhou, cliente recebeu erro
+          if (result) player = result; // null = auth/DB falhou, cliente recebeu erro
+          break;
+        }
+
+        case 'register': {
+          if (player) break; // já logado nesta conexão
+          const result = await handleRegister(ws, msg);
+          if (result) player = result;
+          break;
+        }
+
+        case 'forgot_password': {
+          if (!player) await handleForgotPassword(ws, msg);
+          break;
+        }
+
+        case 'reset_password': {
+          if (!player) await handleResetPassword(ws, msg);
           break;
         }
 
@@ -1894,7 +1959,10 @@ wss.on('connection', (ws) => {
 
         case 'request_daily_missions': {
           if (!player) break;
-          progressDailyMission(player, 'lighthouseVisit', 1);
+          // boatVisit: abriu as missões perto do Barco de Missões
+          if (missionBoatManager.isPlayerNear(player)) {
+            progressDailyMission(player, 'boatVisit', 1);
+          }
           sendTo(player.ws, { type: 'daily_missions', missions: buildDailyMissions(player) });
           break;
         }
@@ -2163,6 +2231,16 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        // ── TUTORIAL: cliente concluiu (ou pulou) o onboarding ─────────────
+        case 'tutorial_complete': {
+          if (!player) break;
+          if ((player.tutorialState || 0) < 2) {
+            player.tutorialState = 2;
+            db.save(player, true).catch(e => console.error('Save error:', e));
+          }
+          break;
+        }
+
         // ── RELIC: use (activate ability) ────────────────────────────────────
         case 'use_relic': {
           if (!player) break;
@@ -2309,44 +2387,81 @@ wss.on('connection', (ws) => {
 // ── WebSocket handler functions ──────────────────────────────────────────────
 
 async function handleLogin(ws, msg) {
-  const player = playerManager.create(ws, msg.name || 'Sailor');
-  player._dbLoaded = false;
-  players.set(player.id, player);
+  // ── Resolve o identificador: nome do pirata ou e-mail (contém '@') ─────────
+  let loginName = String(msg.name || '').trim();
+  if (loginName.includes('@')) {
+    let resolved = null;
+    try { resolved = await db.findNameByEmail(loginName.toLowerCase()); } catch (_) {}
+    if (!resolved) {
+      sendTo(ws, { type: 'auth_error', message: 'Nenhuma conta com este e-mail.' });
+      return null;
+    }
+    loginName = resolved;
+  }
 
-  // Load saved progress from DB — limpa o player se falhar
+  // Carrega a conta — o login NÃO cria mais conta nova (isso é papel do cadastro)
   let saved;
   try {
-    saved = await db.loadOrCreate(player.name);
+    saved = await db.load(loginName);
   } catch (err) {
-    console.error(`[login] DB load failed for ${player.name}:`, err);
-    players.delete(player.id);
-    playerManager.remove(player.id);
+    console.error(`[login] DB load failed for ${loginName}:`, err);
     sendTo(ws, { type: 'error', message: 'Erro ao carregar dados. Tente reconectar.' });
     return null;
   }
+  if (!saved) {
+    sendTo(ws, { type: 'auth_error', message: 'Conta não encontrada. Use "Criar conta" para começar.' });
+    return null;
+  }
 
-  // ── Autenticação por token de dispositivo (trust-on-first-use) ─────────────
-  // O cliente gera um token aleatório na 1ª vez e o guarda localmente. O servidor
-  // vincula o token à conta no primeiro login e passa a exigi-lo nos próximos.
-  // Contas antigas (sem token) permanecem acessíveis até o 1º login com token.
+  // ── Autenticação ────────────────────────────────────────────────────────────
+  // Contas novas (cadastro) têm senha — a senha é a prova principal.
+  // Contas legadas sem senha mantêm o TOFU por token de dispositivo e ganham
+  // senha no primeiro login pelo cliente novo (protegido pelo token).
+  const password     = (typeof msg.password === 'string') ? msg.password : '';
   const provided     = (typeof msg.secret === 'string' && msg.secret.length >= 8) ? msg.secret : null;
   const providedHash = provided ? hashSecret(provided) : null;
-  if (saved.secretHash) {
-    if (!providedHash || providedHash !== saved.secretHash) {
-      console.warn(`[SECURITY] Login negado para "${player.name}" (token inválido/ausente)`);
-      players.delete(player.id);
-      playerManager.remove(player.id);
-      sendTo(ws, { type: 'auth_error', message: 'Nome já registrado em outro dispositivo.' });
+
+  if (saved.passwordHash) {
+    let passOk = false;
+    try { passOk = password !== '' && await verifyPassword(password, saved.passwordHash); } catch (_) {}
+    if (!passOk) {
+      console.warn(`[SECURITY] Login negado para "${loginName}" (senha incorreta)`);
+      sendTo(ws, { type: 'auth_error', message: 'Senha incorreta.' });
       return null;
     }
-  } else if (providedHash) {
-    try {
-      await db.setSecretHash(player.name, providedHash);
-      console.log(`🔐 Token vinculado à conta "${player.name}"`);
-    } catch (e) {
-      console.error(`[login] setSecretHash falhou para ${player.name}:`, e);
+    // Senha correta ⇒ (re)vincula o token deste dispositivo (permite trocar de PC)
+    if (providedHash && providedHash !== saved.secretHash) {
+      db.setSecretHash(loginName, providedHash).catch(() => {});
+    }
+  } else {
+    if (saved.secretHash) {
+      if (!providedHash || providedHash !== saved.secretHash) {
+        console.warn(`[SECURITY] Login negado para "${loginName}" (token inválido/ausente)`);
+        sendTo(ws, { type: 'auth_error', message: 'Nome já registrado em outro dispositivo.' });
+        return null;
+      }
+    } else if (providedHash) {
+      try {
+        await db.setSecretHash(loginName, providedHash);
+        console.log(`🔐 Token vinculado à conta "${loginName}"`);
+      } catch (e) {
+        console.error(`[login] setSecretHash falhou para ${loginName}:`, e);
+      }
+    }
+    // Upgrade de conta legada: a primeira senha digitada vira a senha da conta.
+    if (password.length >= 6 && password.length <= 64) {
+      try {
+        await db.setPassword(loginName, await hashPassword(password));
+        console.log(`🔐 Senha definida para conta legada "${loginName}"`);
+      } catch (e) {
+        console.error(`[login] setPassword falhou para ${loginName}:`, e);
+      }
     }
   }
+
+  const player = playerManager.create(ws, loginName);
+  player._dbLoaded = false;
+  players.set(player.id, player);
 
   // ── Sessão única: derruba conexão anterior de mesmo nome (anti-dupe) ────────
   for (const [pid, other] of players) {
@@ -2401,6 +2516,12 @@ async function handleLogin(ws, msg) {
   player.talents       = saved.talents || { hp:0, defesa:0, canhoes:0, dano:0, dano_relic:0, riqueza:0, ganancioso:0, mestre:0, slot_reliquia:0, totalSpent:0 };
   player.npcKills      = saved.npcKills      || 0;
   player.difficulty    = saved.difficulty    || 0;
+  // Tutorial: contas veteranas (≥20 abates) pulam o onboarding — e não recebem
+  // o foguete de brinde, que é recompensa do primeiro abate de novato.
+  player.tutorialState = saved.tutorialState || 0;
+  if (player.tutorialState === 0 && player.npcKills >= 20) player.tutorialState = 2;
+  player.gender        = saved.gender || '';
+  player.email         = saved.email  || '';
   player.mapXp         = saved.mapXp         || 0;
   player.mapLevel      = saved.mapLevel      || 1;
   // Se deslogou dentro de um mapa bônus (isBonusMap), retorna ao mapa regular
@@ -2535,6 +2656,8 @@ async function handleLogin(ws, msg) {
     npcKills:   player.npcKills || 0,
     difficulty:   player.difficulty || 0,
     difficulties: DIFFICULTIES,
+    tutorialState: player.tutorialState || 0,
+    gender:     player.gender || '',
     mapXp:      player.mapXp    || 0,
     mapLevel:   player.mapLevel || 1,
     mapXpNeeded: (MAP_DEFS[player.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999,
@@ -2605,6 +2728,104 @@ async function handleLogin(ws, msg) {
 
   console.log(`[+] ${player.name} joined`);
   return player;
+}
+
+// ── Cadastro: nome no jogo + e-mail + senha + sexo ───────────────────────────
+async function handleRegister(ws, msg) {
+  const name     = String(msg.name || '').trim();
+  const email    = String(msg.email || '').trim().toLowerCase();
+  const password = (typeof msg.password === 'string') ? msg.password : '';
+  const gender   = (msg.gender === 'F') ? 'F' : (msg.gender === 'M' ? 'M' : null);
+
+  const fail = (message) => { sendTo(ws, { type: 'register_error', message }); return null; };
+
+  if (name.length < 2)    return fail('Nome muito curto (mínimo 2 caracteres).');
+  if (name.length > 20)   return fail('Nome muito longo (máximo 20 caracteres).');
+  if (name.includes('@')) return fail('O nome não pode conter "@".');
+  if (!EMAIL_RE.test(email) || email.length > 254) return fail('E-mail inválido.');
+  if (password.length < 6)  return fail('A senha precisa de pelo menos 6 caracteres.');
+  if (password.length > 64) return fail('Senha muito longa (máximo 64 caracteres).');
+  if (!gender)              return fail('Escolha o sexo do pirata.');
+
+  try {
+    if (await db.load(name))            return fail('Este nome já está em uso.');
+    if (await db.findNameByEmail(email)) return fail('Este e-mail já tem uma conta.');
+    await db.createAccount({ name, email, passwordHash: await hashPassword(password), gender });
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') return fail('Este nome já está em uso.');
+    console.error('[register] Falha ao criar conta:', err);
+    return fail('Erro ao criar a conta. Tente novamente.');
+  }
+
+  // Conta criada — entra direto no jogo com as mesmas credenciais
+  return handleLogin(ws, { name, password, secret: msg.secret });
+}
+
+// ── Recuperação de senha: envia código de 6 dígitos por e-mail ───────────────
+async function handleForgotPassword(ws, msg) {
+  const email = String(msg.email || '').trim().toLowerCase();
+  // Resposta sempre igual — não revela se o e-mail tem conta (anti-enumeração)
+  const done = () => sendTo(ws, {
+    type: 'recover_sent',
+    message: 'Se este e-mail tiver uma conta, o código foi enviado. Confira a caixa de entrada (e o spam).',
+  });
+
+  if (!EMAIL_RE.test(email)) return done();
+  const last = _recoveryCooldown.get(email) || 0;
+  if (Date.now() - last < 60_000) return done(); // máx. 1 envio por minuto por e-mail
+  _recoveryCooldown.set(email, Date.now());
+
+  try {
+    const name = await db.findNameByEmail(email);
+    if (!name) return done();
+    const code = String(crypto.randomInt(100000, 1000000)); // 6 dígitos
+    await db.setResetCode(name, hashSecret(code), Date.now() + RESET_CODE_TTL_MS);
+    _resetAttempts.delete(email);
+    await sendRecoveryCode(email, code);
+    console.log(`🔑 Código de recuperação gerado para "${name}"`);
+  } catch (err) {
+    console.error('[recover] Falha ao gerar código:', err);
+  }
+  return done();
+}
+
+// ── Recuperação de senha: valida o código e define a nova senha ──────────────
+async function handleResetPassword(ws, msg) {
+  const email    = String(msg.email || '').trim().toLowerCase();
+  const code     = String(msg.code || '').trim();
+  const password = (typeof msg.password === 'string') ? msg.password : '';
+  const fail = (message) => sendTo(ws, { type: 'recover_error', message });
+
+  if (password.length < 6)  return fail('A senha precisa de pelo menos 6 caracteres.');
+  if (password.length > 64) return fail('Senha muito longa (máximo 64 caracteres).');
+
+  try {
+    const name  = EMAIL_RE.test(email) ? await db.findNameByEmail(email) : null;
+    const saved = name ? await db.load(name) : null;
+    const valid = saved && saved.resetCodeHash
+      && Date.now() <= saved.resetExpires
+      && hashSecret(code) === saved.resetCodeHash;
+
+    if (!valid) {
+      // Anti brute-force: após N códigos errados, invalida o código atual
+      const tries = (_resetAttempts.get(email) || 0) + 1;
+      _resetAttempts.set(email, tries);
+      if (saved && tries >= RESET_MAX_ATTEMPTS) {
+        await db.setResetCode(name, null, null);
+        _resetAttempts.delete(email);
+        console.warn(`[SECURITY] Código de recuperação invalidado por excesso de tentativas (${email})`);
+      }
+      return fail('Código inválido ou expirado. Peça um novo código.');
+    }
+
+    await db.resetPassword(name, await hashPassword(password));
+    _resetAttempts.delete(email);
+    console.log(`🔑 Senha redefinida para "${name}"`);
+    sendTo(ws, { type: 'recover_ok', message: 'Senha redefinida! Entre com a nova senha.' });
+  } catch (err) {
+    console.error('[recover] Falha ao redefinir senha:', err);
+    fail('Erro ao redefinir a senha. Tente novamente.');
+  }
 }
 
 function handleGoldShieldCost(player, msg) {
@@ -2797,8 +3018,8 @@ function handleClaimDailyMission(player, msg) {
   if (player.dailyMissions.activeMission === missionId) player.dailyMissions.activeMission = null;
   if (def.reward.gold)   player.gold    = (player.gold    || 0) + def.reward.gold;
   if (def.reward.dobrao) player.dobroes = (player.dobroes || 0) + def.reward.dobrao;
-  // lighthouseQuest: completar OUTRA missão do farol enquanto lighthouse_keeper está ativa
-  if (missionId !== 'lighthouse_keeper') progressDailyMission(player, 'lighthouseQuest', 1);
+  // missionsCompleted: completar OUTRA missão diária enquanto mission_streak está ativa
+  if (missionId !== 'mission_streak') progressDailyMission(player, 'missionsCompleted', 1);
   db.save(player).catch(e => console.error('Save error:', e));
   sendTo(player.ws, {
     type:     'daily_mission_claimed',

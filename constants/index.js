@@ -14,6 +14,7 @@ const attacks       = require('./attacks');
 const exploration   = require('./exploration');
 const bonusDungeons = require('./bonus_dungeons');
 const difficulty    = require('./difficulty');
+const missions      = require('./missions');
 
 module.exports = {
   // Engine
@@ -51,4 +52,7 @@ module.exports = {
 
   // Dificuldades
   ...difficulty,
+
+  // Missões diárias (Barco de Missões)
+  ...missions,
 };

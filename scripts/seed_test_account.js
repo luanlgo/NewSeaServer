@@ -107,8 +107,15 @@ async function main() {
 
   await db.loadOrCreate(ACCOUNT_NAME); // garante que a linha exista antes do UPDATE
   await db._flush(player);
+
+  // Senha da conta de teste (login novo exige senha). Sobrescreva com:
+  //   TEST_ACCOUNT_PASSWORD=minhasenha node scripts/seed_test_account.js
+  const { hashPassword } = require('../utils/password');
+  const testPassword = process.env.TEST_ACCOUNT_PASSWORD || 'adm123';
+  await db.setPassword(ACCOUNT_NAME, await hashPassword(testPassword));
+
   console.log(`✅ Conta de teste "${ACCOUNT_NAME}" populada com sucesso.`);
-  console.log(`   Logue no cliente com o nome "${ACCOUNT_NAME}" (sem token vinculado ainda).`);
+  console.log(`   Logue no cliente com nome "${ACCOUNT_NAME}" e senha "${testPassword}".`);
   process.exit(0);
 }
 

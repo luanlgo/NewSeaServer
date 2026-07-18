@@ -190,18 +190,16 @@ describe('Talento de Ouro (Pilhador) — efeito real nos drops', () => {
     }
   });
 
-  it('stacking: talento ouro + killTier + dropBonus do navio', () => {
+  it('stacking: talento ouro + dropBonus do navio', () => {
     const killer = { talents: { riqueza: 3 } }; // +9% ouro
     applyTalentBonuses(killer, TALENT_DEFS);
     const gold = calcKillGold({
       baseGold:        100,
       dropBonus:       0.2,   // navio Royal Fortune (+20%)
-      killTier:        5,     // 50 kills → tier 5 (+5%)
-      goldPerTier:     0.01,
       talentGoldBonus: killer.talentGoldBonus,
     });
-    // 100 * 1.2 * 1.05 * 1.09 = floor(137.34) = 137
-    expect(gold).toBe(Math.floor(100 * 1.2 * 1.05 * 1.09));
+    // 100 * 1.2 * 1.09 = floor(130.8) = 130
+    expect(gold).toBe(Math.floor(100 * 1.2 * 1.09));
   });
 });
 

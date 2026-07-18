@@ -560,16 +560,13 @@ class ProjectileManager {
 
     if (killer) {
       killer.npcKills = (killer.npcKills || 0) + 1;
-      const killTier  = Math.floor(killer.npcKills / 10);
       finalGold = calcKillGold({
         baseGold,
         dropBonus:      killer.dropBonus     || 0,
-        killTier,
-        goldPerTier:    npcDef.goldPerTier   ?? 0.01,
         talentGoldBonus: killer.talentGoldBonus || 0,
       });
       const xpPerKill = npcMapDef.npc?.xpPerKill || 12;
-      xpGained = calcKillXp({ xpPerKill, killTier, talentXpBonus: killer.talentXpBonus || 0 });
+      xpGained = calcKillXp({ xpPerKill, talentXpBonus: killer.talentXpBonus || 0 });
 
       // Dificuldade multiplica as recompensas (mesmo fator do HP/dano do NPC)
       finalGold = Math.round(finalGold * diffMult);

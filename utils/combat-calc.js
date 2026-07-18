@@ -36,37 +36,29 @@ function calcProjectileDamage({
 
 /**
  * Calcula o ouro final ganho por um kill de NPC.
+ * A dificuldade NÃO entra aqui — é aplicada depois pelo caller (diffMult do NPC).
  *
  * @param {object} params
  * @param {number} params.baseGold       — ouro base sorteado do NPC
  * @param {number} [params.dropBonus]    — bônus de drop do navio (0 = sem bônus)
- * @param {number} [params.killTier]     — floor(npcKills / 10)
- * @param {number} [params.goldPerTier]  — % por tier (padrão 0.01 = +1%/tier)
  * @param {number} [params.talentGoldBonus] — de applyTalentBonuses
  * @returns {number}
  */
-function calcKillGold({ baseGold, dropBonus = 0, killTier = 0, goldPerTier = 0.01, talentGoldBonus = 0 }) {
-  const cappedTier = Math.min(killTier, 500);
-  return Math.floor(
-    baseGold
-    * (1 + dropBonus)
-    * (1 + cappedTier * goldPerTier)
-    * (1 + talentGoldBonus)
-  );
+function calcKillGold({ baseGold, dropBonus = 0, talentGoldBonus = 0 }) {
+  return Math.floor(baseGold * (1 + dropBonus) * (1 + talentGoldBonus));
 }
 
 /**
  * Calcula o XP ganho por um kill de NPC.
+ * A dificuldade NÃO entra aqui — é aplicada depois pelo caller (diffMult do NPC).
  *
  * @param {object} params
  * @param {number} params.xpPerKill      — XP base do mapa (MAP_DEFS[n].npc.xpPerKill)
- * @param {number} [params.killTier]     — floor(npcKills / 10)
  * @param {number} [params.talentXpBonus] — de applyTalentBonuses
  * @returns {number}
  */
-function calcKillXp({ xpPerKill, killTier = 0, talentXpBonus = 0 }) {
-  const cappedTier = Math.min(killTier, 500);
-  return Math.floor(xpPerKill * (1 + cappedTier * 0.01) * (1 + talentXpBonus));
+function calcKillXp({ xpPerKill, talentXpBonus = 0 }) {
+  return Math.floor(xpPerKill * (1 + talentXpBonus));
 }
 
 /**

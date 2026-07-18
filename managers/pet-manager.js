@@ -484,7 +484,8 @@ class PetManager {
       const wantGuard = hasDefensive && (inCombat || p.hp < (p.maxHp || 100) * GUARD_HP_PCT);
       const desired   = wantGuard ? 0 : navDist;
 
-      const step = (def.speed || 20) * (CAPTURE_TICK_MS / 1000);
+      // +25: o pet anda sempre mais rápido que o barco (espelha _move_speed do cliente)
+      const step = ((def.speed || 20) + 25) * (CAPTURE_TICK_MS / 1000);
       p._petDist += Math.max(-step, Math.min(step, desired - p._petDist));
     }
   }

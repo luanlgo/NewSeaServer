@@ -178,6 +178,7 @@ class DBManager {
              pet_xp=?,
              pet_relics=?,
              pet_food=?,
+             tutorial_state=?,
              last_seen=NOW()
          WHERE name=?`,
         [
@@ -223,6 +224,7 @@ class DBManager {
           JSON.stringify(player.petXp       || {}),
           JSON.stringify(player.petRelics   || {}),
           Number(player.inventory?.uva || 0),   // comida de pet (uva)
+          player.tutorialState || 0,
           player.name, // WHERE name=?
         ]
       );
@@ -380,14 +382,24 @@ class DBManager {
       "ALTER TABLE players ADD COLUMN pet_food      FLOAT NOT NULL DEFAULT 0",
       // ── Auth (token de dispositivo, TOFU) ─────────────────────────────────
       "ALTER TABLE players ADD COLUMN secret_hash   VARCHAR(64) DEFAULT NULL",
+      // ── Tutorial (0=pendente, 1=foguete concedido, 2=completo) ────────────
+      "ALTER TABLE players ADD COLUMN tutorial_state TINYINT NOT NULL DEFAULT 0",
+      // ── Conta (cadastro com senha + email + sexo — Session 13) ────────────
+      "ALTER TABLE players ADD COLUMN password_hash   VARCHAR(255) DEFAULT NULL",
+      "ALTER TABLE players ADD COLUMN email           VARCHAR(255) DEFAULT NULL",
+      "ALTER TABLE players ADD COLUMN gender          VARCHAR(1)   DEFAULT NULL",
+      "ALTER TABLE players ADD COLUMN reset_code_hash VARCHAR(64)  DEFAULT NULL",
+      "ALTER TABLE players ADD COLUMN reset_expires   BIGINT       DEFAULT NULL",
+      // Índice para busca por e-mail no "esqueci minha senha"
+      "CREATE INDEX idx_players_email ON players (email)",
     ];
 
     for (const sql of columns) {
       try {
         await pool.query(sql);
       } catch (err) {
-        // Ignora erros de coluna já existente
-        if (err.code !== 'ER_DUP_FIELDNAME' && err.errno !== 1060) {
+        // Ignora coluna já existente (1060) e índice já existente (1061)
+        if (err.errno !== 1060 && err.errno !== 1061) {
           console.error('Error adding column:', err.message);
         }
       }
@@ -465,14 +477,76 @@ class DBManager {
       petXp:        row.pet_xp       || {},
       petRelics:    row.pet_relics   || {},
       petFood:      Number(row.pet_food || 0),
+      tutorialState: row.tutorial_state || 0,
       // ── Auth ────────────────────────────────────────────────────────────
       secretHash:   row.secret_hash  || null,
+      passwordHash: row.password_hash || null,
+      email:        row.email  || null,
+      gender:       row.gender || '',
+      resetCodeHash: row.reset_code_hash || null,
+      resetExpires:  row.reset_expires != null ? Number(row.reset_expires) : 0,
     };
   }
 
   // Vincula (ou atualiza) o hash do token de dispositivo de uma conta.
   async setSecretHash(name, hash) {
     await pool.query('UPDATE players SET secret_hash = ? WHERE name = ?', [hash, name]);
+  }
+
+  // ── Conta: cadastro / senha / recuperação ──────────────────────────────────
+
+  // Carrega uma conta SEM criar (login exige conta existente). null se não existe.
+  async load(name) {
+    const [rows] = await pool.query('SELECT * FROM players WHERE name = ?', [name]);
+    if (rows.length === 0) return null;
+    await pool.query('UPDATE players SET last_seen = NOW() WHERE name = ?', [name]);
+    return this._parse(rows[0]);
+  }
+
+  // Cria a conta do cadastro (nome + email + senha + sexo). Lança se nome duplicado.
+  async createAccount({ name, email, passwordHash, gender }) {
+    await pool.query(
+      `INSERT INTO players (name, email, password_hash, gender, cannons, ships, active_ship)
+       VALUES (?,?,?,?,?,?,?)`,
+      [name, email, passwordHash, gender || null,
+       JSON.stringify(['c1', 'c1', 'c1']), JSON.stringify(['fragata']), 'fragata']
+    );
+    console.log(`💾 New account: ${name} <${email}>`);
+  }
+
+  // Nome da conta vinculada a um e-mail (null se nenhum).
+  async findNameByEmail(email) {
+    const [rows] = await pool.query(
+      'SELECT name FROM players WHERE email = ? LIMIT 1', [email]
+    );
+    return rows.length > 0 ? rows[0].name : null;
+  }
+
+  // Define a senha de uma conta existente (upgrade de conta legada, sem email).
+  async setPassword(name, passwordHash) {
+    await pool.query(
+      'UPDATE players SET password_hash = ?, reset_code_hash = NULL, reset_expires = NULL WHERE name = ?',
+      [passwordHash, name]
+    );
+  }
+
+  // Guarda o código de recuperação (hash) + expiração (epoch ms).
+  async setResetCode(name, codeHash, expires) {
+    await pool.query(
+      'UPDATE players SET reset_code_hash = ?, reset_expires = ? WHERE name = ?',
+      [codeHash, expires, name]
+    );
+  }
+
+  // Conclui a recuperação: nova senha, limpa o código e DESVINCULA o token de
+  // dispositivo (secret_hash) — quem recuperou provavelmente está em outro
+  // dispositivo, e o próximo login re-vincula via TOFU.
+  async resetPassword(name, passwordHash) {
+    await pool.query(
+      `UPDATE players SET password_hash = ?, reset_code_hash = NULL,
+              reset_expires = NULL, secret_hash = NULL WHERE name = ?`,
+      [passwordHash, name]
+    );
   }
 
   // Batch save para múltiplos jogadores (uso no setInterval periódico).
@@ -499,6 +573,7 @@ class DBManager {
         map_pieces=?,
         hp=?, current_ammo=?, bank_gold=?, bank_unlocked=?,
         bonus_inventory=?, active_bonus_ship_stats=?,
+        tutorial_state=?,
         last_seen=NOW()
       WHERE name=?`;
 
@@ -545,6 +620,7 @@ class DBManager {
           p.bankUnlocked ? 1 : 0,
           JSON.stringify(p.bonusInventory || []),
           p.activeBonusShipStats ? JSON.stringify(p.activeBonusShipStats) : null,
+          p.tutorialState || 0,
           p.name, // WHERE name=?
         ]);
       }));
