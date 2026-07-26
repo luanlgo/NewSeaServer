@@ -1,25 +1,25 @@
 {
-    "version":  "0.1.15",
-    "date":  "2026-07-18",
+    "version":  "0.1.16",
+    "date":  "2026-07-26",
     "changelog":  [
-                      "[v0.1.15] - 2026-07-18",
+                      "[v0.1.16] - 2026-07-26",
+                      "feat(balance,clima,combate): ajustes de playtest ÔÇö clima sincronizado, boss XP, miss├Áes, runas",
+                      "fix(publicar): git pull do manifest no servidor roda em TODA publica├º├úo",
+                      "release: v0.1.15",
                       "release: v0.1.14",
-                      "feat(auth,missoes,tutorial): cadastro com senha, barco de missões e onboarding guiado",
+                      "feat(auth,missoes,tutorial): cadastro com senha, barco de miss├Áes e onboarding guiado",
                       "release: v0.1.13",
-                      "feat(pets,relics): sistema de pets v2, relíquias de CC e wall-manager",
+                      "feat(pets,relics): sistema de pets v2, rel├¡quias de CC e wall-manager",
                       "release: v0.1.12",
-                      "feat(mapas): novos modelos de ilha + colisão por formas (jogador e NPCs)",
-                      "release: v0.1.11",
-                      "feat(balance): navio ghost com gold + relíquias escalam com poder de fogo",
-                      "fix(gameplay): cura, caça, foguete, VFX por mapa e clima fixo por mapa",
-                      "release: v0.1.10"
+                      "feat(mapas): novos modelos de ilha + colis├úo por formas (jogador e NPCs)",
+                      "release: v0.1.11"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.15/SeaOfCode.exe",
-                      "sha256":  "0951ce21c010f78577a25510aa1d3619189dec477679ae3920f830d52c06a233",
-                      "size":  482627872
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.16/SeaOfCode.exe",
+                      "sha256":  "1ce455b1c6fd2be936687d3e703b31ef9c44d34741abd824d01186f18d36acce",
+                      "size":  623750608
                   }
               ]
 }
