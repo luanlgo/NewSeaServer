@@ -1331,11 +1331,7 @@ setInterval(() => {
         // ── Aura damages nearby PLAYERS too (bypasses invincibility/gold shield —
         //    attack relics intentionally ignore defensive relics) ─────────────────
         players.forEach(target => {
-          if (target.dead || target.id === p.id) return;
-          // Zone isolation
-          if ((target.mapLevel || 1) !== (p.mapLevel || 1)) return;
-          // Zona verde (PVE): aura não dana outros jogadores
-          if (getPvpZone(target.mapLevel || 1) === 'green') return;
+          if (!relicCanHitPlayer(p, target)) return;
           if (Math.hypot(target.x - p.x, target.z - p.z) > aRange) return;
           target.hp = Math.max(0, target.hp - aDamage);
           target.lastCombatTime = now;
@@ -4221,12 +4217,22 @@ function handleUnequipRelic(player, msg) {
   });
 }
 
-// Poder de fogo do barco = dano de uma salva completa = dano médio por canhão ×
-// número de canhões equipados (mesma base que o jogador vê ao atirar).
+// Poder de fogo do barco = dano de uma salva completa, espelhando a MESMA conta
+// que projectile-manager.hit() faz por projétil (utils/combat-calc):
+//   (ammo.damage + cannonDamage) × skillDmg × talentDmg × islandDmg × nº canhões
+// Ficam DE FORA de propósito: critMult (é sorteio por tiro) e o bônus de pólvora
+// (é consumível — faria o dano da relíquia oscilar com o estoque).
+// Antes esta função usava só `cannonDamage × nCannons`, ignorando os
+// multiplicadores do atirante. Como o upgrade de dano da ilha vai até nível 30
+// (+10% por nível = até 4×), o canhão escalava e a relíquia ficava para trás.
 function shipFirepower(player) {
-  const perCannon = player.cannonDamage || 0;
-  const nCannons  = (player.cannons && player.cannons.length) || 1;
-  return perCannon * nCannons;
+  const nCannons   = (player.cannons && player.cannons.length) || 1;
+  const ammoDmg    = (AMMO_DEFS[player.currentAmmo] || AMMO_DEFS.bala_ferro || {}).damage || 0;
+  const baseDmg    = ammoDmg + (player.cannonDamage || 0);
+  const skillDmg   = player.skillDamageMult || 1.0;
+  const talentDmg  = 1 + (player.talentDamageBonus || 0);
+  const islandDmg  = 1 + ((player.shipIslandUpgrades?.damage || 0) * 0.10);
+  return baseDmg * nCannons * skillDmg * talentDmg * islandDmg;
 }
 
 // Dano de uma relíquia = fração (damagePct) do poder de fogo do barco, com os
@@ -4237,6 +4243,17 @@ function relicDamageFor(player, relicDef) {
   const raw   = (pct != null) ? shipFirepower(player) * pct : (relicDef.damage || 0);
   const bonus = 1 + (player.talentRelicBonus || 0) + (player.skillRelicBonus || 0);
   return Math.max(1, Math.round(raw * bonus));
+}
+
+// Alvo válido para dano/CC de uma relíquia lançada por `caster`. Espelha o guard
+// dos canhões (projectile-manager.hit) e o da aura: mesmo mapa e PvP habilitado
+// na zona. Sem o check de mapa, uma AoE lançada no mapa 1 acertava quem estivesse
+// em coordenada parecida em QUALQUER outro mapa — inclusive nos PvE e no treino.
+function relicCanHitPlayer(caster, target) {
+  if (!target || target.dead) return false;
+  if (target.id === caster.id) return false;
+  if ((target.mapLevel || 1) !== (caster.mapLevel || 1)) return false;
+  return getPvpZone(target.mapLevel || 1) !== 'green';
 }
 
 // Alcance máximo de mira das relíquias "miradas" (runas) = alcance do canhão do
@@ -4425,7 +4442,7 @@ function handleUseRelic(player, msg) {
         }
       });
       players.forEach(p => {
-        if (p.dead || p.id === player.id) return;
+        if (!relicCanHitPlayer(player, p)) return;
         const d = Math.hypot(p.x - lx, p.z - lz);
         if (d <= LIGHTNING_RADIUS) {
           p.hp = Math.max(0, p.hp - relicDamage);
@@ -4529,7 +4546,7 @@ function handleUseRelic(player, msg) {
         }
       });
       players.forEach(p => {
-        if (p.dead || p.id === player.id) return;
+        if (!relicCanHitPlayer(player, p)) return;
         if (Math.hypot(p.x - rkTx, p.z - rkTz) <= ROCKET_RADIUS) {
           p.hp = Math.max(0, p.hp - relicDamage);
           p.lastCombatTime = Date.now();
@@ -4635,7 +4652,7 @@ function handleUseRelic(player, msg) {
         }
       });
       players.forEach(p => {
-        if (p.dead || p.id === player.id) return;
+        if (!relicCanHitPlayer(player, p)) return;
         if (Math.hypot(p.x - hitPos.x, p.z - hitPos.z) <= radius) {
           p.hp = Math.max(0, p.hp - dmg);
           p.lastCombatTime = Date.now();
@@ -4742,7 +4759,7 @@ function handleUseRelic(player, msg) {
       npc.slowExpires = now2 + iceZoneMs;
     });
     players.forEach(p => {
-      if (p.dead || p.id === player.id) return;
+      if (!relicCanHitPlayer(player, p)) return;
       if (Math.hypot(p.x - gx, p.z - gz) > ICE_RADIUS) return;
       p.slowMult       = Math.min(p.slowMult || 1, iceSlowMult);
       p.slowExpires    = now2 + iceZoneMs;
@@ -4762,7 +4779,7 @@ function handleUseRelic(player, msg) {
         hitsIce.push({ id: npc.id, isNPC: true });
       });
       players.forEach(p => {
-        if (p.dead || p.id === player.id) return;
+        if (!relicCanHitPlayer(player, p)) return;
         if (Math.hypot(p.x - gx, p.z - gz) > ICE_RADIUS) return;
         p.stunExpires    = tnow + iceStunMs;
         p.lastCombatTime = tnow;
@@ -4897,7 +4914,7 @@ function handleUseRelic(player, msg) {
         if (!best || t < best.t) best = { ent: npc, isNPC: true, t };
       });
       players.forEach(p => {
-        if (p.dead || p.id === player.id) return;
+        if (!relicCanHitPlayer(player, p)) return;
         if ((p.mapLevel || 1) !== hMapLvl) return;
         const { d, t } = distToSeg(p.x, p.z);
         if (d > H_RADIUS || t < 0.05) return;
@@ -5079,8 +5096,7 @@ function relicAreaDamage(player, cx, cz, radius, dmg) {
     }
   });
   players.forEach(p => {
-    if (p.dead || p.id === player.id) return;
-    if ((p.mapLevel || 1) !== (player.mapLevel || 1)) return;
+    if (!relicCanHitPlayer(player, p)) return;
     if (Math.hypot(p.x - cx, p.z - cz) > radius) return;
     p.hp = Math.max(0, p.hp - dmg);
     p.lastCombatTime = Date.now();
