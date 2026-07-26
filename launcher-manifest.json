@@ -1,8 +1,9 @@
 {
-    "version":  "0.1.16",
+    "version":  "0.1.17",
     "date":  "2026-07-26",
     "changelog":  [
-                      "[v0.1.16] - 2026-07-26",
+                      "[v0.1.17] - 2026-07-26",
+                      "release: v0.1.16",
                       "feat(balance,clima,combate): ajustes de playtest ÔÇö clima sincronizado, boss XP, miss├Áes, runas",
                       "fix(publicar): git pull do manifest no servidor roda em TODA publica├º├úo",
                       "release: v0.1.15",
@@ -11,15 +12,14 @@
                       "release: v0.1.13",
                       "feat(pets,relics): sistema de pets v2, rel├¡quias de CC e wall-manager",
                       "release: v0.1.12",
-                      "feat(mapas): novos modelos de ilha + colis├úo por formas (jogador e NPCs)",
-                      "release: v0.1.11"
+                      "feat(mapas): novos modelos de ilha + colis├úo por formas (jogador e NPCs)"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.16/SeaOfCode.exe",
-                      "sha256":  "1ce455b1c6fd2be936687d3e703b31ef9c44d34741abd824d01186f18d36acce",
-                      "size":  623750608
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.17/SeaOfCode.exe",
+                      "sha256":  "03f21a8c9a36202500f893986592fd416773297bddec1663921d833d99214520",
+                      "size":  623755152
                   }
               ]
 }
