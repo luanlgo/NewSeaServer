@@ -6,7 +6,7 @@ const {
   PROJECTILE_SPEED, PROJECTILE_LIFETIME, HIT_RADIUS,
   AMMO_DEFS, PIRATE_DEFS, GOLD_DROP_MIN, GOLD_DROP_MAX,
   FRAGMENT_DROP_NPC, RELIC_DEFS, RELIC_RARITIES,
-  SHOW_LOG, CANNON_DEFS, MAP_DEFS,
+  SHOW_LOG, CANNON_DEFS, MAP_DEFS, difficultyRewardMult,
 } = require('../constants');
 
 // ownedIds: Set de relicIds que o jogador já possui (para evitar duplicatas)
@@ -349,6 +349,14 @@ class ProjectileManager {
     // ── Imunidade pós-respawn: projéteis de NPCs não acertam jogadores em safe period ──
     if (!isNPC && proj.ownerIsNPC && target.safeUntil && Date.now() < target.safeUntil) return;
 
+    // ── Zona verde (PVE): dano jogador→jogador desabilitado. O projétil
+    //    atravessa sem ser consumido, para ainda acertar NPCs no caminho.
+    //    bala_cura passa (cura de aliado é tratada logo abaixo). ─────────────
+    if (!isNPC && !proj.ownerIsNPC && proj.ammoType !== 'bala_cura') {
+      const _zone = (MAP_DEFS[target.mapLevel || 1] || {}).pvpZone || 'yellow';
+      if (_zone === 'green') return;
+    }
+
     // ── Bala de cura: só funciona em jogadores aliados do grupo ─────────────
     if (!isNPC && !proj.ownerIsNPC && proj.ammoType === 'bala_cura') {
       if (proj.piercing) proj.hitTargets.add(target.id);
@@ -556,7 +564,9 @@ class ProjectileManager {
     // Multiplicador de dificuldade TRAVADO no NPC (definido pelo npc-manager ao
     // escalar). Usar o do NPC — e não o do killer — impede o exploit de trocar
     // a dificuldade pouco antes de matar para inflar a recompensa.
-    const diffMult = npc.diffMult || 1;
+    // Recompensa escala pela METADE dos atributos (difficultyRewardMult).
+    const diffMult   = npc.diffMult || 1;
+    const rewardMult = difficultyRewardMult(diffMult);
 
     if (killer) {
       killer.npcKills = (killer.npcKills || 0) + 1;
@@ -568,13 +578,13 @@ class ProjectileManager {
       const xpPerKill = npcMapDef.npc?.xpPerKill || 12;
       xpGained = calcKillXp({ xpPerKill, talentXpBonus: killer.talentXpBonus || 0 });
 
-      // Dificuldade multiplica as recompensas (mesmo fator do HP/dano do NPC)
-      finalGold = Math.round(finalGold * diffMult);
-      xpGained  = Math.round(xpGained  * diffMult);
+      // Dificuldade multiplica as recompensas (metade do fator de HP/dano)
+      finalGold = Math.round(finalGold * rewardMult);
+      xpGained  = Math.round(xpGained  * rewardMult);
 
       // Dobrao drop (só para o killer — não é dividido)
       if ((npcDef.dobraoChance || 0) > 0 && Math.random() < (npcDef.dobraoChance + (killer.talentDobraoBonus || 0))) {
-        const dobraoAmt = Math.round(Math.floor(Math.random() * (npcDef.dobraoMax - npcDef.dobraoMin + 1) + npcDef.dobraoMin) * diffMult);
+        const dobraoAmt = Math.round(Math.floor(Math.random() * (npcDef.dobraoMax - npcDef.dobraoMin + 1) + npcDef.dobraoMin) * rewardMult);
         killer.dobroes = (killer.dobroes || 0) + dobraoAmt;
       }
 
@@ -587,7 +597,7 @@ class ProjectileManager {
       const memberXp     = Math.floor(xpGained  / totalMembers);
       // Fragmentos NÃO são divididos: cada membro (e o killer) recebe o total por
       // kill de qualquer um do grupo. Ex.: 3 membros matando 1 NPC cada → todos +3.
-      const memberFrags  = Math.floor(FRAGMENT_DROP_NPC * diffMult);
+      const memberFrags  = Math.floor(FRAGMENT_DROP_NPC * rewardMult);
 
       killer.gold  += memberGold;
       killer.mapXp  = (killer.mapXp || 0) + memberXp;
@@ -620,7 +630,7 @@ class ProjectileManager {
       killer.mapFragments = (killer.mapFragments || 0) + memberFrags;
 
       // Relic drop (dificuldade aumenta a chance, com teto de 95%)
-      if (Math.random() < Math.min(0.95, (npc.relicDropChance || 0) * diffMult)) {
+      if (Math.random() < Math.min(0.95, (npc.relicDropChance || 0) * rewardMult)) {
         if (!killer.inventory.relics) killer.inventory.relics = [];
         const ownedIds = new Set(killer.inventory.relics.map(r => r.relicId));
         const dropped  = _rollRelicDrop(ownedIds);
@@ -820,6 +830,9 @@ class ProjectileManager {
             }
           }
         } else {
+          // Zona vermelha: vítima perde 10% do ouro e dropa ruína saqueável
+          if (this.wreckManager) this.wreckManager.onPlayerDeath(target);
+
           // Player killed by projectile — broadcast entity_dead para mostrar tela de morte
           broadcast(this.wss, {
             type:     'entity_dead',

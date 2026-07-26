@@ -154,7 +154,7 @@ class DBManager {
          SET gold=?, dobroes=?, cannons=?, pirates=?, ammo=?,
              equipped_cannons=?, equipped_pirates=?,
              ships=?, active_ship=?,
-             skills=?, npc_kills=?, difficulty=?,
+             skills=?, npc_kills=?, pvp_kills=?, difficulty=?,
              equipped_sails=?, sails_inv=?,
              map_xp=?, map_level=?,
              map_fragments=?,
@@ -193,6 +193,7 @@ class DBManager {
           player.activeShip || 'fragata',
           JSON.stringify(player.skills || DEFAULT_SKILLS),
           player.npcKills || 0,
+          player.pvpKills || 0,
           player.difficulty || 0,
           JSON.stringify(player.equippedSails || []),
           JSON.stringify(inventory.sails || []),
@@ -259,8 +260,91 @@ class DBManager {
     // Add columns (mantido seu código de migração)
     await this._addColumns();
     await this._ensureAuctionsTable();
+    await this._ensureMailTable();
 
     console.log('💾 MySQL ready');
+  }
+
+  // ── Correio entre jogadores ────────────────────────────────────────────────
+  async _ensureMailTable() {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS mail (
+        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+        from_name   VARCHAR(255) NOT NULL,
+        to_name     VARCHAR(255) NOT NULL,
+        title       VARCHAR(140) NOT NULL,
+        body        TEXT NOT NULL,
+        is_read     TINYINT(1) NOT NULL DEFAULT 0,
+        created_at  BIGINT NOT NULL,
+        INDEX idx_mail_to (to_name, created_at),
+        INDEX idx_mail_from (from_name)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+  }
+
+  // Insere uma mensagem. Retorna o id gerado.
+  async sendMail(fromName, toName, title, body) {
+    const [res] = await pool.query(
+      'INSERT INTO mail (from_name, to_name, title, body, created_at) VALUES (?,?,?,?,?)',
+      [fromName, toName, title, body, Date.now()]
+    );
+    return Number(res.insertId);
+  }
+
+  // Caixa de entrada de um jogador (mais recentes primeiro).
+  async getInbox(name, limit = 50) {
+    const lim = Math.max(1, Math.min(200, limit | 0));
+    const [rows] = await pool.query(
+      `SELECT id, from_name, title, body, is_read, created_at
+       FROM mail WHERE to_name = ? ORDER BY created_at DESC LIMIT ${lim}`,
+      [name]
+    );
+    return rows.map(r => ({
+      id:    Number(r.id),
+      from:  r.from_name,
+      title: r.title,
+      body:  r.body,
+      read:  !!r.is_read,
+      at:    Number(r.created_at),
+    }));
+  }
+
+  // Nomes para os quais o jogador já enviou (lista de "contatos", recentes 1º).
+  async getSentContacts(name, limit = 30) {
+    const lim = Math.max(1, Math.min(100, limit | 0));
+    const [rows] = await pool.query(
+      `SELECT to_name, MAX(created_at) AS last_at FROM mail
+       WHERE from_name = ? GROUP BY to_name ORDER BY last_at DESC LIMIT ${lim}`,
+      [name]
+    );
+    return rows.map(r => r.to_name);
+  }
+
+  // Busca nomes de contas por trecho (para o autocomplete do envio).
+  async searchPlayerNames(query, limit = 20) {
+    const lim = Math.max(1, Math.min(50, limit | 0));
+    const safe = String(query).replace(/[%_\\]/g, c => '\\' + c);
+    const [rows] = await pool.query(
+      `SELECT name FROM players WHERE name LIKE ? ORDER BY name LIMIT ${lim}`,
+      [`%${safe}%`]
+    );
+    return rows.map(r => r.name);
+  }
+
+  async playerExists(name) {
+    const [rows] = await pool.query('SELECT 1 FROM players WHERE name = ? LIMIT 1', [name]);
+    return rows.length > 0;
+  }
+
+  // Marca uma mensagem como lida (autorizada pelo destinatário).
+  async markMailRead(id, toName) {
+    await pool.query('UPDATE mail SET is_read = 1 WHERE id = ? AND to_name = ?', [id, toName]);
+  }
+
+  async countUnread(name) {
+    const [rows] = await pool.query(
+      'SELECT COUNT(*) AS c FROM mail WHERE to_name = ? AND is_read = 0', [name]);
+    return Number(rows[0] && rows[0].c || 0);
   }
 
   async _ensureAuctionsTable() {
@@ -349,6 +433,7 @@ class DBManager {
       "ALTER TABLE players ADD COLUMN ships JSON",
       "ALTER TABLE players ADD COLUMN active_ship VARCHAR(64) NOT NULL DEFAULT 'fragata'",
       "ALTER TABLE players ADD COLUMN npc_kills INT NOT NULL DEFAULT 0",
+      "ALTER TABLE players ADD COLUMN pvp_kills INT NOT NULL DEFAULT 0",
       "ALTER TABLE players ADD COLUMN difficulty INT NOT NULL DEFAULT 0",
       "ALTER TABLE players ADD COLUMN skills JSON",
       "ALTER TABLE players ADD COLUMN map_xp INT NOT NULL DEFAULT 0",
@@ -449,6 +534,7 @@ class DBManager {
       },
       skills: row.skills || { ...DEFAULT_SKILLS },
       npcKills: row.npc_kills || 0,
+      pvpKills: row.pvp_kills || 0,
       difficulty: row.difficulty || 0,
       mapXp: row.map_xp || 0,
       mapLevel: row.map_level || 1,
@@ -486,6 +572,52 @@ class DBManager {
       resetCodeHash: row.reset_code_hash || null,
       resetExpires:  row.reset_expires != null ? Number(row.reset_expires) : 0,
     };
+  }
+
+  // ── Rankings (top jogadores) ───────────────────────────────────────────────
+  // Uma query cobre as 4 categorias; cache de 60s protege o MySQL do Railway
+  // (o painel pede a cada troca de aba). Quem está online pode aparecer até
+  // ~15s defasado (intervalo do batchSave) — aceitável para ranking.
+  async getRankings() {
+    const now = Date.now();
+    if (this._rankingsCache && (now - this._rankingsCacheAt) < 60000) {
+      return this._rankingsCache;
+    }
+    const [rows] = await pool.query(
+      'SELECT name, map_level, map_xp, npc_kills, pvp_kills, pet_levels FROM players'
+    );
+
+    // xp: progressão de mapa — nível primeiro, xp dentro do nível desempata
+    const xp = rows
+      .map(r => ({ name: r.name, value: r.map_level || 1, xp: r.map_xp || 0 }))
+      .sort((a, b) => (b.value - a.value) || (b.xp - a.xp));
+
+    const byValueDesc = (a, b) => b.value - a.value;
+    const npcKills = rows
+      .map(r => ({ name: r.name, value: r.npc_kills || 0 }))
+      .filter(e => e.value > 0)
+      .sort(byValueDesc);
+    const pvpKills = rows
+      .map(r => ({ name: r.name, value: r.pvp_kills || 0 }))
+      .filter(e => e.value > 0)
+      .sort(byValueDesc);
+
+    // pet: maior nível entre os pets do jogador; soma dos níveis desempata
+    const pet = rows
+      .map(r => {
+        const levels = Object.values(r.pet_levels || {}).map(Number);
+        return {
+          name: r.name,
+          value: levels.length ? Math.max(...levels) : 0,
+          total: levels.reduce((s, l) => s + l, 0),
+        };
+      })
+      .filter(e => e.value > 0)
+      .sort((a, b) => (b.value - a.value) || (b.total - a.total));
+
+    this._rankingsCache   = { xp, npc_kills: npcKills, pvp_kills: pvpKills, pet };
+    this._rankingsCacheAt = now;
+    return this._rankingsCache;
   }
 
   // Vincula (ou atualiza) o hash do token de dispositivo de uma conta.
@@ -563,7 +695,7 @@ class DBManager {
         gold=?, dobroes=?, cannons=?, pirates=?, ammo=?,
         equipped_cannons=?, equipped_pirates=?,
         ships=?, active_ship=?,
-        skills=?, npc_kills=?,
+        skills=?, npc_kills=?, pvp_kills=?,
         equipped_sails=?, sails_inv=?,
         map_xp=?, map_level=?, map_fragments=?,
         relics_inv=?, relics_equipped=?,
@@ -597,6 +729,7 @@ class DBManager {
           p.activeShip || 'fragata',
           JSON.stringify(p.skills || DEFAULT_SKILLS),
           p.npcKills || 0,
+          p.pvpKills || 0,
           JSON.stringify(p.equippedSails || []),
           JSON.stringify(inventory.sails || []),
           p.mapXp || 0,

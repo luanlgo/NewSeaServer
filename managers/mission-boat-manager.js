@@ -1,7 +1,7 @@
 // managers/mission-boat-manager.js — Barco de Missões
 //
 // Um único barco NPC (não-combatente) que navega em rota circular pelos mapas
-// 1→2→3→4→1… Fica DWELL_MS em cada mapa e então "parte" para o próximo.
+// 3→4→3→4… Fica DWELL_MS em cada mapa e então "parte" para o próximo.
 // Quando qualquer jogador chega a STOP_RADIUS, o barco para de navegar e o
 // cliente mostra o botão "Missões"; quando todos se afastam além de
 // RESUME_RADIUS ele retoma a rota (e a partida para o próximo mapa, se o
@@ -13,7 +13,7 @@
 
 const { pushOutOfIslands } = require('../utils/collision');
 
-const ROUTE_MAPS     = [1, 2, 3, 4];
+const ROUTE_MAPS     = [3, 4];        // barco só circula os mapas 3 e 4
 const DWELL_MS       = 4 * 60 * 1000; // tempo mínimo em cada mapa
 const STOP_RADIUS    = 90;            // jogador a essa distância → barco para
 const RESUME_RADIUS  = 120;           // todos além disso → barco retoma a rota

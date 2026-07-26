@@ -1,6 +1,6 @@
 // managers/boss-manager.js
 const { uid, rand } = require('../utils/helpers');
-const { MAP_DEFS, FRAGMENT_DROP_BOSS, HIT_RADIUS } = require('../constants');
+const { MAP_DEFS, FRAGMENT_DROP_BOSS, HIT_RADIUS, difficultyRewardMult } = require('../constants');
 const db = require('./db-manager');
 
 function rollRarity(rarities) {
@@ -149,13 +149,37 @@ class BossManager {
     const dobraoMin = boss._dobraoMin || bossDef.dobraoMin || 5;
     const dobraoMax = boss._dobraoMax || bossDef.dobraoMax || 10;
     const baseDrops = Math.floor(rand(dobraoMin, dobraoMax + 1));
-    // Recompensa escala pela dificuldade do boss (não mais pela quantidade de kills).
-    const diffScale = boss.diffMult || 1;
+    // Recompensa escala pela METADE da dificuldade do boss (difficultyRewardMult).
+    const diffScale = difficultyRewardMult(boss.diffMult || 1);
     const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * diffScale);
+
+    // XP de mapa do boss — proporcional ao dano, escala por raridade × dificuldade.
+    // Fonte: MAP_DEFS[n].boss.xpPerKill; sem essa propriedade o boss não dá XP.
+    const bossXp  = bossDef.xpPerKill || 0;
+    const totalXp = Math.round(bossXp * (rarityDef.rewardMult || 1) * diffScale);
 
     const share = damage / totalDamage;
     let drops    = Math.max(1, Math.round(totalDrops * share));
     let fragDrop = Math.round((FRAGMENT_DROP_BOSS[boss.rarity] || FRAGMENT_DROP_BOSS.normal) * share);
+    let xpShare  = bossXp > 0 ? Math.max(1, Math.round(totalXp * share)) : 0;
+
+    // Concede XP a um jogador aplicando o talento de XP + notificação de
+    // desbloqueio de mapa. Espelha a lógica de kill de NPC no server.js.
+    const grantMapXp = (pl, baseXp) => {
+      if (baseXp <= 0) return;
+      const gain = Math.round(baseXp * (1 + (pl.talentXpBonus || 0)));
+      pl.mapXp = (pl.mapXp || 0) + gain;
+      const xpNeeded = (MAP_DEFS[pl.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
+      if (xpNeeded && pl.mapXp >= xpNeeded && MAP_DEFS[(pl.mapLevel || 1) + 1]) {
+        if (!pl._mapUnlockNotified) {
+          pl._mapUnlockNotified = true;
+          this._sendTo(pl.ws, { type: 'map_level_up', level: (pl.mapLevel || 1) + 1, xpNeeded });
+        }
+      } else {
+        pl._mapUnlockNotified = false;
+      }
+    };
+    const xpNeededFor = (pl) => (MAP_DEFS[pl.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
 
     // ── Divisão de recompensas de grupo ──────────────────────────────────────
     const partyMembers = this.partyManager
@@ -166,10 +190,12 @@ class BossManager {
       const totalSplit = partyMembers.length + 1;
       const memberDrops = Math.max(1, Math.floor(drops    / totalSplit));
       const memberFrags = Math.max(0, Math.floor(fragDrop / totalSplit));
+      const memberXp    = Math.max(0, Math.floor(xpShare  / totalSplit));
 
       for (const m of partyMembers) {
         m.dobroes      = (m.dobroes      || 0) + memberDrops;
         m.mapFragments = (m.mapFragments || 0) + memberFrags;
+        grantMapXp(m, memberXp);
         db.save(m, true).catch(e => console.error('Save error:', e));
         this._sendTo(m.ws, {
           type:     'currency_update',
@@ -177,17 +203,22 @@ class BossManager {
           dobroes:  m.dobroes,
           reward:   { type: 'dobrao', amount: memberDrops, share: Math.round(share * 100 / totalSplit) },
           mapFragments: m.mapFragments,
+          mapXp:        m.mapXp,
+          mapLevel:     m.mapLevel || 1,
+          mapXpNeeded:  xpNeededFor(m),
         });
       }
       drops    = memberDrops;
       fragDrop = memberFrags;
+      xpShare  = memberXp;
     }
 
     player.dobroes = (player.dobroes || 0) + drops;
     player.mapFragments = (player.mapFragments || 0) + fragDrop;
+    grantMapXp(player, xpShare);
 
     db.save(player, true).catch(e => console.error('Save error:', e));
-    console.log(`[boss-debug] rewarding player ${playerId}: damage=${damage} totalDmg=${totalDamage} wsReady=${!!player.ws && player.ws.readyState === 1}`);
+    console.log(`[boss-debug] rewarding player ${playerId}: damage=${damage} totalDmg=${totalDamage} xp=${xpShare} wsReady=${!!player.ws && player.ws.readyState === 1}`);
 
     this._sendTo(player.ws, {
       type: 'currency_update',
@@ -199,6 +230,9 @@ class BossManager {
         share: Math.round(share * 100)
       },
       mapFragments: player.mapFragments,
+      mapXp:        player.mapXp,
+      mapLevel:     player.mapLevel || 1,
+      mapXpNeeded:  xpNeededFor(player),
     });
   }
 
@@ -215,8 +249,8 @@ class BossManager {
     const dobraoMin  = boss._dobraoMin || bossDef.dobraoMin || 5;
     const dobraoMax  = boss._dobraoMax || bossDef.dobraoMax || 10;
     const baseDrops  = Math.floor(rand(dobraoMin, dobraoMax + 1));
-    // Escala a recompensa pela dificuldade do boss (não mais pela quantidade de kills).
-    const diffScale  = boss.diffMult || 1;
+    // Escala a recompensa pela METADE da dificuldade do boss (difficultyRewardMult).
+    const diffScale  = difficultyRewardMult(boss.diffMult || 1);
     const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * diffScale);
 
     // ── Calcular share de cada jogador pelo dano causado ─────────────────────

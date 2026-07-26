@@ -1,5 +1,11 @@
 // constants/maps.js — MAP_DEFS: progressão, dificuldade e visual por mapa
 // Para adicionar um mapa: copie um bloco existente e ajuste os valores.
+//
+// pvpZone — regra de combate jogador×jogador do mapa:
+//   'green'  → PVE puro: dano PvP desabilitado (projétil atravessa)
+//   'yellow' → PvP liberado: matar jogador transfere 5% de XP/kills da vítima
+//   'red'    → yellow + qualquer morte dropa ruína saqueável com 10% do ouro
+//              da vítima (ver managers/wreck-manager.js)
 
 const { MAP_SIZE } = require('./engine');
 
@@ -8,7 +14,9 @@ const MAP_DEFS = {};
 // ── Mapa 1: Mar dos Corsários ─────────────────────────────────────────────────
 MAP_DEFS[1] = {
   name:        'Mar dos Corsários',
-  weather:     'clear',   // clima FIXO do mapa (igual p/ todos): clear|fog|rain|storm
+  weather:     'clear',   // clima INICIAL/tema do mapa (clear|fog|rain|storm); o servidor
+                          // cicla dinamicamente a partir daqui e sincroniza (weather-manager.js)
+  pvpZone:     'green',
   hasShop:     true,
   xpRequired:  0,
   xpToAdvance: 1800,
@@ -24,8 +32,8 @@ MAP_DEFS[1] = {
     sailColor:    0xcc3333,
     flagColor:    0xcc2222,
     xpPerKill:    12,
-    goldMin:      30,
-    goldMax:      40,
+    goldMin:      60,
+    goldMax:      80,
     dobraoChance: 0,
     dobraoMin:    0,
     dobraoMax:    0,
@@ -43,13 +51,14 @@ MAP_DEFS[1] = {
   },
   boss: {
     name:        'Giant Crab Octopus',
-    baseHp:      1000,
-    baseDamage:  20,
+    baseHp:      5000,
+    baseDamage:  200,
     regenPerSec:   50,
     regenDelay:    20000,
-    killsToSpawn: 100,
-    dobraoMin:   15,
-    dobraoMax:   25,
+    killsToSpawn: 50,
+    xpPerKill:    200,
+    dobraoMin:   50,
+    dobraoMax:   100,
     hullColor:   0x1a0505,
     sailColor:   0x220000,
     model:       '/models/monster/giant_crab_octopus.glb',
@@ -89,23 +98,24 @@ MAP_DEFS[1] = {
 MAP_DEFS[2] = {
   name:        'Baía das Sombras',
   weather:     'fog',
+  pvpZone:     'green',
   hasShop:     true,
   xpRequired:  1800,
   xpToAdvance: 8000,
-  size:         MAP_SIZE,
+  size:         MAP_SIZE * 2,
   sideMap: [{sul: 1, norte: 3}],
   npc: {
     count:        9,
-    baseHp:       300,
-    baseDamage:   18,
+    baseHp:       1500,
+    baseDamage:   300,
     fireInterval: 3000,
     names:        'Dreadfin Leviathan',
     hullColor:    0x0a0a1a,
     sailColor:    0x553399,
     flagColor:    0x442288,
-    xpPerKill:    18,
-    goldMin:      80,
-    goldMax:      120,
+    xpPerKill:    22,
+    goldMin:      200,
+    goldMax:      300,
     dobraoChance: 1,
     dobraoMin:    1,
     dobraoMax:    2,
@@ -115,7 +125,7 @@ MAP_DEFS[2] = {
     rotOffset: 0,
     hitRadius: 8,
     relicDropChance: 0.03, // 3%
-    attacks: ['tail_slam', 'shockwave', 'venom_pool', 'deep_surge'],
+    attacks: ['tail_slam', 'cannon_burst', 'venom_pool', 'deep_surge'],
     ammoTiers: [
       { minKills: 200, ammo: 'bala_gelo' },
       { minKills: 400, ammo: 'bala_bala_fogo' },
@@ -123,13 +133,14 @@ MAP_DEFS[2] = {
   },
   boss: {
     name:        'Abyssal Sovereign',
-    baseHp:      1200,
-    baseDamage:  35,
+    baseHp:      20000,
+    baseDamage:  800,
     regenPerSec:   80,
     regenDelay:    20000,
-    killsToSpawn: 100,
-    dobraoMin:   30,
-    dobraoMax:   40,
+    killsToSpawn: 50,
+    xpPerKill:    300,
+    dobraoMin:   150,
+    dobraoMax:   200,
     hullColor:   0x050510,
     sailColor:   0x330033,
     model:       '/models/monster/abyssal_sovereign.glb',
@@ -165,6 +176,7 @@ MAP_DEFS[2] = {
 MAP_DEFS[3] = {
   name:        'Ilha do Comércio',
   weather:     'clear',
+  pvpZone:     'yellow',
   proximityIsland: { x: 0, z: 0, radius: 250 },
   xpRequired:  13000,
   xpToAdvance: 20000,
@@ -172,16 +184,16 @@ MAP_DEFS[3] = {
   sideMap: [{sul: 2, left: 4, norte: 10}],
   npc: {
     count:        15,
-    baseHp:       400,
-    baseDamage:   200,
+    baseHp:       10000,
+    baseDamage:   1200,
     fireInterval: 3200,
     names:        'Gilded Reef Manta',
     hullColor:    0x2a5a3a,
     sailColor:    0x88cc66,
     flagColor:    0x66aa44,
     xpPerKill:    30,
-    goldMin:      120,
-    goldMax:      180,
+    goldMin:      400,
+    goldMax:      600,
     dobraoChance: 1,
     dobraoMin:    2,
     dobraoMax:    5,
@@ -195,13 +207,14 @@ MAP_DEFS[3] = {
   },
   boss: {
     name:        'Harbor Warden The Coinbreaker',
-    baseHp:      2000,
-    baseDamage:  300,
+    baseHp:      100000,
+    baseDamage:  2000,
     regenPerSec:   120,
     regenDelay:    20000,
-    killsToSpawn:  40,
-    dobraoMin:     50,
-    dobraoMax:     80,
+    killsToSpawn:  100,
+    xpPerKill:     1000,
+    dobraoMin:     500,
+    dobraoMax:     700,
     hullColor:     0x553311,
     sailColor:     0x996633,
     model:       '/models/monster/harbor_warden_the_coinbreaker.glb',
@@ -211,7 +224,7 @@ MAP_DEFS[3] = {
     hitRadius: 12,
     attacks: ['charge_line', 'venom_pool', 'forked_shot', 'shockwave', 'impale_line'],
     rarities: [
-      { id: 'normal',   label: 'Normal',   hpMult: 1.0, rewardMult: 0.1,  chance: 0.40, color: '#888', bg: 'rgba(40,40,40,0.92)' },
+      { id: 'normal',   label: 'Normal',   hpMult: 1.0, rewardMult: 1.0,  chance: 0.40, color: '#888', bg: 'rgba(40,40,40,0.92)' },
       { id: 'raro',     label: 'Raro',     hpMult: 1.5, rewardMult: 1.5,  chance: 0.30, color: '#44f', bg: 'rgba(10,20,60,0.92)' },
       { id: 'especial', label: 'Especial', hpMult: 2.0, rewardMult: 2.0,  chance: 0.20, color: '#a4f', bg: 'rgba(40,10,60,0.92)' },
       { id: 'infernal', label: 'Infernal', hpMult: 3.0, rewardMult: 3.0,  chance: 0.10, color: '#f80', bg: 'rgba(60,15,0,0.92)' },
@@ -309,6 +322,7 @@ MAP_DEFS[3] = {
 MAP_DEFS[4] = {
   name:         'Ilha do Farol',
   weather:      'clear',
+  pvpZone:      'yellow',
   proximityFarol: { x: 0, z: 0, radius: 160 },
   sideMap: [{norte: 6, right: 3}],
   xpRequired:   20000,
@@ -316,16 +330,16 @@ MAP_DEFS[4] = {
   size:          MAP_SIZE * 2,
   npc: {
     count:        3,
-    baseHp:       8000,
-    baseDamage:   1000,
+    baseHp:       50000,
+    baseDamage:   8000,
     fireInterval: 3200,
     names:        'Storm Wyvern',
     hullColor:    0x2a5a3a,
     sailColor:    0x88cc66,
     flagColor:    0x66aa44,
     xpPerKill:    106,
-    goldMin:      500,
-    goldMax:      800,
+    goldMin:      2000,
+    goldMax:      4000,
     dobraoChance: 1,
     dobraoMin:    300,
     dobraoMax:    400,
@@ -380,6 +394,7 @@ MAP_DEFS[4] = {
 MAP_DEFS[5] = {
   name:          'Campo de Treino',
   weather:       'clear',
+  pvpZone:       'green',
   isTrainingMap: true,
   sideMap:       null,
   xpRequired:  0,
@@ -421,21 +436,22 @@ MAP_DEFS[5] = {
 MAP_DEFS[6] = {
   name:        'Mar das Lamentações',
   weather:     'storm',
-  sideMap:     [{sul: 4, right: 10}],
+  pvpZone:     'yellow',
+  sideMap:     [{sul: 4, right: 10, norte: 11}],
   xpRequired:  30000,
   xpToAdvance: null,
   size:        MAP_SIZE * 2,
   npc:         null,
   boss: {
     name:        'The Drowned Widow',
-    baseHp:       40000,
+    baseHp:       1000000,
     baseDamage:   0,
     regenPerSec:   120,
     regenDelay:    20000,
     killsToSpawn:  0,
     respawnDelay:  3600000, // 1 hora em ms após ser morta
-    dobraoMin:     2000,
-    dobraoMax:     5000,
+    dobraoMin:     10000,
+    dobraoMax:     20000,
     hullColor:     0x553311,
     sailColor:     0x996633,
     model:       '/models/monster/mergulhador.glb',
@@ -492,6 +508,7 @@ MAP_DEFS[6] = {
 MAP_DEFS[7] = {
   name:        'Baía dos Naufragados',
   weather:     'rain',
+  pvpZone:     'yellow',
   bonusMapId:  'bonus_map_1',
   isBonusMap:  true,
   xpRequired:  0,
@@ -544,6 +561,7 @@ MAP_DEFS[7] = {
 MAP_DEFS[8] = {
   name:        'Fortaleza do Esquecimento',
   weather:     'fog',
+  pvpZone:     'yellow',
   bonusMapId:  'bonus_map_2',
   isBonusMap:  true,
   xpRequired:  0,
@@ -596,6 +614,7 @@ MAP_DEFS[8] = {
 MAP_DEFS[9] = {
   name:        'Abismo dos Afundados',
   weather:     'storm',
+  pvpZone:     'yellow',
   bonusMapId:  'bonus_map_3',
   isBonusMap:  true,
   xpRequired:  0,
@@ -649,12 +668,12 @@ MAP_DEFS[9] = {
 MAP_DEFS[10] = {
   name:        'Ilha do Banco',
   weather:     'clear',
-  xpRequired:  0,
+  pvpZone:     'yellow',
+  xpRequired:  30000,
   xpToAdvance: null,
   size:        MAP_SIZE * 2,
-  sideMap:     [{sul: 3, left: 6}],
-  goldStealRatio: 0.08,  // 8% do dano convertido em ouro roubado pelos NPCs
-
+  sideMap:     [{sul: 3, left: 6, norte: 11}],
+  goldStealRatio: 0.01,  // 8% do dano convertido em ouro roubado pelos NPCs
   banking: {
     center:      { x: 0, z: 0 },
     islandRadius: 180,
@@ -679,19 +698,18 @@ MAP_DEFS[10] = {
       { shape: 'box',    x:   30, z: -140, hw: 115, hh:  50, rot:  0    },
     ],
   },
-
   npc: {
     count:        20,
-    baseHp:       24000,
-    baseDamage:   1500,
+    baseHp:       100000,
+    baseDamage:   40000,
     fireInterval: 3000,
     names:        ['Mímico Guardião'],
     hullColor:    0x4a3010,
     sailColor:    0xd4a017,
     flagColor:    0xb8860b,
     xpPerKill:    500,
-    goldMin:      2000,
-    goldMax:      2500,
+    goldMin:      5000,
+    goldMax:      10000,
     dobraoChance: 1,
     dobraoMin:    500,
     dobraoMax:    1000,
@@ -710,13 +728,13 @@ MAP_DEFS[10] = {
 
   boss: {
     name:        'Grande Mímico do Tesouro',
-    baseHp:      55000,
+    baseHp:      500000,
     baseDamage:  3000,
     regenPerSec:   500,
     regenDelay:    20000,
     killsToSpawn:  20,
-    dobraoMin:     500,
-    dobraoMax:     1000,
+    dobraoMin:     5000,
+    dobraoMax:     10000,
     hullColor:     0x3a2008,
     sailColor:     0xd4a017,
     model:       '/models/monster/mimic_boss_chest.glb',
@@ -727,9 +745,9 @@ MAP_DEFS[10] = {
     attacks: ['bite', 'cross_blast', 'charge_line', 'arcane_nova', 'heavy_stomp', 'impale_line', 'mimic_tongue_lash'],
     rarities: [
       { id: 'normal',   label: 'Normal',   hpMult: 1.0, rewardMult: 1.0,  chance: 0.45, color: '#888', bg: 'rgba(40,40,40,0.92)' },
-      { id: 'raro',     label: 'Raro',     hpMult: 1.5, rewardMult: 1.8,  chance: 0.30, color: '#44f', bg: 'rgba(10,20,60,0.92)' },
-      { id: 'especial', label: 'Especial', hpMult: 2.2, rewardMult: 2.5,  chance: 0.15, color: '#d4a', bg: 'rgba(50,20,50,0.92)' },
-      { id: 'lendario', label: 'Lendário', hpMult: 3.5, rewardMult: 5.0,  chance: 0.10, color: '#fd2', bg: 'rgba(60,45,0,0.92)' },
+      { id: 'raro',     label: 'Raro',     hpMult: 1.5, rewardMult: 1.5,  chance: 0.30, color: '#44f', bg: 'rgba(10,20,60,0.92)' },
+      { id: 'especial', label: 'Especial', hpMult: 2.2, rewardMult: 2.0,  chance: 0.15, color: '#d4a', bg: 'rgba(50,20,50,0.92)' },
+      { id: 'lendario', label: 'Lendário', hpMult: 3.5, rewardMult: 3.0,  chance: 0.10, color: '#fd2', bg: 'rgba(60,45,0,0.92)' },
     ],
   },
 
@@ -748,7 +766,173 @@ MAP_DEFS[10] = {
   },
 };
 
+// ── Mapa 11: Mar dos Renegados (Zona Vermelha — PVP total) ────────────────────
+// Acesso livre pelo norte dos mapas 6 e 10. Borda sul dividida ao meio:
+// metade oeste volta pro 6, metade leste pro 10 (sideMap com array).
+// Qualquer morte aqui dropa ruína saqueável com 10% do ouro da vítima.
+MAP_DEFS[11] = {
+  name:        'Mar dos Renegados',
+  weather:     'clear',
+  pvpZone:     'red',
+  hasShop:     false,
+  xpRequired:  0,
+  xpToAdvance: null,
+  size:        MAP_SIZE * 6,
+  sideMap:     [{sul: [6, 10]}],   // array = borda dividida: x<0 → 6, x≥0 → 10
+
+  // Arena central — palco do kraken. colliders vazio = sem colisão física
+  // (navios entram livremente); demarque as paredes reais com o editor tecla 2.
+  arena: {
+    center:       { x: 0, z: 0 },
+    islandRadius: 220,
+    model:        '/models/new_places/arena.glb',
+    scale:        1000,
+    yOffset:      166,
+    rotOffset:    0,
+    colliders: [
+      { shape: 'box', x: 0.0, z: 655.0, hw: 65.0, hh: 35.0, rot: 0.0 },
+      { shape: 'box', x: 10.0, z: 355.0, hw: 5.0, hh: 15.0, rot: 0.0 },
+      { shape: 'box', x: -15.0, z: 355.0, hw: 5.0, hh: 15.0, rot: 0.0 },
+      { shape: 'circle', x: 0.0, z: 15.0, r: 35.0 },
+      { shape: 'circle', x: 0.0, z: -110.0, r: 140.0 },
+      { shape: 'box', x: 0.0, z: -240.0, hw: 30.0, hh: 25.0, rot: 0.0 },
+      { shape: 'box', x: -205.0, z: -105.0, hw: 10.0, hh: 25.0, rot: 0.0 },
+      { shape: 'box', x: -220.0, z: -90.0, hw: 5.0, hh: 10.0, rot: 0.0 },
+      { shape: 'box', x: -190.0, z: -90.0, hw: 5.0, hh: 5.0, rot: 0.0 },
+      { shape: 'circle', x: -370.0, z: 235.0, r: 5.0 },
+      { shape: 'circle', x: -355.0, z: 260.0, r: 5.0 },
+      { shape: 'circle', x: 160.0, z: 460.0, r: 5.0 },
+      { shape: 'circle', x: 160.0, z: 520.0, r: 5.0 },
+      { shape: 'box', x: -760.0, z: 55.0, hw: 95.0, hh: 135.0, rot: 0.0 },
+      { shape: 'box', x: -675.0, z: -230.0, hw: 65.0, hh: 155.0, rot: -0.26 },
+      { shape: 'box', x: -500.0, z: -475.0, hw: 145.0, hh: 60.0, rot: 0.79 },
+      { shape: 'box', x: -275.0, z: -610.0, hw: 135.0, hh: 50.0, rot: 0.52 },
+      { shape: 'box', x: 0.0, z: -665.0, hw: 140.0, hh: 30.0, rot: 0.0 },
+      { shape: 'box', x: 260.0, z: -585.0, hw: 135.0, hh: 20.0, rot: -0.52 },
+      { shape: 'box', x: 465.0, z: -455.0, hw: 105.0, hh: 30.0, rot: -0.79 },
+      { shape: 'box', x: 610.0, z: -290.0, hw: 125.0, hh: 30.0, rot: -1.05 },
+      { shape: 'box', x: 695.0, z: -30.0, hw: 35.0, hh: 130.0, rot: 0.26 },
+      { shape: 'box', x: 655.0, z: -160.0, hw: 5.0, hh: 10.0, rot: 0.0 },
+      { shape: 'box', x: 710.0, z: 100.0, hw: 45.0, hh: 25.0, rot: 0.0 },
+      { shape: 'box', x: 700.0, z: 200.0, hw: 50.0, hh: 70.0, rot: -0.52 },
+      { shape: 'box', x: 660.0, z: 335.0, hw: 50.0, hh: 70.0, rot: -0.52 },
+      { shape: 'box', x: 585.0, z: 455.0, hw: 40.0, hh: 60.0, rot: -1.05 },
+      { shape: 'box', x: 470.0, z: 540.0, hw: 35.0, hh: 85.0, rot: -0.79 },
+      { shape: 'box', x: 390.0, z: 660.0, hw: 50.0, hh: 50.0, rot: -1.05 },
+      { shape: 'box', x: 325.0, z: 735.0, hw: 45.0, hh: 80.0, rot: 0.52 },
+      { shape: 'box', x: 315.0, z: 805.0, hw: 50.0, hh: 15.0, rot: -0.52 },
+      { shape: 'box', x: -335.0, z: 700.0, hw: 75.0, hh: 55.0, rot: -0.52 },
+      { shape: 'circle', x: -365.0, z: 725.0, r: 85.0 },
+      { shape: 'box', x: -320.0, z: 810.0, hw: 50.0, hh: 15.0, rot: -2.62 },
+      { shape: 'box', x: -430.0, z: 610.0, hw: 50.0, hh: 40.0, rot: 0.26 },
+      { shape: 'box', x: -455.0, z: 580.0, hw: 50.0, hh: 30.0, rot: 0.79 },
+      { shape: 'box', x: -540.0, z: 515.0, hw: 75.0, hh: 50.0, rot: -0.79 },
+      { shape: 'box', x: -695.0, z: 225.0, hw: 50.0, hh: 40.0, rot: 0.26 },
+      { shape: 'circle', x: -645.0, z: 350.0, r: 50.0 },
+      { shape: 'box', x: -695.0, z: 290.0, hw: 50.0, hh: 30.0, rot: 0.26 },
+      { shape: 'box', x: -625.0, z: 445.0, hw: 50.0, hh: 35.0, rot: 0.79 },
+      { shape: 'box', x: -475.0, z: 690.0, hw: 85.0, hh: 40.0, rot: -0.79 },
+      { shape: 'box', x: -650.0, z: 535.0, hw: 150.0, hh: 30.0, rot: -1.05 },
+      { shape: 'circle', x: -565.0, z: 650.0, r: 25.0 },
+      { shape: 'box', x: -685.0, z: 375.0, hw: 50.0, hh: 50.0, rot: 0.0 },
+      { shape: 'box', x: -805.0, z: 255.0, hw: 65.0, hh: 45.0, rot: 0.26 },
+      { shape: 'box', x: -845.0, z: 210.0, hw: 20.0, hh: 35.0, rot: -0.26 },
+      { shape: 'box', x: -820.0, z: -105.0, hw: 50.0, hh: 45.0, rot: 0.26 },
+      { shape: 'box', x: -815.0, z: -155.0, hw: 50.0, hh: 35.0, rot: -0.26 },
+      { shape: 'circle', x: -685.0, z: -320.0, r: 50.0 },
+      { shape: 'box', x: -635.0, z: -435.0, hw: 70.0, hh: 30.0, rot: -2.09 },
+      { shape: 'box', x: -535.0, z: -555.0, hw: 30.0, hh: 100.0, rot: -0.79 },
+      { shape: 'circle', x: -470.0, z: -620.0, r: 30.0 },
+      { shape: 'box', x: -395.0, z: -665.0, hw: 35.0, hh: 80.0, rot: -0.79 },
+      { shape: 'box', x: -330.0, z: -700.0, hw: 50.0, hh: 50.0, rot: 0.52 },
+      { shape: 'box', x: -200.0, z: -710.0, hw: 50.0, hh: 85.0, rot: -0.79 },
+      { shape: 'box', x: -95.0, z: -775.0, hw: 40.0, hh: 120.0, rot: -0.79 },
+      { shape: 'box', x: -145.0, z: -785.0, hw: 25.0, hh: 25.0, rot: 0.0 },
+      { shape: 'circle', x: 15.0, z: -800.0, r: 95.0 },
+      { shape: 'circle', x: 100.0, z: -690.0, r: 140.0 },
+      { shape: 'box', x: 325.0, z: -705.0, hw: 45.0, hh: 50.0, rot: -0.52 },
+      { shape: 'box', x: 240.0, z: -690.0, hw: 25.0, hh: 20.0, rot: -0.52 },
+      { shape: 'box', x: 410.0, z: -675.0, hw: 60.0, hh: 15.0, rot: -0.79 },
+      { shape: 'circle', x: 470.0, z: -595.0, r: 50.0 },
+      { shape: 'box', x: 515.0, z: -545.0, hw: 50.0, hh: 50.0, rot: -0.79 },
+      { shape: 'box', x: 590.0, z: -490.0, hw: 30.0, hh: 50.0, rot: 0.79 },
+      { shape: 'box', x: 650.0, z: -375.0, hw: 95.0, hh: 50.0, rot: -1.05 },
+      { shape: 'box', x: 690.0, z: -295.0, hw: 25.0, hh: 45.0, rot: -0.52 },
+      { shape: 'box', x: 690.0, z: -230.0, hw: 45.0, hh: 75.0, rot: 0.26 },
+      { shape: 'box', x: 805.0, z: -150.0, hw: 55.0, hh: 35.0, rot: 0.26 },
+      { shape: 'box', x: 830.0, z: -95.0, hw: 20.0, hh: 55.0, rot: -0.52 },
+      { shape: 'box', x: 800.0, z: 5.0, hw: 50.0, hh: 50.0, rot: 0.52 },
+      { shape: 'box', x: 805.0, z: 100.0, hw: 50.0, hh: 70.0, rot: 0.0 },
+      { shape: 'box', x: 815.0, z: 260.0, hw: 50.0, hh: 40.0, rot: -0.26 },
+      { shape: 'box', x: 810.0, z: 200.0, hw: 50.0, hh: 50.0, rot: 0.26 },
+      { shape: 'box', x: 715.0, z: 370.0, hw: 35.0, hh: 100.0, rot: -0.26 },
+      { shape: 'box', x: 630.0, z: 520.0, hw: 85.0, hh: 50.0, rot: 1.05 },
+      { shape: 'box', x: 580.0, z: 630.0, hw: 35.0, hh: 50.0, rot: -0.79 },
+      { shape: 'box', x: 470.0, z: 680.0, hw: 50.0, hh: 65.0, rot: -0.79 },
+      { shape: 'box', x: 415.0, z: 755.0, hw: 50.0, hh: 20.0, rot: 0.52 },
+    ],
+  },
+
+  npc: {
+    count:        1,               // apenas o kraken filho, dentro da arena
+    baseHp:       3000000,
+    baseDamage:   50000,
+    fireInterval: 3000,
+    names:        'Kraken Filho',
+    hullColor:    0x1a0a2a,
+    sailColor:    0x662288,
+    flagColor:    0x441166,
+    xpPerKill:    1200,
+    goldMin:      20000,
+    goldMax:      30000,
+    dobraoChance: 1,
+    dobraoMin:    10000,
+    dobraoMax:    25000,
+    model:        '/models/monster/kraken_filho.glb',
+    scale: 15,
+    yOffset: 0,
+    rotOffset: 0,
+    hitRadius: 14,
+    relicDropChance: 0.25,
+    spawnAt:      { x: 0, z: 0, radius: 60 },  // nasce dentro da arena
+    leashRange:   220,             // não sai da arena ao perseguir
+    respawnDelay: 3600000,          // mini-boss: 1 h para renascer
+    attacks: ['tentacle_slam', 'tentacle_sweep', 'ink_blast', 'deep_surge', 'impale_line', 'whirlwind'],
+  },
+  boss: null,
+
+  visual: {
+    bgColor:          0x2a0808,
+    fogColor:         0x401010,
+    fogDensity:       0.0012,
+    ambientColor:     0xff4433,
+    ambientIntensity: 0.5,
+    sunColor:         0xff7040,
+    sunIntensity:     1.8,
+    ocean1:           0x4a1410,
+    ocean2:           0x260806,
+    hasMoon:          true,
+    hasDenseNebula:   false,
+  },
+  healingZones: [],  // zona vermelha: sem cura de graça
+};
+
+// Passagens antigas (ruína ancient_stone_arch) — pontos de teleporte entre mapas.
+// x/z = posição no mundo da arcada (mesma do RUINS_DEFS do cliente em main.gd).
+// Para adicionar um destino: espelhe aqui a arcada que você colocar no cliente.
+// O teleporte sorteia uma passagem de OUTRO mapa (ver pickArchDestination no server).
+const ARCH_PORTALS = {
+  1:  [{ x:  220, z: -290 }],
+  4:  [{ x: -787, z: -700 }],
+  10: [{ x: -990, z:  -80 }],
+};
+
 // ID → mapLevel lookup para uso no servidor
 const BONUS_MAP_LEVELS = { bonus_map_1: 7, bonus_map_2: 8, bonus_map_3: 9 };
 
-module.exports = { MAP_DEFS, BONUS_MAP_LEVELS };
+// Zona PvP de um mapa — 'yellow' é o comportamento histórico (PvP liberado)
+function getPvpZone(level) {
+  return (MAP_DEFS[level] && MAP_DEFS[level].pvpZone) || 'yellow';
+}
+
+module.exports = { MAP_DEFS, BONUS_MAP_LEVELS, ARCH_PORTALS, getPvpZone };

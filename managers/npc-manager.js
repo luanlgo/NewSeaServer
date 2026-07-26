@@ -155,18 +155,32 @@ class NPCManager {
       flagColor: mapDef.npcFlagColor || 0xcc2222,
     };
     
-    const names = npcDef.names || ['Corsair'];
+    // maps.js usa string ('Abyssal Stalker') OU array — indexar string devolve
+    // uma letra ("M-33"), então normaliza para array antes do sorteio
+    const names = Array.isArray(npcDef.names) ? npcDef.names
+                : (npcDef.names ? [npcDef.names] : ['Corsair']);
     const baseName = names[Math.floor(Math.random() * names.length)];
     const baseHp = npcDef.baseHp || MAX_HP;
     
     const mapSize = (mapDef && mapDef.size);
+    // spawnAt: ponto fixo de nascimento (ex.: kraken dentro da arena do mapa 11)
+    // com dispersão opcional `radius`; sem spawnAt, nasce em qualquer lugar.
+    let spawnX, spawnZ;
+    if (npcDef.spawnAt) {
+      const sr = npcDef.spawnAt.radius || 0;
+      spawnX = (npcDef.spawnAt.x || 0) + rand(-sr, sr);
+      spawnZ = (npcDef.spawnAt.z || 0) + rand(-sr, sr);
+    } else {
+      spawnX = rand(-mapSize / 2, mapSize / 2);
+      spawnZ = rand(-mapSize / 2, mapSize / 2);
+    }
     const npc = {
       id,
       name: `${baseName}-${String(id).slice(-3)}`,
       mapLevel: lvl,
-      x: rand(-mapSize / 2, mapSize / 2),
+      x: spawnX,
       y: 0,
-      z: rand(-mapSize / 2, mapSize / 2),
+      z: spawnZ,
       rotation: rand(0, Math.PI * 2),
       hp: baseHp,
       maxHp: baseHp,
@@ -184,6 +198,9 @@ class NPCManager {
       cannonDmg: npcDef.baseDamage || 0,
       baseDmg:   npcDef.baseDamage || 0,
       hitRadius: npcDef.hitRadius || HIT_RADIUS,
+      spawnX,                                      // home do leash
+      spawnZ,
+      leashRange: npcDef.leashRange || null,       // null → NPC_LEASH_RANGE global
       npcHullColor: npcDef.hullColor,
       npcSailColor: npcDef.sailColor,
       npcFlagColor: npcDef.flagColor,
@@ -264,8 +281,8 @@ class NPCManager {
         type: 'entity_add',
         entity: this.snapshot([npc])[0]
       });
-    }, 5000);
-    
+    }, mapNpcDef.respawnDelay || 5000);   // respawnDelay do def (ex.: kraken 5min)
+
     this._respawnTimers.set(id, timer);
   }
 
@@ -391,8 +408,9 @@ class NPCManager {
       // Só re-escala fora de combate (20s sem dano): ao tomar dano o NPC TRAVA
       // sua dificuldade até passar esse tempo sem sofrer ação — evita que
       // o jogador troque a dificuldade no meio da luta para mudar a recompensa.
+      // Navios de frota (evento) têm stats fixos por mapa — nunca re-escalam.
       const noRecentDamage = !npc.lastDamageTime || (now - npc.lastDamageTime > 20000);
-      if (nearest && nearest.id !== npc.targetId && noRecentDamage && !npc.isBoss) {
+      if (nearest && nearest.id !== npc.targetId && noRecentDamage && !npc.isBoss && !npc.isFleetShip) {
         const diffIdx  = nearest.difficulty || 0;
         const diffMult = difficultyMult(diffIdx);
         if (diffMult !== npc._scaledForDiff) {
@@ -708,13 +726,14 @@ class NPCManager {
         // Ponto de origem (home) para o leash — inicializado preguiçosamente
         if (npc.spawnX === undefined) { npc.spawnX = npc.x; npc.spawnZ = npc.z; }
         const homeDist = Math.hypot(npc.x - npc.spawnX, npc.z - npc.spawnZ);
-        const leashed  = !npc.isBoss && homeDist > NPC_LEASH_RANGE;
+        const leashed  = !npc.isBoss && homeDist > (npc.leashRange || NPC_LEASH_RANGE);
 
         // Decisão de alvo — bosses sempre engajam; NPCs normais usam aggro pegajoso:
         // engajam de perto (AGGRO), mantêm até o alvo fugir além de DEAGGRO, e
         // desistem se forem arrastados para longe do spawn (leash).
         let engaged = false;
-        if (npc.isBoss) {
+        if (npc.isBoss || npc.isFleetShip) {
+          // Bosses e navios de frota caçam o mais próximo do mapa inteiro
           engaged = !!nearestForCombat;
         } else if (!leashed && nearestForCombat) {
           engaged = (npc.targetId === nearestForCombat.id)
@@ -762,7 +781,7 @@ class NPCManager {
             while (diff < -Math.PI) diff += Math.PI * 2;
             npc.rotation += clamp(diff, -0.06, 0.06);
             // Bosses are slightly faster so they can chase a fleeing player
-            const maxSpd = npc.isBoss ? SHIP_SPEED * 0.95 : SHIP_SPEED * 0.7;
+            const maxSpd = (npc.isBoss || npc.isFleetShip) ? SHIP_SPEED * 0.95 : SHIP_SPEED * 0.7;
             npc.speed = Math.min(npc.speed + 0.05, maxSpd * (npc.slowMult || 1));
           }
         } else if (leashed) {
@@ -831,6 +850,7 @@ class NPCManager {
       isBoss: n.isBoss,
       isDungeonBoss: n.isDungeonBoss || false,
       isWorldBoss: n.isWorldBoss || false,
+      isFleetShip: n.isFleetShip || false,
       rarity: n.rarity || null,
       mapLevel: n.mapLevel || 1,
       npcHullColor: n.npcHullColor,

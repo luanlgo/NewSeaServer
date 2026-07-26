@@ -52,6 +52,8 @@ const PartyManager      = require('./managers/party-manager');
 const PetManager        = require('./managers/pet-manager');
 const WallManager       = require('./managers/wall-manager');
 const MissionBoatManager = require('./managers/mission-boat-manager');
+const FleetEventManager  = require('./managers/fleet-event-manager');
+const WeatherManager     = require('./managers/weather-manager');
 const { pushOutOfIslands, pushOutOfWalls } = require('./utils/collision');
 
 
@@ -130,6 +132,7 @@ const {
   MAX_CANNON_SLOTS,
   SAIL_DEFS,
   MAP_DEFS,
+  getPvpZone,
   SHIP_DEFS,
   PIRATE_DEFS,
   FRAGMENT_EXPLORE_COST,
@@ -138,6 +141,7 @@ const {
   FRAGMENT_DROP_NPC,
   BONUS_MAPS,
   BONUS_MAP_LEVELS,
+  ARCH_PORTALS,
   CANNON_RESEARCH_COSTS,
   SHIP_UPGRADE_DEFS,
   RELIC_DEFS,
@@ -152,6 +156,7 @@ const {
   TALENT_XP_CAP,
   DIFFICULTIES,
   difficultyDef,
+  difficultyRewardMult,
   isDifficultyUnlocked,
   DAILY_MISSIONS,
   DAILY_MISSION_COUNT,
@@ -340,6 +345,8 @@ const partyManager      = new PartyManager();
 const petManager        = new PetManager(wss, players, db);
 // Barco de Missões — NPC não-combatente que navega entre os mapas 1–4
 const missionBoatManager = new MissionBoatManager(players, MAP_DEFS);
+// Clima dinâmico sincronizado por mapa — o servidor cicla e envia no `state`
+const weatherManager     = new WeatherManager(MAP_DEFS);
 // Obstáculos temporários (ex.: Muro de Pedra) — único registro pra TODOS os
 // mapas, injetado em playerManager e em cada NPCManager (mesmo padrão do
 // partyManager); ver managers/wall-manager.js e utils/collision.js.
@@ -352,6 +359,14 @@ projectileManager.partyManager = partyManager;
 
 // 2. AttackManager — gerencia ataques especiais de NPC (telegraph + AoE)
 const attackManager = new AttackManager(addEvent, projectileManager);
+
+// 2b. WreckManager — ruínas saqueáveis da Zona Vermelha (mapa 11).
+// Injetado em projectileManager/attackManager para o hook onPlayerDeath em
+// todos os caminhos de morte (projétil, ataque AoE, aura, DoT).
+const { WreckManager } = require('./managers/wreck-manager');
+const wreckManager = new WreckManager(sendTo, addEvent);
+projectileManager.wreckManager = wreckManager;
+attackManager.wreckManager     = wreckManager;
 
 // 3. NPC managers (need projectileManager + attackManager for broadcasting)
 let   npcManager  = new NPCManager(projectileManager, MAP_DEFS, 1, attackManager); // map 1 NPCs (let — pode ser recriado)
@@ -477,6 +492,11 @@ bossManager2.npcs = npcManager2.npcs;
 const worldBossManager = new WorldBossManager(wss, players, [npcManager, npcManager2]);
 projectileManager.worldBossManager = worldBossManager;
 
+// 6b. Frota de Caçadores — evento periódico: 1–3 navios colossais caçam os
+// jogadores de um mapa (managers/fleet-event-manager.js). getMapManager e
+// addEvent são declarações hoisted — a referência aqui é válida.
+const fleetEventManager = new FleetEventManager(wss, players, MAP_DEFS, getMapManager, addEvent);
+
 // ── Callbacks de Missões Diárias ─────────────────────────────────────────────
 // Nomes dos monstros do recife (um por mapa 1-3)
 const _REEF_NPC_NAMES = ['Abyssal Stalker', 'Dreadfin Leviathan', 'Gilded Reef Manta'];
@@ -515,6 +535,8 @@ function _setupMissionCallbacks(pmgr, bmgr, bmgr2) {
   // ── NPC morto pelo jogador ─────────────────────────────────────────────────
   pmgr._onNpcKill = (killer, gold, npc) => {
     maybeGrantTutorialRelic(killer);
+    // Frota de Caçadores: bounty + progresso do evento (qualquer caminho de dano)
+    if (npc && npc.isFleetShip) fleetEventManager.onFleetShipKilled(killer, npc);
     progressDailyMission(killer, 'npcKills',    1);
     progressDailyMission(killer, 'cannonKills', 1);   // todos os kills são com canhão
     progressDailyMission(killer, 'shipsSunk',   1);   // NPCs também são navios inimigos
@@ -846,6 +868,8 @@ setInterval(() => {
 
   playerManager.update(dt);
   missionBoatManager.update(now, dt);
+  fleetEventManager.update(now);
+  wreckManager.update(now);
 
   // ── World time — avança e transmite periodicamente ────────────────────────
   worldTimeHour = (worldTimeHour + dt * 24.0 / DAY_DURATION_S) % 24.0;
@@ -980,10 +1004,19 @@ setInterval(() => {
     };
 
     let mapChanged = false;
-    for (const [dir, targetLevel] of Object.entries(sideMapEntry)) {
+    for (const [dir, targetRaw] of Object.entries(sideMapEntry)) {
       if (mapChanged) break;
       const trans = DIRS[dir];
       if (!trans || !trans.triggered()) continue;
+
+      // Borda dividida (ex.: mapa 11 sul → [6, 10]): array de destinos.
+      // Para bordas norte/sul a metade oeste (x<0) vai pro primeiro e a
+      // leste pro segundo; para left/right decide pela metade em z.
+      const targetLevel = Array.isArray(targetRaw)
+        ? (trans.spawnAxis === 'z'
+            ? (p.x < 0 ? targetRaw[0] : targetRaw[1])
+            : (p.z < 0 ? targetRaw[0] : targetRaw[1]))
+        : targetRaw;
 
       // Mapa 5 (Treino AFK) é acessível apenas por compra — bloqueia borda
       if (targetLevel === 5) {
@@ -1017,6 +1050,11 @@ setInterval(() => {
       } else {
         p.x = trans.spawnValue(targetSize);
       }
+      // O eixo livre é mantido do mapa anterior — clampa aos limites do destino
+      // (mapas têm tamanhos diferentes; sem isso dá pra nascer fora da borda)
+      const _edgeClamp = targetSize / 2 - 40;
+      p.x = Math.max(-_edgeClamp, Math.min(_edgeClamp, p.x));
+      p.z = Math.max(-_edgeClamp, Math.min(_edgeClamp, p.z));
 
       p.mapLevel = targetLevel;
       _notifyWantedHunters(p);
@@ -1055,6 +1093,7 @@ setInterval(() => {
               : { current: bpTot % bpKts, needed: bpKts, mapLevel: targetLevel, bossAlive: bpAlive })
           : null,
         dailyMissions: targetLevel === 4 ? buildDailyMissions(p) : undefined,
+        wrecks: wreckManager.snapshot(targetLevel),   // ruínas ativas (zona vermelha)
       });
       mapChanged = true;
     }
@@ -1295,12 +1334,15 @@ setInterval(() => {
           if (target.dead || target.id === p.id) return;
           // Zone isolation
           if ((target.mapLevel || 1) !== (p.mapLevel || 1)) return;
+          // Zona verde (PVE): aura não dana outros jogadores
+          if (getPvpZone(target.mapLevel || 1) === 'green') return;
           if (Math.hypot(target.x - p.x, target.z - p.z) > aRange) return;
           target.hp = Math.max(0, target.hp - aDamage);
           target.lastCombatTime = now;
           aHits.push({ id: target.id, dmg: aDamage, hp: target.hp, isNPC: false });
           if (target.hp <= 0 && !target.dead) {
             target.dead = true;
+            wreckManager.onPlayerDeath(target);
             addEvent({ type: 'entity_dead', id: target.id, isNPC: false, killerId: p.id }, target.mapLevel);
           }
         });
@@ -1371,8 +1413,9 @@ setInterval(() => {
             if (killer) {
               killer.npcKills = (killer.npcKills || 0) + 1;
               const tier = Math.floor(killer.npcKills / 10);
-              // Multiplicador de dificuldade travado no NPC (kills por DoT também escalam)
-              const dotDiff = e.diffMult || 1;
+              // Multiplicador de dificuldade travado no NPC (kills por DoT também
+              // escalam) — recompensa usa a METADE dos atributos (difficultyRewardMult)
+              const dotDiff = difficultyRewardMult(e.diffMult || 1);
               const gold = Math.round(Math.floor(baseGold * (1 + (killer.dropBonus||0)) * (1 + tier*0.01)) * dotDiff);
               killer.gold += gold;
               // Dobrao drop
@@ -1439,6 +1482,7 @@ setInterval(() => {
             }
           }
         } else {
+          wreckManager.onPlayerDeath(e);   // zona vermelha: dropa ruína saqueável
           addEvent({ type: 'entity_dead', id: e.id, isNPC: false }, e.mapLevel || 1);
           // Player respawn is manual — client sends request_respawn
         }
@@ -1550,6 +1594,7 @@ setInterval(() => {
         type:    'state',
         players: myPlayers,
         npcs:    [...myNpcs, ...myBoss],
+        weather: weatherManager.get(zone, now),
       };
       if (myBoat) stateMsg.missionBoat = myBoat;
       sendTo(p.ws, stateMsg);
@@ -1595,12 +1640,22 @@ setInterval(() => {
   db.batchSave(players).catch(e => console.error('Periodic batch save error:', e));
 }, 15000);
 
-// ── Mana regen: +1 por segundo por jogador ────────────────────────────────
+// ── Mana regen: +0,5/s por jogador (metade da velocidade antiga de +1/s) ──────
+// O capstone do capitão "Guardião das Relíquias" (talento slot_reliquia, máx 3)
+// dá +20% de velocidade de recuperação POR NÍVEL (nível 3 = +60%). Acumulador
+// fracionário por jogador para a taxa < 1 e o bônus não perderem resolução.
+const MANA_REGEN_PER_SEC = 0.5;
 setInterval(() => {
   players.forEach(p => {
     if (!p || !p.name || !p._dbLoaded) return;
-    if (p.mana < p.maxMana) {
-      p.mana = Math.min(p.maxMana, p.mana + 1);
+    if (p.mana >= p.maxMana) { p._manaAcc = 0; return; }
+    let rate = MANA_REGEN_PER_SEC;
+    rate *= 1 + 0.20 * (p.talents?.slot_reliquia || 0);   // +20% por nível do talento
+    p._manaAcc = (p._manaAcc || 0) + rate;
+    if (p._manaAcc >= 1) {
+      const add = Math.floor(p._manaAcc);
+      p._manaAcc -= add;
+      p.mana = Math.min(p.maxMana, p.mana + add);
       sendTo(p.ws, { type: 'mana_update', mana: p.mana, maxMana: p.maxMana });
     }
   });
@@ -1781,6 +1836,202 @@ function ensureManagersForMap(level) {
   } else if (MAP_DEFS[level]) {
     ensureRegularManager(level);
   }
+}
+
+// ── Passagens antigas (ancient_stone_arch): teleporte entre mapas ─────────────
+const ARCH_NEAR_RADIUS       = 160;    // raio de validação (client mostra o aviso em ~120)
+const ARCH_COMBAT_COOLDOWN_MS = 30000; // 30s fora de combate p/ poder teleportar
+
+/** true se o jogador está perto de uma passagem no mapa atual (anti-cheat). */
+function isNearArch(p) {
+  const arches = ARCH_PORTALS[p.mapLevel] || [];
+  return arches.some(a => Math.hypot(p.x - a.x, p.z - a.z) <= ARCH_NEAR_RADIUS);
+}
+
+/**
+ * Sorteia uma passagem de OUTRO mapa que o XP do jogador permita acessar
+ * (mapXp >= xpRequired do destino). null se não houver destino elegível.
+ */
+function pickArchDestination(currentLevel, playerMapXp) {
+  const xp = playerMapXp || 0;
+  const dests = [];
+  for (const [lvlStr, arches] of Object.entries(ARCH_PORTALS)) {
+    const lvl = Number(lvlStr);
+    if (lvl === currentLevel) continue;            // sempre troca de mapa
+    const def = MAP_DEFS[lvl];
+    if (!def) continue;
+    if ((def.xpRequired || 0) > xp) continue;      // além do que o XP do jogador libera
+    for (const a of arches) dests.push({ level: lvl, x: a.x, z: a.z });
+  }
+  if (dests.length === 0) return null;
+  return dests[Math.floor(Math.random() * dests.length)];
+}
+
+/** true se existe alguma passagem em OUTRO mapa (ignorando o gate de XP). */
+function hasOtherArch(currentLevel) {
+  return Object.keys(ARCH_PORTALS).some(l => Number(l) !== currentLevel && MAP_DEFS[Number(l)]);
+}
+
+/**
+ * Teleporta um jogador para (spawnX, spawnZ) em targetLevel. Espelha o bloco de
+ * transição por borda, mas com destino explícito. Assume que já foi validado.
+ */
+function teleportPlayerToMap(p, targetLevel, spawnX, spawnZ) {
+  const targetDef = MAP_DEFS[targetLevel];
+  if (!targetDef) return false;
+  const fromLevel  = p.mapLevel || 1;
+  const targetSize = targetDef.size;
+  const clamp      = targetSize / 2 - 40;
+  p.x = Math.max(-clamp, Math.min(clamp, spawnX));
+  p.z = Math.max(-clamp, Math.min(clamp, spawnZ));
+  p.mapLevel = targetLevel;
+  _notifyWantedHunters(p);
+
+  { const _ivToday = todayDateStr();
+    if (!p._visitedIslandsDate || p._visitedIslandsDate !== _ivToday) {
+      p._visitedIslandsDate = _ivToday; p._visitedIslands = new Set();
+    }
+    const _ivPrev = p._visitedIslands.size;
+    p._visitedIslands.add(targetLevel);
+    if (p._visitedIslands.size > _ivPrev) progressDailyMission(p, 'islandsVisited', 1);
+  }
+
+  p.input = { w: false, a: false, s: false, d: false };
+  p.speed = 0;
+  ensureManagersForMap(targetLevel);
+  db.save(p, true).catch(e => console.error('Save error:', e));
+
+  const targetMgr = getMapManager(targetLevel);
+  const bpKts   = targetDef.boss?.killsToSpawn ?? 10;
+  const bpTot   = getMapKills(targetLevel);
+  const bpAlive = getMapBossAlive(targetLevel);
+  console.log(`🌀 ${p.name}: passagem antiga ${fromLevel} → ${targetLevel}`);
+  sendTo(p.ws, {
+    type:    'map_transition',
+    toLevel: targetLevel,
+    mapDef:  targetDef,
+    mapSize: targetSize,
+    x:       p.x,
+    z:       p.z,
+    mapXp:   p.mapXp || 0,
+    npcs:    targetMgr ? targetMgr.snapshot() : [],
+    bossProgress: targetDef.boss
+      ? (bpKts === 0
+          ? { current: 0, needed: 0, mapLevel: targetLevel, bossAlive: bpAlive }
+          : { current: bpTot % bpKts, needed: bpKts, mapLevel: targetLevel, bossAlive: bpAlive })
+      : null,
+    dailyMissions: targetLevel === 4 ? buildDailyMissions(p) : undefined,
+    wrecks: wreckManager.snapshot(targetLevel),
+  });
+  return true;
+}
+
+/** Handler do pedido de teleporte por passagem antiga. Valida e teleporta. */
+function handleArchTeleport(p) {
+  if (!p || p.dead) return;
+  const now = Date.now();
+  const sinceCombat = now - (p.lastCombatTime || 0);
+  if (sinceCombat < ARCH_COMBAT_COOLDOWN_MS) {
+    const wait = Math.ceil((ARCH_COMBAT_COOLDOWN_MS - sinceCombat) / 1000);
+    sendTo(p.ws, { type: 'teleport_arch_denied', reason: 'combat', wait });
+    return;
+  }
+  if (!isNearArch(p)) {
+    sendTo(p.ws, { type: 'teleport_arch_denied', reason: 'not_near' });
+    return;
+  }
+  const dest = pickArchDestination(p.mapLevel, p.mapXp);
+  if (!dest) {
+    // Sem destino: por falta de XP (há arcadas, mas todas exigem mais) ou nenhuma
+    const reason = hasOtherArch(p.mapLevel) ? 'xp' : 'no_dest';
+    sendTo(p.ws, { type: 'teleport_arch_denied', reason });
+    return;
+  }
+  teleportPlayerToMap(p, dest.level, dest.x, dest.z);
+}
+
+// ── Correio entre jogadores ───────────────────────────────────────────────────
+const DEV_NAME            = 'Bagatinha';  // destinatário padrão (feedback ao dev)
+const MAIL_TITLE_MAX      = 120;
+const MAIL_BODY_MAX       = 2000;
+const MAIL_MIN_INTERVAL_MS = 3000;        // anti-spam entre envios do mesmo jogador
+
+/** Jogador ONLINE com esse nome (para notificação ao vivo). null se offline. */
+function _findOnlinePlayerByName(name) {
+  for (const p of players.values()) {
+    if (p && p.name === name) return p;
+  }
+  return null;
+}
+
+async function handleMailSend(p, msg) {
+  const to    = String(msg.toName || '').trim();
+  const title = String(msg.title  || '').trim().slice(0, MAIL_TITLE_MAX);
+  const body  = String(msg.body   || '').trim().slice(0, MAIL_BODY_MAX);
+  if (!to || !title || !body) { sendTo(p.ws, { type: 'mail_error', reason: 'empty' }); return; }
+
+  const now = Date.now();
+  if (now - (p._lastMailAt || 0) < MAIL_MIN_INTERVAL_MS) {
+    sendTo(p.ws, { type: 'mail_error', reason: 'rate' });
+    return;
+  }
+  try {
+    // Destinatário precisa existir — exceto o dev (canal de feedback sempre válido)
+    if (to !== DEV_NAME && !(await db.playerExists(to))) {
+      sendTo(p.ws, { type: 'mail_error', reason: 'not_found', toName: to });
+      return;
+    }
+    p._lastMailAt = now;
+    await db.sendMail(p.name, to, title, body);
+    sendTo(p.ws, { type: 'mail_sent', toName: to });
+    // Notifica o destinatário se estiver online
+    const online = _findOnlinePlayerByName(to);
+    if (online && online.ws && online.ws !== p.ws) {
+      sendTo(online.ws, { type: 'mail_notify', fromName: p.name, title });
+    }
+  } catch (err) {
+    console.error('[MAIL] send error:', err);
+    sendTo(p.ws, { type: 'mail_error', reason: 'server' });
+  }
+}
+
+async function handleMailInbox(p) {
+  try {
+    sendTo(p.ws, { type: 'mail_inbox', mails: await db.getInbox(p.name) });
+  } catch (err) {
+    console.error('[MAIL] inbox error:', err);
+    sendTo(p.ws, { type: 'mail_inbox', mails: [] });
+  }
+}
+
+async function handleMailContacts(p) {
+  try {
+    const sent = await db.getSentContacts(p.name);
+    // "Bagatinha" sempre primeiro (padrão), sem duplicar
+    const contacts = [DEV_NAME, ...sent.filter(n => n !== DEV_NAME)];
+    sendTo(p.ws, { type: 'mail_contacts', contacts });
+  } catch (err) {
+    console.error('[MAIL] contacts error:', err);
+    sendTo(p.ws, { type: 'mail_contacts', contacts: [DEV_NAME] });
+  }
+}
+
+async function handleMailSearch(p, msg) {
+  const q = String(msg.q || '').trim();
+  if (q.length < 1) { sendTo(p.ws, { type: 'mail_search_result', q, names: [] }); return; }
+  try {
+    sendTo(p.ws, { type: 'mail_search_result', q, names: await db.searchPlayerNames(q, 20) });
+  } catch (err) {
+    console.error('[MAIL] search error:', err);
+    sendTo(p.ws, { type: 'mail_search_result', q, names: [] });
+  }
+}
+
+async function handleMailRead(p, msg) {
+  const id = Number(msg.id) || 0;
+  if (!id) return;
+  try { await db.markMailRead(id, p.name); }
+  catch (err) { console.error('[MAIL] read error:', err); }
 }
 
 // WebSocket
@@ -1967,6 +2218,18 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        case 'get_ranking': {
+          if (!player) break;
+          handleGetRanking(player, msg);
+          break;
+        }
+
+        case 'mail_send':     { if (player) handleMailSend(player, msg);  break; }
+        case 'mail_inbox':    { if (player) handleMailInbox(player);      break; }
+        case 'mail_contacts': { if (player) handleMailContacts(player);   break; }
+        case 'mail_search':   { if (player) handleMailSearch(player, msg); break; }
+        case 'mail_read':     { if (player) handleMailRead(player, msg);  break; }
+
         // ── Sistema de Procurado (Wanted) ───────────────────────────────────
         case 'request_wanted': {
           if (!player) break;
@@ -1984,6 +2247,19 @@ wss.on('connection', (ws) => {
           if (!player) break;
           player.wantedTarget = null;
           sendTo(player.ws, { type: 'wanted_cancelled' });
+          break;
+        }
+
+        // ── Zona Vermelha: saquear ruína de jogador afundado (tecla F) ──────
+        case 'loot_wreck': {
+          if (!player) break;
+          wreckManager.tryLoot(player, String(msg.wreckId || ''));
+          break;
+        }
+
+        case 'teleport_arch': {
+          if (!player) break;
+          handleArchTeleport(player);
           break;
         }
 
@@ -2515,6 +2791,7 @@ async function handleLogin(ws, msg) {
   // Talentos
   player.talents       = saved.talents || { hp:0, defesa:0, canhoes:0, dano:0, dano_relic:0, riqueza:0, ganancioso:0, mestre:0, slot_reliquia:0, totalSpent:0 };
   player.npcKills      = saved.npcKills      || 0;
+  player.pvpKills      = saved.pvpKills      || 0;
   player.difficulty    = saved.difficulty    || 0;
   // Tutorial: contas veteranas (≥20 abates) pulam o onboarding — e não recebem
   // o foguete de brinde, que é recompensa do primeiro abate de novato.
@@ -2662,6 +2939,18 @@ async function handleLogin(ws, msg) {
     mapLevel:   player.mapLevel || 1,
     mapXpNeeded: (MAP_DEFS[player.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999,
     mapDef:       MAP_DEFS[player.mapLevel || 1] || MAP_DEFS[1],
+    weather:      weatherManager.get(player.mapLevel || 1),
+    bossProgress: (() => {
+      const lvl  = player.mapLevel || 1;
+      const bdef = (MAP_DEFS[lvl] || MAP_DEFS[1]).boss;
+      if (!bdef) return null;
+      const kts   = bdef.killsToSpawn ?? 0;
+      const tot   = getMapKills(lvl);
+      const alive = getMapBossAlive(lvl);
+      return kts === 0
+        ? { current: 0, needed: 0, mapLevel: lvl, bossAlive: alive }
+        : { current: tot % kts, needed: kts, mapLevel: lvl, bossAlive: alive };
+    })(),
     mapFragments: player.mapFragments || 0,
     activeShip: player.activeShip,    // espelhado no top-level para _get_or_create
     equipped: {
@@ -2691,6 +2980,7 @@ async function handleLogin(ws, msg) {
     activeBonusInstanceId: player.activeBonusShipStats?.instanceId || '',
     bankGold:              player.bankGold                || 0,
     bankUnlocked:        player.bankUnlocked        || false,
+    wrecks:              wreckManager.snapshot(player.mapLevel || 1),  // ruínas ativas (zona vermelha)
     cannonResearchLevel: player.cannonResearchLevel || 0,
     shipMaterialLevel:   player.shipMaterialLevel   || 0,
     // ── Pets ────────────────────────────────────────────────────────────────
@@ -2867,6 +3157,11 @@ function handleShoot(player, msg) {
   msg.targetX = tX; msg.targetZ = tZ;
 
   projectileManager.spawnSalvo(player, msg.targetX, msg.targetZ);
+  // Atacar abre mão da imunidade pós-respawn — não dá pra atirar sob proteção.
+  if (player.safeUntil && Date.now() < player.safeUntil) {
+    player.safeUntil = 0;
+    sendTo(player.ws, { type: 'safe_period_end' });
+  }
   player.castExpires = Date.now() + 350; // 350ms cast penalty — player slows to 15% speed
   // Treino: concede XP de ataque por atirar na torre (sem NPCs para acertar)
   if (MAP_DEFS[player.mapLevel]?.isTrainingMap) {
@@ -3029,6 +3324,26 @@ function handleClaimDailyMission(player, msg) {
     dobroes:  player.dobroes,
     missions: buildDailyMissions(player),
   });
+}
+
+// ── Ranking (Fase 1: xp, npc_kills, pvp_kills, pet) ─────────────────────────
+async function handleGetRanking(player, msg) {
+  const VALID = ['xp', 'npc_kills', 'pvp_kills', 'pet'];
+  const category = VALID.includes(msg.category) ? msg.category : 'xp';
+  try {
+    const rankings = await db.getRankings();
+    const list = rankings[category] || [];
+    const myIdx = list.findIndex(e => e.name === player.name);
+    sendTo(player.ws, {
+      type:    'ranking',
+      category,
+      entries: list.slice(0, 50).map((e, i) => ({ rank: i + 1, ...e })),
+      you:     myIdx >= 0 ? { rank: myIdx + 1, ...list[myIdx] } : null,
+    });
+  } catch (err) {
+    console.error('[RANKING] Error building ranking:', err);
+    sendTo(player.ws, { type: 'ranking', category, entries: [], you: null });
+  }
 }
 
 function handleRequestWanted(player) {
@@ -3924,8 +4239,15 @@ function relicDamageFor(player, relicDef) {
   return Math.max(1, Math.round(raw * bonus));
 }
 
+// Alcance máximo de mira das relíquias "miradas" (runas) = alcance do canhão do
+// jogador. Assim, trocar/melhorar canhões estende também o alcance das skills.
+function relicCastRange(player) {
+  return player.cannonRange || 80;
+}
+
 function handleUseRelic(player, msg) {
-  const { instanceId: useInstanceId, targetX: rTx, targetZ: rTz } = msg;
+  const { instanceId: useInstanceId } = msg;
+  let rTx = msg.targetX, rTz = msg.targetZ;
   if (!useInstanceId) return;
   // Verify relic is in player's deck
   if (!player.relicDeck || !player.relicDeck.includes(useInstanceId)) return;
@@ -3934,6 +4256,20 @@ function handleUseRelic(player, msg) {
   const relicDef = RELIC_DEFS[relicInstance.relicId];
   if (!relicDef) return;
   const instanceId2 = useInstanceId;
+
+  // Runas miradas: alcance máximo = alcance do canhão. Clampa o ponto-alvo para
+  // dentro desse raio (na direção do clique) — todos os handlers abaixo já leem
+  // rTx/rTz clampados. Teleporte e arpão têm alcance próprio, ajustado separado.
+  if (relicDef.targetMouse && rTx != null && rTz != null) {
+    const _castR = relicCastRange(player);
+    const _dx = rTx - player.x, _dz = rTz - player.z;
+    const _d  = Math.hypot(_dx, _dz);
+    if (_d > _castR) {
+      const _ratio = _castR / _d;
+      rTx = player.x + _dx * _ratio;
+      rTz = player.z + _dz * _ratio;
+    }
+  }
 
   const now2 = Date.now();
   const manaCost = relicDef.manaCost || 0;
@@ -4328,7 +4664,8 @@ function handleUseRelic(player, msg) {
   } else if (relicDef.effect === 'teleport') {
     // ── Teleporte ─────────────────────────────────────────────────────
     // Teleporta o jogador até a posição do mouse respeitando range máximo
-    const maxRange = relicDef.maxRange || 150;
+    // (= alcance do canhão do jogador, como as demais runas)
+    const maxRange = relicCastRange(player);
 
     // Calcula posição alvo (clampada ao range máximo)
     let tpTx = rTx != null ? rTx : player.x;
@@ -4515,7 +4852,7 @@ function handleUseRelic(player, msg) {
     // puxado até pullStopDist do caster + stun curto durante o arrasto.
     // O "arrasto" visual é o lerp que o cliente já faz nas entidades —
     // aqui só reposicionamos e stunamos. Boss leva o dano mas NÃO é puxado.
-    const H_RANGE  = relicDef.range        || 130;
+    const H_RANGE  = relicCastRange(player);   // comprimento do skillshot = alcance do canhão
     const H_RADIUS = relicDef.hitRadius    || 14;
     const H_TRAVEL = relicDef.travelMs     || 500;
     const H_STOP   = relicDef.pullStopDist || 30;

@@ -15,6 +15,7 @@ const exploration   = require('./exploration');
 const bonusDungeons = require('./bonus_dungeons');
 const difficulty    = require('./difficulty');
 const missions      = require('./missions');
+const fleetEvent    = require('./fleet_event');
 
 module.exports = {
   // Engine
@@ -55,4 +56,7 @@ module.exports = {
 
   // Missões diárias (Barco de Missões)
   ...missions,
+
+  // Evento Frota de Caçadores
+  ...fleetEvent,
 };

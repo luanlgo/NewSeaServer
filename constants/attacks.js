@@ -271,7 +271,7 @@ const ATTACK_DEFS = {
     rangeMin: 0,
     rangeMax: 100,
     castTime: 1500,
-    cooldown: 15000,
+    cooldown: 21000,
     damageMult: 3.5,
     shape: 'circle', radius: 90,
     weight: 3,

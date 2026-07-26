@@ -1,19 +1,21 @@
 // constants/difficulty.js
 // Dificuldades de mundo — desbloqueadas pelo total de NPCs mortos (npcKills).
 //
-// `mult` multiplica TUDO que o NPC já faz hoje na dificuldade base:
-//   • HP e dano dos NPCs normais (não-boss)  → mais difícil
-//   • recompensas (ouro, XP, dobrão, fragmentos, chance de drop) → mais lucro
+// `mult` multiplica os ATRIBUTOS dos NPCs (HP e dano) na dificuldade base.
+// `rewardMult` escala as RECOMPENSAS (ouro, XP, dobrão, fragmentos, chance de
+// drop) — deliberadamente NÃO é metade uniforme: fácil/médio pagam 1:1 (baixo
+// risco não precisa de desconto), difícil em diante paga metade do desafio
+// (risco cresce mais rápido que o lucro, senão fica fácil demais "ficar full").
 //
 // Fácil (id 0) = mult 1.0 = comportamento atual do jogo (baseline).
-// As demais escalam para cima. Para adicionar mais tiers (ex: 2000/5000/10000
-// kills) basta acrescentar entradas aqui e as chaves de i18n no cliente.
+// Para adicionar mais tiers (ex: 2000/5000/10000 kills) basta acrescentar
+// entradas aqui e as chaves de i18n no cliente.
 const DIFFICULTIES = [
-  { id: 0, key: 'easy',      mult: 1.0,  reqKills: 0    },
-  { id: 1, key: 'normal',    mult: 2.0,  reqKills: 100  },
-  { id: 2, key: 'hard',      mult: 3.5,  reqKills: 250  },
-  { id: 3, key: 'very_hard', mult: 6.0,  reqKills: 500  },
-  { id: 4, key: 'extreme',   mult: 10.0, reqKills: 1000 },
+  { id: 0, key: 'easy',      mult: 1.0,  reqKills: 0,    rewardMult: 1 },
+  { id: 1, key: 'normal',    mult: 2.0,  reqKills: 100,  rewardMult: 2 },
+  { id: 2, key: 'hard',      mult: 6.0,  reqKills: 500,  rewardMult: 3 },
+  { id: 3, key: 'very_hard', mult: 8.0,  reqKills: 2000,  rewardMult: 4 },
+  { id: 4, key: 'extreme',   mult: 10.0, reqKills: 5000, rewardMult: 5 },
 ];
 
 /** Definição da dificuldade por índice (clampa para faixa válida). */
@@ -34,4 +36,33 @@ function isDifficultyUnlocked(idx, npcKills) {
   return !!def && (npcKills || 0) >= def.reqKills;
 }
 
-module.exports = { DIFFICULTIES, difficultyDef, difficultyMult, isDifficultyUnlocked };
+// Pontos de controle (mult → rewardMult) ordenados, derivados de DIFFICULTIES —
+// única fonte da verdade. Usado para interpolar o caso do World Boss, cujo
+// diffMult é uma MÉDIA de difficultyMult dos jogadores online e por isso pode
+// cair entre dois tiers (ex.: metade em 'normal', metade em 'hard' → mult 4.0,
+// que não bate exatamente com nenhuma linha da tabela).
+const _REWARD_POINTS = [...DIFFICULTIES]
+  .sort((a, b) => a.mult - b.mult)
+  .map(d => ({ x: d.mult, y: d.rewardMult }));
+
+/**
+ * Multiplicador de RECOMPENSA a partir do multiplicador de ATRIBUTOS travado
+ * no NPC/boss (`npc.diffMult`/`boss.diffMult`). Bate exato com a tabela para
+ * qualquer NPC/boss normal (diffMult sempre = um dos `mult` acima); interpola
+ * linearmente só no caso do World Boss (média entre tiers).
+ */
+function difficultyRewardMult(mult) {
+  const m = mult || 1;
+  const pts = _REWARD_POINTS;
+  if (m <= pts[0].x) return pts[0].y;
+  for (let i = 1; i < pts.length; i++) {
+    if (m <= pts[i].x) {
+      const a = pts[i - 1], b = pts[i];
+      const t = (m - a.x) / (b.x - a.x);
+      return a.y + t * (b.y - a.y);
+    }
+  }
+  return pts[pts.length - 1].y;
+}
+
+module.exports = { DIFFICULTIES, difficultyDef, difficultyMult, difficultyRewardMult, isDifficultyUnlocked };

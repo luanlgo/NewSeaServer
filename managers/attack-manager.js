@@ -148,7 +148,10 @@ class AttackManager {
       // Pausa aleatória entre ataques (800ms–2200ms) para que múltiplos ataques
       // disponíveis ao mesmo tempo não resultem sempre no mesmo ser escolhido primeiro
       npc._nextAttackTime = Date.now() + 800 + Math.random() * 1400;
-      if (npc.dead) return;
+      // Aborta se o NPC morreu OU já saiu do mapa (algumas mortes deletam o NPC
+      // do Map sem setar dead) — sem isto o telegraph "fantasma" ainda causa dano
+      // ~castTime depois de o jogador ter matado o NPC.
+      if (npc.dead || (this.pm?.npcs && !this.pm.npcs.has(npc.id))) return;
 
       if (multiTargets) {
         for (const t of multiTargets) {
@@ -220,6 +223,8 @@ class AttackManager {
         // Verifica morte do jogador
         if (p.hp <= 0 && !p.dead) {
           p.dead = true;
+          // Zona vermelha: qualquer morte (até pro kraken) dropa ruína saqueável
+          if (this.wreckManager) this.wreckManager.onPlayerDeath(p);
           this.addEvent({
             type:     'entity_dead',
             id:       p.id,

@@ -1,6 +1,6 @@
 // managers/world-boss-manager.js
 const { uid, rand, broadcast, sendTo } = require('../utils/helpers');
-const { WORLD_BOSS_DEF, MAP_DEFS, difficultyMult } = require('../constants');
+const { WORLD_BOSS_DEF, MAP_DEFS, difficultyMult, difficultyRewardMult } = require('../constants');
 const db = require('./db-manager');
 
 class WorldBossManager {
@@ -223,12 +223,15 @@ class WorldBossManager {
     
     const totalDmg = Math.max(1, [...dmgMap.values()].reduce((a, b) => a + b, 0));
     const baseDrops = Math.floor(def.dobraoMin + Math.random() * (def.dobraoMax - def.dobraoMin));
-    // Recompensa escala pela dificuldade média (não mais pela quantidade de kills).
-    const diffScale = boss.diffMult || 1;
+    // Recompensa escala pela METADE da dificuldade média (difficultyRewardMult).
+    const diffScale = difficultyRewardMult(boss.diffMult || 1);
     const totalDrops = Math.round(baseDrops * diffScale);
+    // XP total do World Boss (sem o rewardMult ×25 da raridade DEUS — seria XP
+    // absurdo). Só dificuldade × dano; ajuste def.xpPerKill em exploration.js.
+    const totalXp = Math.round((def.xpPerKill || 0) * diffScale);
 
     let killerName = '???';
-    
+
     for (const [playerId, dmg] of dmgMap.entries()) {
       const player = this.players.get(playerId);
       if (!player) continue;
@@ -240,14 +243,32 @@ class WorldBossManager {
       player.dobroes = (player.dobroes || 0) + drops;
       player.mapFragments = (player.mapFragments || 0) + frags;
 
+      // XP de mapa proporcional ao dano, com o talento de XP do jogador
+      const xpShare = totalXp > 0 ? Math.max(1, Math.round(totalXp * share)) : 0;
+      if (xpShare > 0) {
+        player.mapXp = (player.mapXp || 0) + Math.round(xpShare * (1 + (player.talentXpBonus || 0)));
+        const xpNeeded = (MAP_DEFS[player.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
+        if (xpNeeded && player.mapXp >= xpNeeded && MAP_DEFS[(player.mapLevel || 1) + 1]) {
+          if (!player._mapUnlockNotified) {
+            player._mapUnlockNotified = true;
+            sendTo(player.ws, { type: 'map_level_up', level: (player.mapLevel || 1) + 1, xpNeeded });
+          }
+        } else {
+          player._mapUnlockNotified = false;
+        }
+      }
+
       db.save(player, true).catch(e => console.error('WorldBoss save error:', e));
-      
+
       sendTo(player.ws, {
         type: 'currency_update',
         gold: player.gold,
         dobroes: player.dobroes,
         reward: { type: 'dobrao', amount: drops, share: Math.round(share * 100) },
         mapFragments: player.mapFragments,
+        mapXp: player.mapXp,
+        mapLevel: player.mapLevel || 1,
+        mapXpNeeded: (MAP_DEFS[player.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999,
       });
 
       if (playerId === killerId) killerName = player.name || playerId;

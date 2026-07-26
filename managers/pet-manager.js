@@ -41,6 +41,12 @@ const PET_DEFS = {
 // Raridade → chance de spawn % (soma < 100: o resto do roll não spawna nada)
 const SPAWN_CHANCE = { 0: 30, 1: 10, 2: 3, 3: 1 };
 
+// Raridade → chance de FALHAR a captura ao completar os 3min de foco (%).
+// Quanto mais raro o pet, mais fácil ele escapar no último momento. Ao falhar,
+// o progresso do capturador reinicia (ele pode tentar de novo). Comum 1% …
+// Lendário 10%.
+const CAPTURE_FAIL_PCT = { 0: 1, 1: 2, 2: 5, 3: 10 };
+
 // ── Constantes de balanceamento ───────────────────────────────────────────────
 const MAX_WILD_PETS     = 5;                    // pets selvagens no jogo TODO
 const RUIN_COOLDOWN_MS  = 2 * 60 * 60 * 1000;   // 2h após captura
@@ -622,8 +628,24 @@ class PetManager {
       if (wild.focusId && progressMs >= CAPTURE_TIME_MS) {
         const catcher = this.players.get(wild.focusId);
         if (catcher) {
-          this._completeCapture(catcher, wild);
-          continue;
+          const failPct = CAPTURE_FAIL_PCT[wild.rarity] ?? 0;
+          if (Math.random() * 100 < failPct) {
+            // Falhou — o pet escapa no último instante. Reinicia o progresso
+            // do capturador (segue focado, mas do zero) e avisa o cliente.
+            wild.focusStartAt = now;
+            sendTo(catcher.ws, {
+              type:   'pet_capture_failed',
+              wildId: wild.id,
+              petId:  wild.petId,
+              rarity: wild.rarity,
+              failPct,
+            });
+            console.log(`[Pet] ✋ ${catcher.name} FALHOU a captura de ${wild.petId} (${failPct}% chance) — recomeça`);
+            // cai no broadcast de estado abaixo (progresso volta a 0)
+          } else {
+            this._completeCapture(catcher, wild);
+            continue;
+          }
         }
       }
 

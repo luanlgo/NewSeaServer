@@ -63,6 +63,7 @@ const WORLD_BOSS_DEF = [
     dobraoMin:            500,
     dobraoMax:            600,
     mapFragments:         500,
+    xpPerKill:            5000,
     hullColor:            0x050505,
     sailColor:            0x220011,
     attacks:              ['cannon_shot', 'cannon_burst', 'poison_spit', 'ghost_soul_pillars'],
