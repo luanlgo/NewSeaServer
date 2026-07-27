@@ -555,6 +555,16 @@ class NPCManager {
         }
       }
 
+      // Boss `retaliateOnly` ainda em 'passive' (mapas de tutorial) ignora o
+      // jogador POR COMPLETO — sem alvo de combate ele cai no ramo de vagar.
+      // Antes só o ataque era bloqueado e ele continuava perseguindo, ficando a
+      // rodear o jogador sem fazer nada. Basta levar dano para virar 'aggressive'
+      // e voltar a engajar normalmente.
+      if (npc.isBoss && npc.retaliateOnly && npc.aggroState === 'passive') {
+        nearestForCombat = null;
+        npc.targetId = null;
+      }
+
       // Limpar zonas de perigo expiradas (feito uma vez por tick global, não por NPC,
       // mas é barato o suficiente aqui — lista pequena)
       if (this._dangerZones.length) {
