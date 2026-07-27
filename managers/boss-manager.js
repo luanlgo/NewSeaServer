@@ -90,6 +90,9 @@ class BossManager {
       moveState:    'idle',
       // ── Aggro ────────────────────────────────────────────────────────────────
       aggroState:   'passive',                       // 'passive' | 'aggressive'
+      // Boss que SÓ revida: nunca inicia combate, nem por proximidade. Usado nos
+      // mapas de tutorial (1 e 2) para o novato não ser atacado sem querer.
+      retaliateOnly: !!bossDef.retaliateOnly,
       _aggroRange:  (bossDef.aggroRange || 350),
       _aggroTime:   (bossDef.aggroTime  || 20) * 1000, // ms
       _proximityMap: new Map(),  // playerId → timestamp de entrada no raio
@@ -150,7 +153,7 @@ class BossManager {
     const dobraoMax = boss._dobraoMax || bossDef.dobraoMax || 10;
     const baseDrops = Math.floor(rand(dobraoMin, dobraoMax + 1));
     // Recompensa escala pela METADE da dificuldade do boss (difficultyRewardMult).
-    const diffScale = difficultyRewardMult(boss.diffMult || 1);
+    const diffScale = difficultyRewardMult((boss.diffMult || 1) / (boss.bloodMult || 1)) * (boss.bloodMult || 1);
     const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * diffScale);
 
     // XP de mapa do boss — proporcional ao dano, escala por raridade × dificuldade.
@@ -250,7 +253,7 @@ class BossManager {
     const dobraoMax  = boss._dobraoMax || bossDef.dobraoMax || 10;
     const baseDrops  = Math.floor(rand(dobraoMin, dobraoMax + 1));
     // Escala a recompensa pela METADE da dificuldade do boss (difficultyRewardMult).
-    const diffScale  = difficultyRewardMult(boss.diffMult || 1);
+    const diffScale  = difficultyRewardMult((boss.diffMult || 1) / (boss.bloodMult || 1)) * (boss.bloodMult || 1);
     const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * diffScale);
 
     // ── Calcular share de cada jogador pelo dano causado ─────────────────────

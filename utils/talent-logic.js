@@ -37,6 +37,8 @@ function applyTalentBonuses(player, talentDefs) {
   player.talentGoldBonus    = (t.riqueza     || 0) * (talentDefs.riqueza?.perLevel     || 3)   / 100;
   player.talentDobraoBonus  = (t.ganancioso  || 0) * (talentDefs.ganancioso?.perLevel  || 3)   / 100;
   player.talentXpBonus      = (t.mestre      || 0) * (talentDefs.mestre?.perLevel      || 5)   / 100;
+  // Chance EXTRA de crítico de relíquia (soma à base). 5 níveis × 5% = +25%.
+  player.talentRelicCritBonus = (t.crit_relic || 0) * (talentDefs.crit_relic?.perLevel || 5) / 100;
 }
 
 /**

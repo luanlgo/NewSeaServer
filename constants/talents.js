@@ -12,6 +12,7 @@ const TALENT_DEFS = {
   riqueza:      { name: 'Pilhador',                icon: '💰',  max: 5, perLevel: 3,   stat: 'gold_drop',     desc: '+3% de drop em ouro por nível'           },
   ganancioso:   { name: 'Corsário Ganancioso',     icon: '🟡',  max: 5, perLevel: 3,   stat: 'dobrao_drop',   desc: '+3% de chance de drop em dobrões/nível'  },
   mestre:       { name: 'Estudioso',               icon: '📚',  max: 5, perLevel: 5,   stat: 'xp_drop',       desc: '+5% de XP ganho por nível'               },
+  crit_relic:   { name: 'Vidente',                 icon: '🔮',  max: 5, perLevel: 5,   stat: 'relic_crit',    desc: '+5% de chance de crítico de relíquia/nível' },
   slot_reliquia:{ name: 'Guardião das Relíquias',  icon: '🏺',  max: 3, perLevel: 20,  stat: 'mana_regen',    desc: '+20% de velocidade de recuperação de mana por nível' },
 };
 

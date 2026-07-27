@@ -2,6 +2,7 @@
 const { uid, rand, clamp, dist2D } = require('../utils/helpers');
 const { pushOutOfIslands, pushOutOfWalls } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, NPC_COUNT, MAP_DEFS, WORLD_BOSS_DEF, HIT_RADIUS, difficultyMult } = require('../constants');
+const { bloodMoonFactor } = require('../utils/world-state');
 
 // ── Equilíbrio de aggro dos NPCs normais (navios piratas / monstros) ─────────
 // Bosses ignoram estes limites (perseguem sem distância máxima).
@@ -412,7 +413,13 @@ class NPCManager {
       const noRecentDamage = !npc.lastDamageTime || (now - npc.lastDamageTime > 20000);
       if (nearest && nearest.id !== npc.targetId && noRecentDamage && !npc.isBoss && !npc.isFleetShip) {
         const diffIdx  = nearest.difficulty || 0;
-        const diffMult = difficultyMult(diffIdx);
+        // Lua de Sangue multiplica os atributos POR CIMA da dificuldade do alvo.
+        // O fator fica guardado no NPC (bloodMult) porque a recompensa precisa
+        // dele separado: difficultyRewardMult() satura no último tier da tabela,
+        // então passar o total por ela anularia o bônus nas dificuldades altas.
+        const bloodMult = bloodMoonFactor();
+        const diffMult  = difficultyMult(diffIdx) * bloodMult;
+        npc.bloodMult   = bloodMult;
         if (diffMult !== npc._scaledForDiff) {
           this._rescaleNPC(npc, diffMult, diffIdx);
           this._broadcast({
@@ -435,7 +442,10 @@ class NPCManager {
         if (outOfCombat) {
           if (nearest && nearest.id !== npc.targetId) {
             // Fora de combate e novo target em range → rescala para a dificuldade dele
-            const diffMult = difficultyMult(nearest.difficulty || 0);
+            // (× Lua de Sangue, quando ativa — mesma regra dos NPCs comuns)
+            const bossBlood = bloodMoonFactor();
+            const diffMult  = difficultyMult(nearest.difficulty || 0) * bossBlood;
+            npc.bloodMult   = bossBlood;
             if (diffMult !== npc._scaledForDiff) {
               this._rescaleBoss(npc, diffMult);
               this._broadcast({
@@ -449,6 +459,7 @@ class NPCManager {
             }
           } else if (!nearest && (npc._scaledForDiff || 1) !== 1) {
             // Fora de combate e sem ninguém por perto → reset para dificuldade base
+            npc.bloodMult = 1;
             this._rescaleBoss(npc, 1);
             this._broadcast({
               type: 'entity_rescale',
@@ -580,22 +591,27 @@ class NPCManager {
       // pegajoso (AGGRO/DEAGGRO) + leash do spawn — ver bloco padrão abaixo.
       if (!dodging) {
 
-        // ── Melee boss (humanóide) — aggro + máquina de estados ─────────────────
+        // ── Aggro por dano recebido — vale para TODO boss, melee ou não ─────────
+        // Antes isto vivia só dentro do ramo melee. Os bosses dos mapas 1 e 2 não
+        // definem moveType, então nunca saíam de 'passive' — e como o caminho
+        // deles (attackManager.tryAttack) não olhava aggroState, atacavam sempre.
+        // Um boss `retaliateOnly` depende exclusivamente deste gatilho para acordar.
+        if (npc.isBoss && npc.aggroState === 'passive') {
+          const dmgT = npc.lastDamageTime || 0;
+          if (dmgT > (npc._lastCheckedDmgTime || 0)) {
+            npc.aggroState = 'aggressive';
+            npc._proximityMap?.clear();
+            console.log(`👹 Boss map${npc.mapLevel} → AGRESSIVO (dano recebido)`);
+          }
+          npc._lastCheckedDmgTime = dmgT;
+        }
+
+        // ── Melee boss (humanóide) — aggro por proximidade + máquina de estados ──
         if (npc.isBoss && npc.moveType === 'melee') {
 
-          // — Aggro por dano recebido (checa lastDamageTime sem precisar alterar projectile-manager)
-          if (npc.aggroState === 'passive') {
-            const dmgT = npc.lastDamageTime || 0;
-            if (dmgT > npc._lastCheckedDmgTime) {
-              npc.aggroState = 'aggressive';
-              npc._proximityMap?.clear();
-              console.log(`👹 Boss map${npc.mapLevel} → AGRESSIVO (dano recebido)`);
-            }
-            npc._lastCheckedDmgTime = dmgT;
-          }
-
-          // — Aggro por proximidade (20 s contínuos dentro do raio)
-          if (npc.aggroState === 'passive' && npc._proximityMap) {
+          // — Aggro por proximidade (20 s contínuos dentro do raio). Boss que só
+          //   revida ignora este gatilho: chegar perto nunca inicia o combate.
+          if (npc.aggroState === 'passive' && !npc.retaliateOnly && npc._proximityMap) {
             for (const [pid, p] of playersMap) {
               if (p.dead) continue;
               const d = dist2D(npc, p);
@@ -768,7 +784,12 @@ class NPCManager {
             }
           } else if (this.attackManager) {
             // ── Monstros: sistema ATTACK_DEFS (telegraph + AoE) ──────────────
-            this.attackManager.tryAttack(npc, nearestForCombat, [...players.values()], this.zoneLevel);
+            // Boss `retaliateOnly` (mapas de tutorial) não inicia ataque enquanto
+            // ninguém o tiver acertado — só reage depois de levar dano.
+            const _passiveBoss = npc.isBoss && npc.retaliateOnly && npc.aggroState === 'passive';
+            if (!_passiveBoss) {
+              this.attackManager.tryAttack(npc, nearestForCombat, [...players.values()], this.zoneLevel);
+            }
           }
 
           // Ao usar um ataque (cast de monstro), o NPC desacelera para concentrar a mira

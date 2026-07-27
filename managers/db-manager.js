@@ -179,6 +179,7 @@ class DBManager {
              pet_relics=?,
              pet_food=?,
              tutorial_state=?,
+             afk_until=?,
              last_seen=NOW()
          WHERE name=?`,
         [
@@ -226,6 +227,7 @@ class DBManager {
           JSON.stringify(player.petRelics   || {}),
           Number(player.inventory?.uva || 0),   // comida de pet (uva)
           player.tutorialState || 0,
+          player.afkTraining ? (player.afkUntil || null) : null,
           player.name, // WHERE name=?
         ]
       );
@@ -469,6 +471,12 @@ class DBManager {
       "ALTER TABLE players ADD COLUMN secret_hash   VARCHAR(64) DEFAULT NULL",
       // ── Tutorial (0=pendente, 1=foguete concedido, 2=completo) ────────────
       "ALTER TABLE players ADD COLUMN tutorial_state TINYINT NOT NULL DEFAULT 0",
+      // Fim do treino AFK (ms epoch). Sem isto o estado do treino vivia só em
+      // memória: um restart do servidor deixava o jogador preso no mapa 5 —
+      // a torre continuava atirando (só olha mapLevel), mas o servidor não o
+      // considerava mais em treino, então nada de afk_started/expiração e as
+      // horas pagas eram perdidas. afkTraining é derivado desta coluna.
+      "ALTER TABLE players ADD COLUMN afk_until BIGINT NULL",
       // ── Conta (cadastro com senha + email + sexo — Session 13) ────────────
       "ALTER TABLE players ADD COLUMN password_hash   VARCHAR(255) DEFAULT NULL",
       "ALTER TABLE players ADD COLUMN email           VARCHAR(255) DEFAULT NULL",
@@ -564,6 +572,10 @@ class DBManager {
       petRelics:    row.pet_relics   || {},
       petFood:      Number(row.pet_food || 0),
       tutorialState: row.tutorial_state || 0,
+      // Treino AFK: `afkTraining` é derivado — se o prazo já passou o jogador
+      // volta como não-treinando e o tick de expiração o devolve ao mapa.
+      afkUntil:     row.afk_until ? Number(row.afk_until) : null,
+      afkTraining:  !!(row.afk_until && Number(row.afk_until) > Date.now()),
       // ── Auth ────────────────────────────────────────────────────────────
       secretHash:   row.secret_hash  || null,
       passwordHash: row.password_hash || null,
@@ -706,6 +718,7 @@ class DBManager {
         hp=?, current_ammo=?, bank_gold=?, bank_unlocked=?,
         bonus_inventory=?, active_bonus_ship_stats=?,
         tutorial_state=?,
+        afk_until=?,
         last_seen=NOW()
       WHERE name=?`;
 
@@ -754,6 +767,7 @@ class DBManager {
           JSON.stringify(p.bonusInventory || []),
           p.activeBonusShipStats ? JSON.stringify(p.activeBonusShipStats) : null,
           p.tutorialState || 0,
+          p.afkTraining ? (p.afkUntil || null) : null,
           p.name, // WHERE name=?
         ]);
       }));

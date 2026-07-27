@@ -51,6 +51,9 @@ MAP_DEFS[1] = {
   },
   boss: {
     name:        'Giant Crab Octopus',
+    // Mapa de tutorial: o boss so revida. Passar perto nao inicia o combate —
+    // ele so ataca depois de levar dano do jogador.
+    retaliateOnly: true,
     baseHp:      5000,
     baseDamage:  200,
     regenPerSec:   50,
@@ -133,6 +136,8 @@ MAP_DEFS[2] = {
   },
   boss: {
     name:        'Abyssal Sovereign',
+    // Mapa de tutorial: o boss so revida (ver mapa 1).
+    retaliateOnly: true,
     baseHp:      20000,
     baseDamage:  800,
     regenPerSec:   80,

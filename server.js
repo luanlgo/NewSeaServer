@@ -169,6 +169,7 @@ const {
   validateBuyTalent:  _validateBuyTalent,
 } = require('./utils/talent-logic');
 const { calcMaxCannons: _calcMaxCannons, trimCannons: _trimCannons } = require('./utils/combat-calc');
+const worldState = require('./utils/world-state');
 const { stringify } = require('querystring');
 const { BONUS_DUNGEON_DEFS, BONUS_NPC_DEFS, rollBonusShip } = require('./constants/bonus_dungeons');
 
@@ -714,6 +715,63 @@ let lastTick = Date.now();
 const DAY_DURATION_S       = 1200; // 20 min reais = 1 dia de jogo
 let worldTimeHour          = 12.0; // hora atual (0.0 – 24.0)
 let _worldTimeBroadcastAcc = 0;    // acumulador em ms para o broadcast periódico
+
+// ── Lua de Sangue ────────────────────────────────────────────────────────────
+// Evento GLOBAL (não por mapa): sorteado uma única vez no anoitecer, com 1% de
+// chance, e válido até o amanhecer. Durante a lua, NPCs e bosses nascem com os
+// atributos multiplicados por bloodMoonMult (2× ou 3×) POR CIMA da dificuldade
+// do jogador, e a recompensa é multiplicada pelo mesmo fator.
+const BLOOD_MOON_CHANCE = 0.01;
+const NIGHT_START_HOUR  = 19.0;   // anoitecer: momento do sorteio
+const NIGHT_END_HOUR    = 5.0;    // amanhecer: fim garantido do evento
+let bloodMoonActive = false;
+let bloodMoonMult   = 1;
+
+/** true quando a hora do mundo está dentro da faixa noturna (cruza a meia-noite). */
+function isNightHour(h) {
+  return h >= NIGHT_START_HOUR || h < NIGHT_END_HOUR;
+}
+
+/**
+ * Sorteia/encerra a Lua de Sangue nas viradas do ciclo. Detecta a passagem POR
+ * cima do limiar (prev → cur) em vez de testar só a hora atual: assim o sorteio
+ * roda exatamente uma vez por noite, e não a cada tick da faixa noturna.
+ */
+function _updateBloodMoon(prevHour, curHour) {
+  const crossed = (from, to, mark) =>
+    (from < mark && to >= mark) || (from > to && (from < mark || to >= mark));
+
+  if (!bloodMoonActive && crossed(prevHour, curHour, NIGHT_START_HOUR)) {
+    if (Math.random() < BLOOD_MOON_CHANCE) {
+      bloodMoonActive = true;
+      bloodMoonMult   = Math.random() < 0.5 ? 2 : 3;
+      worldState.setBloodMoon(true, bloodMoonMult);
+      console.log(`🔴 LUA DE SANGUE nesta noite! Multiplicador ${bloodMoonMult}×`);
+      _broadcastBloodMoon();
+    }
+  } else if (bloodMoonActive && crossed(prevHour, curHour, NIGHT_END_HOUR)) {
+    bloodMoonActive = false;
+    bloodMoonMult   = 1;
+    worldState.setBloodMoon(false, 1);
+    console.log('🌅 A Lua de Sangue terminou.');
+    _broadcastBloodMoon();
+  }
+}
+
+/** Avisa na hora (sem esperar o broadcast de 30 s) — a virada precisa ser nítida. */
+function _broadcastBloodMoon() {
+  const msg = JSON.stringify({
+    type: 'world_time', hour: worldTimeHour, bloodMoon: bloodMoonActive,
+  });
+  wss.clients.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  });
+}
+
+/** Multiplicador de atributos/recompensa do evento (1 quando não há lua). */
+function bloodMoonFactor() {
+  return bloodMoonActive ? bloodMoonMult : 1;
+}
 // ── Skill XP helper ─────────────────────────────────────────────────────────
 function xpForLevel(n) { return 50 * n * n; }
 
@@ -728,8 +786,16 @@ function grantSkillXp(player, skill, amount, wss) {
     sk.level++;
     leveled = true;
   }
-  // Broadcast XP gain to that player
-  sendTo(player.ws, { type: 'skill_xp', skill, amount, level: sk.level });
+  // Broadcast XP gain to that player. Mandar `xp`/`xpNeeded` junto é o que
+  // permite a barra do Capitão → Habilidades andar em tempo real; sem isso o
+  // cliente só conseguia atualizar o nível e a barra ficava congelada no valor
+  // que veio no init (só "andava" depois de relogar).
+  sendTo(player.ws, {
+    type: 'skill_xp', skill, amount,
+    level:    sk.level,
+    xp:       sk.xp,
+    xpNeeded: xpForLevel(sk.level),
+  });
   if (leveled) {
     // Recalculate player multipliers based on new skill level
     applySkillMultipliers(player);
@@ -872,11 +938,15 @@ setInterval(() => {
   wreckManager.update(now);
 
   // ── World time — avança e transmite periodicamente ────────────────────────
+  const _prevHour = worldTimeHour;
   worldTimeHour = (worldTimeHour + dt * 24.0 / DAY_DURATION_S) % 24.0;
+  _updateBloodMoon(_prevHour, worldTimeHour);
   _worldTimeBroadcastAcc += dt * 1000;
   if (_worldTimeBroadcastAcc >= 30000) {
     _worldTimeBroadcastAcc = 0;
-    const wtMsg = JSON.stringify({ type: 'world_time', hour: worldTimeHour });
+    const wtMsg = JSON.stringify({
+      type: 'world_time', hour: worldTimeHour, bloodMoon: bloodMoonActive,
+    });
     wss.clients.forEach(ws => {
       if (ws.readyState === WebSocket.OPEN) ws.send(wtMsg);
     });
@@ -1207,6 +1277,7 @@ setInterval(() => {
       if (healed > 0) {
         sendTo(p.ws, { type: 'heal', amount: healed, hp: p.hp, maxHp: p.maxHp,
                        targetId: p.id, x: p.x, z: p.z, source: 'zone' });
+        grantSkillXp(p, 'vida', Math.max(1, Math.floor(healed / 10)), wss);
       }
       break; // uma zona por tick é suficiente
     }
@@ -1235,6 +1306,11 @@ setInterval(() => {
       const healed = p.hp - prev;
       if (healed > 0) {
         sendTo(p.ws, { type: 'heal', amount: healed, hp: p.hp, source: 'healer' });
+        // Vitalidade sobe "ao ser curado" (é o que a skill promete no painel).
+        // O curandeiro costuma ser a MAIOR fonte de cura do jogador e não dava
+        // XP nenhum — no campo de treino ele era a única cura ativa e a skill
+        // simplesmente não subia. Mesma proporção da relíquia de cura.
+        grantSkillXp(p, 'vida', Math.max(1, Math.floor(healed / 10)), wss);
       }
     }
   });
@@ -2399,6 +2475,12 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        case 'chat_send': {
+          if (!player) break;
+          handleChatSend(player, msg);
+          break;
+        }
+
         // ── Upgrade de canhão C6 (por instância no inventário) ───────────────
         case 'buy_cannon_upgrade': {
           if (!player) break;
@@ -2793,6 +2875,13 @@ async function handleLogin(ws, msg) {
   // o foguete de brinde, que é recompensa do primeiro abate de novato.
   player.tutorialState = saved.tutorialState || 0;
   if (player.tutorialState === 0 && player.npcKills >= 20) player.tutorialState = 2;
+  // Treino AFK: sem isto o estado só existia em memória e um restart do servidor
+  // deixava o jogador preso no mapa 5 — a torre seguia atirando (só checa
+  // mapLevel), mas sem afkTraining não havia afk_started nem expiração, e o
+  // cliente nunca ligava o auto-ataque/auto-relíquia. _afkFromMap não é
+  // persistido: o retorno cai no default (mapa 4), que é de onde se compra treino.
+  player.afkUntil      = saved.afkUntil || null;
+  player.afkTraining   = !!saved.afkTraining;
   player.gender        = saved.gender || '';
   player.email         = saved.email  || '';
   player.mapXp         = saved.mapXp         || 0;
@@ -2907,6 +2996,7 @@ async function handleLogin(ws, msg) {
     type:             'init',
     serverNow:        Date.now(),   // client uses this to compensate clock skew
     worldTime:        worldTimeHour, // hora atual do jogo (0–24) para sincronizar dia/noite
+    bloodMoon:        bloodMoonActive, // entrar no meio do evento já mostra a noite vermelha
     id:               player.id,
     hp:               player.hp,
     maxHp:            player.maxHp,
@@ -3579,6 +3669,50 @@ function handleBuyAfkTime(player, msg) {
   });
 }
 
+// ── Chat ─────────────────────────────────────────────────────────────────────
+// Três canais: 'global' (todo mundo online), 'map' (mesmo oceano) e 'party'
+// (grupo, em qualquer mapa). O alcance de 'party' usa partyManager.areAllies()
+// em vez de ler as estruturas internas do manager — é a mesma checagem que a
+// bala de cura já usa, e não depende do formato interno das parties.
+const CHAT_MAX_LEN     = 200;
+const CHAT_MIN_GAP_MS  = 700;   // anti-flood: 1 mensagem a cada 0,7 s por jogador
+const CHAT_CHANNELS    = ['global', 'map', 'party'];
+
+function handleChatSend(player, msg) {
+  const channel = CHAT_CHANNELS.includes(msg.channel) ? msg.channel : 'map';
+
+  let text = typeof msg.text === 'string' ? msg.text.trim() : '';
+  if (!text) return;
+  // Remove quebras de linha e controles — o cliente renderiza em label única.
+  text = text.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, CHAT_MAX_LEN);
+  if (!text) return;
+
+  const now = Date.now();
+  if (now - (player._lastChatAt || 0) < CHAT_MIN_GAP_MS) {
+    sendTo(player.ws, { type: 'chat_error', reason: 'flood' });
+    return;
+  }
+  player._lastChatAt = now;
+
+  const out = JSON.stringify({
+    type:    'chat_msg',
+    channel,
+    from:    player.name,
+    fromId:  player.id,
+    text,
+    ts:      now,
+  });
+
+  const mapLvl = player.mapLevel || 1;
+  players.forEach(p => {
+    if (!p.ws || p.ws.readyState !== 1) return;
+    if (channel === 'map'   && (p.mapLevel || 1) !== mapLvl) return;
+    if (channel === 'party' && p.id !== player.id
+        && !(partyManager && partyManager.areAllies(player.id, p.id))) return;
+    p.ws.send(out);
+  });
+}
+
 function handleLeaveAfkTraining(player) {
   if (player.mapLevel !== 5) return;
   player.afkTraining   = false;
@@ -4235,6 +4369,23 @@ function shipFirepower(player) {
   return baseDmg * nCannons * skillDmg * talentDmg * islandDmg;
 }
 
+// ── Crítico de relíquia ──────────────────────────────────────────────────────
+// 10% base + talento Vidente (+5%/nível, até +25%) = 35% no máximo. Um crítico
+// DOBRA o poder do efeito: dano, cura e durações/CC. O sorteio acontece UMA vez
+// por uso (em handleUseRelic) e fica em player._relicCrit até o efeito terminar
+// de ser montado — assim as várias partes de uma mesma relíquia (ex.: o gelo,
+// que tem zona + stun) concordam entre si em vez de sortear cada uma.
+const RELIC_CRIT_BASE = 0.10;
+
+function rollRelicCrit(player) {
+  return Math.random() < (RELIC_CRIT_BASE + (player.talentRelicCritBonus || 0));
+}
+
+// Multiplicador do efeito conforme o crítico sorteado para o uso atual.
+function relicCritMult(player) {
+  return player._relicCrit ? 2 : 1;
+}
+
 // Dano de uma relíquia = fração (damagePct) do poder de fogo do barco, com os
 // mesmos bônus de relíquia (talento/skill). Se a relíquia não define damagePct,
 // cai no dano fixo antigo (relicDef.damage) — mantém compatibilidade.
@@ -4242,7 +4393,9 @@ function relicDamageFor(player, relicDef) {
   const pct   = relicDef.damagePct;
   const raw   = (pct != null) ? shipFirepower(player) * pct : (relicDef.damage || 0);
   const bonus = 1 + (player.talentRelicBonus || 0) + (player.skillRelicBonus || 0);
-  return Math.max(1, Math.round(raw * bonus));
+  // O crítico entra aqui para cobrir TODAS as relíquias de dano de uma vez
+  // (raio, foguete, meteoro, aura, arpão e o uso pelo pet).
+  return Math.max(1, Math.round(raw * bonus * relicCritMult(player)));
 }
 
 // Alvo válido para dano/CC de uma relíquia lançada por `caster`. Espelha o guard
@@ -4328,17 +4481,31 @@ function handleUseRelic(player, msg) {
     return;
   }
   player.mana = Math.max(0, player.mana - manaCost);
+  // Sorteia o crítico UMA vez para este uso. Fica em player._relicCrit e é lido
+  // por relicCritMult()/relicDamageFor() ao montar o efeito logo abaixo.
+  player._relicCrit = rollRelicCrit(player);
+  const critMult = relicCritMult(player);
+  // Durações e CC dobram junto: "poder do efeito" não é só dano — um escudo ou
+  // um stun crítico precisa durar o dobro para o crítico valer em toda relíquia.
+  const critDur  = (ms) => Math.round((ms || 0) * critMult);
+  // Campo de Treino: não há NPC para acertar, então todos os grants de XP de
+  // relíquia espalhados abaixo (que dependem de npcHits > 0) ficam em zero e o
+  // Arcanista nunca subia treinando. Aqui o XP vem do próprio ato de usar,
+  // proporcional ao custo de mana — o regen (0,5/s) já limita o ritmo sozinho.
+  if (MAP_DEFS[player.mapLevel]?.isTrainingMap) {
+    grantSkillXp(player, 'reliquia', Math.max(1, manaCost * 4), wss);
+  }
   if (relicDef.castTime) player.castExpires = Date.now() + relicDef.castTime; // cast penalty
 
   // Apply effect
-  let effectPayload = { type: 'relic_used', instanceId: instanceId2, effect: relicDef.effect, mana: player.mana, maxMana: player.maxMana };
+  let effectPayload = { type: 'relic_used', instanceId: instanceId2, effect: relicDef.effect, mana: player.mana, maxMana: player.maxMana, crit: player._relicCrit };
 
   if (relicDef.effect === 'heal_ship') {
     // Cura escala com o HP máximo (healPct) em vez de valor fixo — sempre
     // relevante independente do tamanho do barco. Fallback para healAmount fixo.
-    const healValue = (relicDef.healPct != null)
+    const healValue = critMult * ((relicDef.healPct != null)
       ? Math.round(player.maxHp * relicDef.healPct)
-      : (relicDef.healAmount || 0);
+      : (relicDef.healAmount || 0));
     const healed = Math.min(healValue, player.maxHp - player.hp);
     player.hp = Math.min(player.maxHp, player.hp + healValue);
     effectPayload.hp    = player.hp;
@@ -4350,17 +4517,20 @@ function handleUseRelic(player, msg) {
       type:     'relic_effect',
       casterId: player.id,
       effect:   'heal_ship',
+      crit:     player._relicCrit,
     }, player.mapLevel || 1);
 
   } else if (relicDef.effect === 'invincible') {
-    player.relicInvincibleExpires = now2 + relicDef.duration;
-    effectPayload.duration = relicDef.duration;
+    const invMs = critDur(relicDef.duration);
+    player.relicInvincibleExpires = now2 + invMs;
+    effectPayload.duration = invMs;
     // Broadcast para todos verem a bolha de invencibilidade
     addEvent({
       type:     'relic_effect',
       casterId: player.id,
       effect:   'invincible',
-      duration: relicDef.duration,
+      duration: invMs,
+      crit:     player._relicCrit,
     }, player.mapLevel || 1);
 
   } else if (relicDef.effect === 'lightning') {
@@ -4374,6 +4544,7 @@ function handleUseRelic(player, msg) {
     //    do relâmpago aparecia para jogadores em TODOS os mapas.
     addEvent({
       type:     'lightning_cast',
+      crit:     player._relicCrit,
       casterId: player.id,
       targetX:  lx,
       targetZ:  lz,
@@ -4486,6 +4657,7 @@ function handleUseRelic(player, msg) {
     //    o foguete aparecia em todos os mapas).
     addEvent({
       type:     'rocket_cast',
+      crit:     player._relicCrit,
       casterId: player.id,
       fromX:    player.x,
       fromZ:    player.z,
@@ -4570,22 +4742,25 @@ function handleUseRelic(player, msg) {
     effectPayload.castMs  = castMs;
 
   } else if (relicDef.effect === 'speed_boost') {
-    player.relicSpeedExpires = now2 + relicDef.duration;
+    const spdMs = critDur(relicDef.duration);
+    player.relicSpeedExpires = now2 + spdMs;
     player.relicSpeedBonus   = relicDef.speedBonus;
-    effectPayload.duration   = relicDef.duration;
+    effectPayload.duration   = spdMs;
     // Broadcast para todos verem o rastro de vento no barco
     addEvent({
       type:     'relic_effect',
       casterId: player.id,
       effect:   'speed_boost',
-      duration: relicDef.duration,
+      duration: spdMs,
+      crit:     player._relicCrit,
     }, player.mapLevel || 1);
 
   } else if (relicDef.effect === 'attract') {
     // Attract all NPCs within range toward this player for `duration` ms
-    player.relicAttractExpires = now2 + relicDef.duration;
+    const attMs = critDur(relicDef.duration);
+    player.relicAttractExpires = now2 + attMs;
     player.relicAttractRange   = relicDef.range;
-    effectPayload.duration     = relicDef.duration;
+    effectPayload.duration     = attMs;
     effectPayload.range        = relicDef.range;
     // Broadcast attract event só para clientes do mesmo mapa
     addEvent({
@@ -4594,7 +4769,8 @@ function handleUseRelic(player, msg) {
       x:        player.x,
       z:        player.z,
       range:    relicDef.range,
-      duration: relicDef.duration,
+      duration: attMs,
+      crit:     player._relicCrit,
     }, player.mapLevel || 1);
 
   } else if (relicDef.effect === 'meteor') {
@@ -4665,7 +4841,7 @@ function handleUseRelic(player, msg) {
     const relicDmg = relicDamageFor(player, relicDef);
 
     // Single meteor — show incoming indicator, land after castMs
-    addEvent({ type: 'meteor_incoming', x: pos.x, z: pos.z, radius: baseRadius, castMs }, player.mapLevel);
+    addEvent({ type: 'meteor_incoming', x: pos.x, z: pos.z, radius: baseRadius, castMs, crit: player._relicCrit }, player.mapLevel);
     setTimeout(() => {
       if (player.dead) return;
       const hits = applyMeteorHit(pos, baseRadius, relicDmg);
@@ -4725,14 +4901,16 @@ function handleUseRelic(player, msg) {
     // Zona circular: slow instantâneo em quem está dentro; quem AINDA
     // estiver dentro quando o fill completar (zoneMs) congela por stunMs.
     const ICE_RADIUS = relicDef.radius || 40;
-    const iceZoneMs  = relicDef.zoneMs || 2000;
-    const iceStunMs  = relicDef.stunMs || 2000;
+    const iceZoneMs  = relicDef.zoneMs || 2000;   // tempo de fill: NÃO dobra, senão
+                                                  // o crítico daria MAIS tempo de fuga
+    const iceStunMs  = critDur(relicDef.stunMs || 2000);
     const gx = rTx != null ? rTx : player.x;
     const gz = rTz != null ? rTz : player.z;
 
     // 1. Avisa TODOS os clientes: zona no chão com fill até o stun
     addEvent({
       type:     'ice_cast',
+      crit:     player._relicCrit,
       casterId: player.id,
       targetX:  gx,
       targetZ:  gz,
@@ -4826,6 +5004,7 @@ function handleUseRelic(player, msg) {
     // 1. Broadcast IMEDIATO — todo mundo no mapa vê a marcação subindo
     addEvent({
       type:     'stone_wall_cast',
+      crit:     player._relicCrit,
       casterId: player.id,
       targetX:  wx, targetZ: wz, rot: wallRot,
       wallLength: wallLen, wallThickness: wallThick,
@@ -4873,7 +5052,7 @@ function handleUseRelic(player, msg) {
     const H_RADIUS = relicDef.hitRadius    || 14;
     const H_TRAVEL = relicDef.travelMs     || 500;
     const H_STOP   = relicDef.pullStopDist || 30;
-    const H_STUN   = relicDef.stunMs       || 800;
+    const H_STUN   = critDur(relicDef.stunMs || 800);
 
     // Direção do arremesso (fallback: proa do navio)
     let hdx = (rTx != null ? rTx : player.x) - player.x;
@@ -4887,6 +5066,7 @@ function handleUseRelic(player, msg) {
     // 1. Broadcast IMEDIATO — todo mundo vê o arpão voando (e pode desviar)
     addEvent({
       type:     'harpoon_cast',
+      crit:     player._relicCrit,
       casterId: player.id,
       fromX:    hx0, fromZ: hz0,
       targetX:  hEndX, targetZ: hEndZ,
@@ -5020,6 +5200,8 @@ function handleUseRelic(player, msg) {
     // Activa uma aura ao redor do barco que pulsa dano em NPCs próximos
     // Dano por tick da aura também escala com o poder de fogo (damagePct por tick).
     const auraTickDmg           = relicDamageFor(player, relicDef);
+    // A duração NÃO dobra no crítico: o dano por tick já dobrou acima, e dobrar
+    // os dois daria 4× de dano total — desproporcional frente às outras relíquias.
     player.relicAuraExpires     = now2 + (relicDef.duration || 20000);
     player.relicAuraRange       = relicDef.range        || 80;
     player.relicAuraDamage      = auraTickDmg;
@@ -5032,6 +5214,7 @@ function handleUseRelic(player, msg) {
     // Broadcast para todos verem a aura no barco desse jogador
     addEvent({
       type:     'aura_start',
+      crit:     player._relicCrit,
       playerId: player.id,
       range:    player.relicAuraRange,
       duration: relicDef.duration,

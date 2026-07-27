@@ -566,7 +566,12 @@ class ProjectileManager {
     // a dificuldade pouco antes de matar para inflar a recompensa.
     // Recompensa escala pela METADE dos atributos (difficultyRewardMult).
     const diffMult   = npc.diffMult || 1;
-    const rewardMult = difficultyRewardMult(diffMult);
+    // Lua de Sangue: a recompensa é a da dificuldade REAL do jogador multiplicada
+    // pelo fator do evento. Não dá para jogar o total em difficultyRewardMult()
+    // porque ela satura no último tier (mult 10 → 5): no Extremo, uma lua 3× daria
+    // inimigos 30× mais fortes e exatamente a mesma recompensa de uma noite comum.
+    const bloodMult  = npc.bloodMult || 1;
+    const rewardMult = difficultyRewardMult(diffMult / bloodMult) * bloodMult;
 
     if (killer) {
       killer.npcKills = (killer.npcKills || 0) + 1;
