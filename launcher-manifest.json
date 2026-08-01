@@ -1,25 +1,25 @@
 {
-    "version":  "0.1.17",
-    "date":  "2026-07-26",
+    "version":  "0.1.18",
+    "date":  "2026-08-01",
     "changelog":  [
-                      "[v0.1.17] - 2026-07-26",
+                      "[v0.1.18] - 2026-08-01",
+                      "feat(ataques): 3 mecanicas de boss que nao se resolvem desviando",
+                      "fix(ranking): ordenar progresso por XP acumulado, nao pelo mapa atual",
+                      "chore(grupo,build): grupo maximo de 4 e recompensa so no mapa da kill",
+                      "feat(mobs,boss): novos modelos de monstro nos mapas 1-4 e 6 + boss passivo nao persegue",
+                      "feat(lua-de-sangue,chat,reliquias,treino): evento noturno, chat de 3 canais e correcoes de XP",
+                      "fix(reliquias): respeitar zona PvE/mapa e escalar dano com o poder de fogo real",
+                      "release: v0.1.17",
                       "release: v0.1.16",
-                      "feat(balance,clima,combate): ajustes de playtest ÔÇö clima sincronizado, boss XP, miss├Áes, runas",
-                      "fix(publicar): git pull do manifest no servidor roda em TODA publica├º├úo",
-                      "release: v0.1.15",
-                      "release: v0.1.14",
-                      "feat(auth,missoes,tutorial): cadastro com senha, barco de miss├Áes e onboarding guiado",
-                      "release: v0.1.13",
-                      "feat(pets,relics): sistema de pets v2, rel├¡quias de CC e wall-manager",
-                      "release: v0.1.12",
-                      "feat(mapas): novos modelos de ilha + colis├úo por formas (jogador e NPCs)"
+                      "feat(balance,clima,combate): ajustes de playtest — clima sincronizado, boss XP, missões, runas",
+                      "fix(publicar): git pull do manifest no servidor roda em TODA publicação"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.17/SeaOfCode.exe",
-                      "sha256":  "03f21a8c9a36202500f893986592fd416773297bddec1663921d833d99214520",
-                      "size":  623755152
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.18/SeaOfCode.exe",
+                      "sha256":  "e2add9283028a0ed9c5324769154a91399e6cdc9b339f835331d2d5398262599",
+                      "size":  725994688
                   }
               ]
 }
