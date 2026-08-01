@@ -643,6 +643,12 @@ class NPCManager {
           // — Verificar/iniciar ataque especial (melee boss)
           if (npc.aggroState === 'aggressive' && !npc._currentCast && nearestForCombat) {
             for (const atk of (npc.attacks || [])) {
+              // `attacks` aceita DOIS formatos no mesmo array: objeto = cast
+              // multi-fase deste laço (ex.: emerge da Viúva); string = id de
+              // ATTACK_DEFS, consumido pelo attackManager logo abaixo. Sem este
+              // guard a string entraria aqui com todos os campos undefined e
+              // viraria um cast fantasma reiniciado a cada tick.
+              if (typeof atk !== 'object' || atk === null || !atk.id) continue;
               const cd = npc._attackCooldowns[atk.id] || 0;
               if (now < cd) continue;
               if (dist2D(npc, nearestForCombat) > (atk.triggerRange || 600)) continue;

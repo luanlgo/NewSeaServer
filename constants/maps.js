@@ -51,8 +51,8 @@ MAP_DEFS[1] = {
   },
   boss: {
     name:        'Giant Crab Octopus',
-    // Mapa de tutorial: o boss so revida. Passar perto nao inicia o combate —
-    // ele so ataca depois de levar dano do jogador.
+    // Mapa de tutorial: o boss só revida. Passar perto não inicia o combate —
+    // ele só ataca depois de levar dano do jogador.
     retaliateOnly: true,
     baseHp:      5000,
     baseDamage:  200,
@@ -65,7 +65,7 @@ MAP_DEFS[1] = {
     hullColor:   0x1a0505,
     sailColor:   0x220000,
     model:       '/models/monster/carangueijo_boss.glb',
-    scale: 19,
+    scale: 40,
     yOffset: -20,
     rotOffset: 0,
     hitRadius: 12,
@@ -136,7 +136,7 @@ MAP_DEFS[2] = {
   },
   boss: {
     name:        'Abyssal Sovereign',
-    // Mapa de tutorial: o boss so revida (ver mapa 1).
+    // Mapa de tutorial: o boss só revida (ver mapa 1).
     retaliateOnly: true,
     baseHp:      20000,
     baseDamage:  800,
@@ -450,7 +450,11 @@ MAP_DEFS[6] = {
   boss: {
     name:        'The Drowned Widow',
     baseHp:       1000000,
-    baseDamage:   0,
+    // Era 0 porque o único golpe dela era o `emerge`, que tinha dano próprio
+    // hardcoded. Os ataques de ATTACK_DEFS calculam cannonDmg × damageMult, então
+    // com 0 TODOS bateriam por 1 (o piso do Math.max). 60 dá a escala atual:
+    // pilares (2.5×) = 150, tide_split solo (8×) = 480, rachado em 4 = 120.
+    baseDamage:   60,
     regenPerSec:   120,
     regenDelay:    20000,
     killsToSpawn:  0,
@@ -469,22 +473,21 @@ MAP_DEFS[6] = {
     closeRange: 200,       // dentro = walk 50%; fora = run 100%
     aggroRange: 350,       // raio de detecção de proximidade (unidades)
     aggroTime:  20,        // segundos perto para virar agressivo
+    // O `emerge` (cast multi-fase preso a `animIdx: 9`) saiu junto com a troca
+    // do modelo — a animação do modelo novo ainda não existe. Pra devolver, é só
+    // reinserir o objeto aqui: o laço de cast do npc-manager aceita objeto e
+    // string no mesmo array, então ele volta a conviver com os ids abaixo.
+    //
+    // Mapa 6 não tem NPC nenhum (`npc: null`) — a Viúva é a bancada isolada
+    // das mecânicas novas: rachar dano, cegar e os pilares.
     attacks: [
-      {
-        id:            'emerge',          // Mergulho + emergência dramática
-        animIdx:       9,                 // F9 lista: animação nº 9
-        animSpeed:     0.3,
-        cooldown:      60000,             // 60 s
-        triggerRange:  600,               // ativa quando jogador está a ≤600 u
-        // ── 3 fases (ms) ────────────────────────────────────────────────────
-        phase1End:     1500,              // 0–1.5s  → afunda (parado)
-        phase2End:     6000,              // 1.5–6s  → nada embaixo (200% vel)
-        totalDuration: 10000,             // 6–10s   → emerge (parado, dano)
-        // ── Dano ─────────────────────────────────────────────────────────────
-        damage:        200,
-        damageRadius:  220,               // raio do dano ao emergir
-      },
+      'tide_split',
+      'gloom_shroud',
+      'ghost_soul_pillars',
     ],
+    // Aura passiva: não entra no sorteio de ataques, ticka sozinha enquanto ela
+    // viver (attack-manager.tickAuras).
+    auras: ['ghost_dread_aura'],
     rarities: [
       { id: 'infernal', label: 'Infernal', hpMult: 1.0, rewardMult: 1, chance: 1, color: '#f80', bg: 'rgba(60,15,0,0.92)' },
     ],
@@ -747,7 +750,10 @@ MAP_DEFS[10] = {
     yOffset:     0,
     rotOffset:   0,
     hitRadius:   16,
-    attacks: ['bite', 'cross_blast', 'charge_line', 'arcane_nova', 'heavy_stomp', 'impale_line', 'mimic_tongue_lash'],
+    attacks: ['bite', 'cross_blast', 'charge_line', 'arcane_nova', 'heavy_stomp', 'impale_line', 'mimic_tongue_lash', 'tide_split', 'gloom_shroud'],
+    // Auras ficam FORA de `attacks`: não são escolhidas pelo sorteio ponderado,
+    // tickam sozinhas enquanto o boss vive (attack-manager.tickAuras).
+    auras: ['ghost_dread_aura'],
     rarities: [
       { id: 'normal',   label: 'Normal',   hpMult: 1.0, rewardMult: 1.0,  chance: 0.45, color: '#888', bg: 'rgba(40,40,40,0.92)' },
       { id: 'raro',     label: 'Raro',     hpMult: 1.5, rewardMult: 1.5,  chance: 0.30, color: '#44f', bg: 'rgba(10,20,60,0.92)' },
@@ -784,6 +790,118 @@ MAP_DEFS[11] = {
   xpToAdvance: null,
   size:        MAP_SIZE * 6,
   sideMap:     [{sul: [6, 10]}],   // array = borda dividida: x<0 → 6, x≥0 → 10
+
+  // Floresta submersa nas laterais — COLISÃO REAL (empurra barcos e NPCs, dá
+  // pra desviar). Visual no cliente (RUINS_DEFS[11] em main.gd), posições
+  // geradas junto. islandRadius:1 só faz o sistema considerar os colliders;
+  // center 0,0 → x/z dos colliders são coordenadas absolutas do mundo.
+  // Ajuste fino do raio/posição pelo editor de colisão (tecla 2).
+  forest: {
+    center:       { x: 0, z: 0 },
+    islandRadius: 1,
+    colliders: [
+      { shape: 'circle', x: -950.7, z: -3242.7, r: 14 },
+      { shape: 'circle', x: -1659.4, z: -3311.9, r: 16 },
+      { shape: 'circle', x: -2138.2, z: -3108.6, r: 14 },
+      { shape: 'circle', x: -2841.6, z: -3225.8, r: 14 },
+      { shape: 'circle', x: -3271.9, z: -3046.3, r: 13 },
+      { shape: 'circle', x: -1353.3, z: -2331.3, r: 17 },
+      { shape: 'circle', x: -1923.2, z: -2276.8, r: 15 },
+      { shape: 'circle', x: -2198.9, z: -2634.6, r: 15 },
+      { shape: 'circle', x: -2820.1, z: -2630.5, r: 15 },
+      { shape: 'circle', x: -3282.9, z: -2434.6, r: 15 },
+      { shape: 'circle', x: -1635.7, z: -1697.6, r: 13 },
+      { shape: 'circle', x: -1872.3, z: -1817.2, r: 14 },
+      { shape: 'circle', x: -2472.0, z: -1856.0, r: 17 },
+      { shape: 'circle', x: -2897.0, z: -1911.2, r: 13 },
+      { shape: 'circle', x: -3350.3, z: -1675.2, r: 11 },
+      { shape: 'circle', x: -1611.3, z: -1127.3, r: 11 },
+      { shape: 'circle', x: -2153.5, z: -929.9, r: 11 },
+      { shape: 'circle', x: -2665.3, z: -1037.6, r: 16 },
+      { shape: 'circle', x: -3004.8, z: -1211.2, r: 17 },
+      { shape: 'circle', x: -3480.0, z: -1179.8, r: 12 },
+      { shape: 'circle', x: -1666.7, z: -532.5, r: 14 },
+      { shape: 'circle', x: -2167.2, z: -242.6, r: 14 },
+      { shape: 'circle', x: -2527.8, z: -339.5, r: 13 },
+      { shape: 'circle', x: -3008.2, z: -553.2, r: 16 },
+      { shape: 'circle', x: -3480.0, z: -314.1, r: 16 },
+      { shape: 'circle', x: -1854.4, z: 199.8, r: 16 },
+      { shape: 'circle', x: -2154.5, z: 480.3, r: 16 },
+      { shape: 'circle', x: -2533.1, z: 397.4, r: 11 },
+      { shape: 'circle', x: -3061.6, z: 347.1, r: 15 },
+      { shape: 'circle', x: -3480.0, z: 202.1, r: 11 },
+      { shape: 'circle', x: -1524.4, z: 1253.1, r: 12 },
+      { shape: 'circle', x: -2219.0, z: 983.3, r: 11 },
+      { shape: 'circle', x: -2581.6, z: 906.5, r: 15 },
+      { shape: 'circle', x: -2932.2, z: 978.9, r: 14 },
+      { shape: 'circle', x: -3424.2, z: 999.7, r: 15 },
+      { shape: 'circle', x: -1589.4, z: 1777.7, r: 14 },
+      { shape: 'circle', x: -1898.7, z: 1721.2, r: 14 },
+      { shape: 'circle', x: -2578.4, z: 1761.5, r: 11 },
+      { shape: 'circle', x: -2968.7, z: 1570.5, r: 13 },
+      { shape: 'circle', x: -3284.4, z: 1731.1, r: 14 },
+      { shape: 'circle', x: -1370.8, z: 2626.5, r: 15 },
+      { shape: 'circle', x: -1899.3, z: 2430.9, r: 15 },
+      { shape: 'circle', x: -2226.3, z: 2518.4, r: 13 },
+      { shape: 'circle', x: -3034.2, z: 2563.1, r: 14 },
+      { shape: 'circle', x: -3480.0, z: 2488.5, r: 14 },
+      { shape: 'circle', x: -1159.4, z: 3282.5, r: 11 },
+      { shape: 'circle', x: -1585.3, z: 3154.3, r: 11 },
+      { shape: 'circle', x: -2331.1, z: 3337.5, r: 11 },
+      { shape: 'circle', x: -2957.7, z: 2993.2, r: 14 },
+      { shape: 'circle', x: -3468.6, z: 3283.4, r: 14 },
+      { shape: 'circle', x: 1294.0, z: -3041.0, r: 14 },
+      { shape: 'circle', x: 1778.9, z: -3262.4, r: 13 },
+      { shape: 'circle', x: 2214.1, z: -3159.6, r: 12 },
+      { shape: 'circle', x: 2923.0, z: -2984.7, r: 17 },
+      { shape: 'circle', x: 3334.1, z: -3042.9, r: 15 },
+      { shape: 'circle', x: 1177.7, z: -2550.5, r: 17 },
+      { shape: 'circle', x: 1886.2, z: -2356.6, r: 15 },
+      { shape: 'circle', x: 2377.3, z: -2316.0, r: 16 },
+      { shape: 'circle', x: 2908.8, z: -2593.8, r: 15 },
+      { shape: 'circle', x: 3400.6, z: -2472.2, r: 15 },
+      { shape: 'circle', x: 1640.6, z: -1678.7, r: 12 },
+      { shape: 'circle', x: 1965.2, z: -1773.0, r: 15 },
+      { shape: 'circle', x: 2396.2, z: -1853.4, r: 13 },
+      { shape: 'circle', x: 2997.8, z: -1585.9, r: 15 },
+      { shape: 'circle', x: 3365.2, z: -1833.2, r: 13 },
+      { shape: 'circle', x: 1476.2, z: -1237.5, r: 14 },
+      { shape: 'circle', x: 2148.9, z: -1115.1, r: 12 },
+      { shape: 'circle', x: 2642.8, z: -1058.4, r: 17 },
+      { shape: 'circle', x: 3084.6, z: -844.7, r: 14 },
+      { shape: 'circle', x: 3395.7, z: -949.3, r: 13 },
+      { shape: 'circle', x: 1811.4, z: -542.8, r: 16 },
+      { shape: 'circle', x: 2134.6, z: -484.7, r: 14 },
+      { shape: 'circle', x: 2606.5, z: -542.7, r: 13 },
+      { shape: 'circle', x: 2944.6, z: -451.0, r: 13 },
+      { shape: 'circle', x: 3288.5, z: -254.7, r: 14 },
+      { shape: 'circle', x: 1734.7, z: 463.7, r: 13 },
+      { shape: 'circle', x: 2009.8, z: 481.9, r: 13 },
+      { shape: 'circle', x: 2473.5, z: 554.1, r: 13 },
+      { shape: 'circle', x: 2996.2, z: 469.9, r: 12 },
+      { shape: 'circle', x: 3480.0, z: 268.4, r: 12 },
+      { shape: 'circle', x: 1569.1, z: 871.7, r: 11 },
+      { shape: 'circle', x: 2061.1, z: 1171.3, r: 14 },
+      { shape: 'circle', x: 2509.0, z: 996.7, r: 15 },
+      { shape: 'circle', x: 2902.8, z: 1249.3, r: 13 },
+      { shape: 'circle', x: 3480.0, z: 1058.0, r: 14 },
+      { shape: 'circle', x: 1501.9, z: 1864.6, r: 11 },
+      { shape: 'circle', x: 1861.8, z: 1698.3, r: 12 },
+      { shape: 'circle', x: 2312.6, z: 1872.2, r: 15 },
+      { shape: 'circle', x: 2980.2, z: 1615.7, r: 11 },
+      { shape: 'circle', x: 3299.2, z: 1608.1, r: 15 },
+      { shape: 'circle', x: 1297.7, z: 2387.3, r: 11 },
+      { shape: 'circle', x: 1992.7, z: 2334.7, r: 14 },
+      { shape: 'circle', x: 2337.5, z: 2607.7, r: 17 },
+      { shape: 'circle', x: 2738.8, z: 2331.6, r: 11 },
+      { shape: 'circle', x: 3475.0, z: 2443.5, r: 12 },
+      { shape: 'circle', x: 1238.1, z: 3258.9, r: 15 },
+      { shape: 'circle', x: 1761.4, z: 3157.5, r: 16 },
+      { shape: 'circle', x: 2353.2, z: 3181.0, r: 13 },
+      { shape: 'circle', x: 2830.6, z: 3092.5, r: 15 },
+      { shape: 'circle', x: 3446.5, z: 3305.9, r: 14 },
+    ],
+  },
 
   // Arena central — palco do kraken. colliders vazio = sem colisão física
   // (navios entram livremente); demarque as paredes reais com o editor tecla 2.
@@ -902,7 +1020,7 @@ MAP_DEFS[11] = {
     spawnAt:      { x: 0, z: 0, radius: 60 },  // nasce dentro da arena
     leashRange:   220,             // não sai da arena ao perseguir
     respawnDelay: 3600000,          // mini-boss: 1 h para renascer
-    attacks: ['tentacle_slam', 'tentacle_sweep', 'ink_blast', 'deep_surge', 'impale_line', 'whirlwind'],
+    attacks: ['tentacle_slam', 'tentacle_sweep', 'ink_blast', 'deep_surge', 'impale_line', 'whirlwind', 'tide_split', 'gloom_shroud'],
   },
   boss: null,
 

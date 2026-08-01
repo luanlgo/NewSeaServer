@@ -442,6 +442,51 @@ const ATTACK_DEFS = {
   },
 
   // ════════════════════════════════════════════════════════════════════════════
+  // 🔵 NÃO SE RESOLVEM DESVIANDO — o contra-jogo é outro verbo
+  //
+  // O resto do catálogo varia só a dificuldade do desvio. Estes cobram uma ação
+  // diferente do jogador: agrupar, ou lutar sem enxergar. Ficam fora da escala
+  // "fácil → difícil de desviar" de propósito.
+  // ════════════════════════════════════════════════════════════════════════════
+
+  // Dano brutal DIVIDIDO entre todos que estão na área (splitDamage). Sozinho é
+  // sentença; em 4 é arranhão. Único ataque do jogo que pede AGRUPAR — o reflexo
+  // oposto de tudo o mais. castTime longo de propósito: o grupo precisa de tempo
+  // pra se juntar, e é essa corrida que faz a mecânica.
+  tide_split: {
+    id: 'tide_split',
+    name: 'Maré Partida',
+    rangeMin: 0,
+    rangeMax: 300,
+    castTime: 2400,
+    cooldown: 18000,
+    damageMult: 8,          // ÷ nº de jogadores dentro da área no resolve
+    splitDamage: true,
+    shape: 'circle', radius: 100,
+    weight: 5,
+    telegraph: { color: 0x33e0ff },
+  },
+
+  // Não mata: cega. Colapsa o alcance de visão por 8s e obriga a lutar lendo o
+  // minimapa. `value` é fração (mesma convenção de speed_buff/defense_buff):
+  // -0.75 = enxerga 25% do normal. O dano é simbólico — o debuff é o golpe.
+  gloom_shroud: {
+    id: 'gloom_shroud',
+    name: 'Breu',
+    rangeMin: 0,
+    rangeMax: 320,
+    castTime: 1400,
+    cooldown: 22000,
+    damageMult: 0.5,
+    shape: 'circle', radius: 140,
+    weight: 4,
+    effects: [
+      { type: 'vision_debuff', value: -0.75, duration: 8000 },
+    ],
+    telegraph: { color: 0x2a1a4a },
+  },
+
+  // ════════════════════════════════════════════════════════════════════════════
   // 💀 INDESVIÁVEIS — atinge todos os jogadores em range ou é aura passiva
   // ════════════════════════════════════════════════════════════════════════════
 
@@ -463,11 +508,18 @@ const ATTACK_DEFS = {
     telegraph: { color: 0xcc44ff },
   },
 
-  // Aura passiva permanente — impossível desviar, aplica debuff contínuo
+  // Aura passiva permanente, colada no boss. O raio precisa ser MAIOR que o
+  // alcance máximo de tiro do jogador (200 = c6 com 150 + o upgrade de alcance
+  // de +50 da Ilha do Comércio), senão dá pra bater nele de fora e o custo some.
+  // 380 garante a regra com folga: para acertar o boss você está, obrigatoriamente,
+  // dentro do domínio dele — engajar sempre cobra o preço.
+  //
+  // (Já esteve em 190, que um C6 evoluído superava, e antes disso em 500, que
+  // cobria a arena inteira e pegava até quem não estava lutando.)
   ghost_dread_aura: {
     id: 'ghost_dread_aura',
     name: 'Domínio do Pavor',
-    shape: 'aura', radius: 500, tickRate: 500,
+    shape: 'aura', radius: 380, tickRate: 500,
     castTime: 0,
     cooldown: 0,
     damageMult: 0, weight: 100,
@@ -475,6 +527,7 @@ const ATTACK_DEFS = {
       { type: 'speed_buff',   value: -0.20, duration: 1200 },
       { type: 'defense_buff', value: -0.20, duration: 1200 },
     ],
+    telegraph: { color: 0xcc44ff },
   },
 };
 

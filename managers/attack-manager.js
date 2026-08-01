@@ -181,6 +181,17 @@ class AttackManager {
 
     const goldStealRatio = (MAP_DEFS[mapLevel] || {}).goldStealRatio || 0;
 
+    // Maré Partida (splitDamage): o dano total é rateado entre TODOS que estão
+    // na área — ficar junto É a defesa. Precisa contar antes do laço: aplicando
+    // dentro dele, o primeiro do array levaria o valor cheio.
+    // Conta quem está na área, não quem toma dano: quem entrou protegido por
+    // invencibilidade/escudo ainda "segura sua parte" da maré.
+    let splitDiv = 1;
+    if (attack.splitDamage) {
+      splitDiv = Math.max(1, mapPlayers.reduce(
+        (n, p) => n + (this._isHit(p, attack, targetX, targetZ, npc) ? 1 : 0), 0));
+    }
+
     for (const p of mapPlayers) {
       if (this._isHit(p, attack, targetX, targetZ, npc)) {
         // Névoa Espectral: invencível bloqueia também ataques em área
@@ -189,7 +200,7 @@ class AttackManager {
           this.addEvent({ type: 'shield_block', targetId: p.id }, mapLevel);
           continue;
         }
-        let dmg = Math.max(1, Math.floor((npc.cannonDmg || 1) * attack.damageMult));
+        let dmg = Math.max(1, Math.floor((npc.cannonDmg || 1) * attack.damageMult / splitDiv));
         // Aplica debuff de defesa se ativo
         const defDebuff = p.activeDebuffs?.find(d => d.type === 'defense_buff' && d.expiresAt > Date.now());
         if (defDebuff) dmg = Math.round(dmg * (1 + Math.abs(defDebuff.value)));
@@ -276,6 +287,8 @@ class AttackManager {
       hits,
       effects:      attack.effects || [],
       visualEffect: attack.visualEffect || null,
+      // splitDamage: quantos rachavam a conta — o cliente mostra "Dividido ×N"
+      splitCount:   attack.splitDamage ? splitDiv : null,
     }, mapLevel);
   }
 
@@ -385,6 +398,12 @@ class AttackManager {
           npcId:    npc.id,
           auraId,
           radius,
+          // x/z = centro da aura (o próprio boss, que se move). O cliente desenha
+          // a borda com isto — sem a borda o jogador não tem como decidir entre
+          // ficar dentro e sair, que é a mecânica inteira.
+          x:        npc.x,
+          z:        npc.z,
+          color:    auraDef.telegraph?.color,
           effects:  auraDef.effects,
           hits:     hits.map(h => h.id),
         }, mapLevel);
