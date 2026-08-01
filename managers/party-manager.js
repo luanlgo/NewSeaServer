@@ -1,7 +1,7 @@
 // managers/party-manager.js
 const { uid, sendTo } = require('../utils/helpers');
 
-const PARTY_MAX      = 5;
+const PARTY_MAX      = 4;
 const INVITE_TIMEOUT = 30_000; // ms — convite expira em 30s
 
 /** uid() retorna inteiro; cliente pode enviar string — normaliza sempre para Number */
@@ -179,12 +179,13 @@ class PartyManager {
     const party = this.parties.get(partyId);
     if (!party) return [];
 
-    // Recompensas de grupo são globais — membros em qualquer mapa recebem
+    // Só membros NO MESMO MAPA da kill entram na divisão. Ex.: 2 no mapa 3 e 2 no
+    // mapa 4 → cada dupla só divide as recompensas do próprio mapa.
     const result = [];
     for (const memberId of party.members) {
       if (memberId === pid) continue;
       const m = players.get(memberId);
-      if (m && !m.dead) result.push(m);
+      if (m && !m.dead && (m.mapLevel || 1) === mapLevel) result.push(m);
     }
     return result;
   }

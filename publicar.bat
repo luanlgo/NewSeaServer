@@ -41,7 +41,7 @@ echo.
 set /p DO_EXPORT="  Exportar o jogo agora? (s/n): "
 if /i not "!DO_EXPORT!"=="s" goto skip_export
 
-set GODOT_EXE=C:\Users\luang\Downloads\Godot_v4.6.1-stable_win64.exe\Godot_v4.6.1-stable_win64.exe
+set GODOT_EXE=C:\Users\luang\Downloads\Godot_v4.6.1-stable_win64.exe\Godot_v4.6.1-stable_win64_console.exe
 
 :: Injeta a URL de PRODUCAO no config.gd antes de exportar. O export.bat
 :: restaura o config para localhost ao terminar, entao sem isto o build
