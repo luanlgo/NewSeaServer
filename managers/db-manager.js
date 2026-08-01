@@ -599,10 +599,13 @@ class DBManager {
       'SELECT name, map_level, map_xp, npc_kills, pvp_kills, pet_levels FROM players'
     );
 
-    // xp: progressão de mapa — nível primeiro, xp dentro do nível desempata
+    // xp: o XP acumulado é o critério — é lifetime e nunca reseta. `map_level`
+    // NÃO serve pra ordenar: é só o mapa em que o jogador está agora e muda a
+    // cada travessia de borda, então quem estava no 5 e voltou pro 1 despencava
+    // no ranking. Fica como valor exibido (e desempate) apenas.
     const xp = rows
       .map(r => ({ name: r.name, value: r.map_level || 1, xp: r.map_xp || 0 }))
-      .sort((a, b) => (b.value - a.value) || (b.xp - a.xp));
+      .sort((a, b) => (b.xp - a.xp) || (b.value - a.value));
 
     const byValueDesc = (a, b) => b.value - a.value;
     const npcKills = rows
