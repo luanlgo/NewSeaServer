@@ -50,7 +50,11 @@ echo  Definindo host para Producao (!URL_PROD!)...
 powershell -ExecutionPolicy Bypass -Command "$q=[char]34; (Get-Content '!CONFIG_FILE!') -replace '^const SERVER_URL :=.*', ('const SERVER_URL := ' + $q + '!URL_PROD!' + $q) | Set-Content '!CONFIG_FILE!'"
 
 echo  Exportando com Godot headless...
-"!GODOT_EXE!" --headless --path "C:\Work\NewSeaGodot" --export-release "Windows Desktop" "!BUILD_DIR!\SeaOfCode.exe"
+:: <nul pelo mesmo motivo do ssh -n: o _console.exe do Godot le stdin e leva o
+:: buffer do console junto. Com o stdin esgotado, TODO `set /p` e `pause`
+:: seguinte e pulado - inclusive o pause do "[ERRO] Falha ao exportar" logo
+:: abaixo, que fecharia a janela antes de voce ler o erro.
+"!GODOT_EXE!" --headless --path "C:\Work\NewSeaGodot" --export-release "Windows Desktop" "!BUILD_DIR!\SeaOfCode.exe" <nul
 set EXPORT_CODE=!errorlevel!
 
 :: Restaura o config para dev local (mesmo se o export falhar).
@@ -131,11 +135,14 @@ if errorlevel 1 (
 echo.
 echo  Publicando manifest no servidor de producao...
 :: O launcher le o manifest DO SERVIDOR (/launcher/manifest, relido do disco a
-:: cada request) — sem este git pull o launcher nunca enxerga a versao nova.
+:: cada request) - sem este git pull o launcher nunca enxerga a versao nova.
 :: Restart NAO e necessario para o manifest, so para mudanca de codigo.
-ssh root@164.163.9.91 "cd ~/NewSeaServer && git pull"
+:: -n desconecta o stdin do ssh. Sem isso ele consome o buffer do console e o
+:: `set /p` logo abaixo (e ate o `pause` final) e pulado silenciosamente - a
+:: pergunta do restart nunca aparece e a janela fecha sozinha.
+ssh -n root@164.163.9.91 "cd ~/NewSeaServer && git pull"
 if errorlevel 1 (
-  echo  AVISO: git pull no servidor falhou — o launcher NAO vai ver a v!NEW_VER!!
+  echo  AVISO: git pull no servidor falhou - o launcher NAO vai ver a v!NEW_VER!!
 ) else (
   echo  Manifest publicado! Launcher ja enxerga a v!NEW_VER!.
 )
@@ -143,7 +150,7 @@ if errorlevel 1 (
 echo.
 set /p TEM_SERVER="  Teve alteracoes no CODIGO do servidor? Reiniciar? (s/n): "
 if /i "!TEM_SERVER!"=="s" (
-  ssh root@164.163.9.91 "cd ~/NewSeaServer && pm2 restart server"
+  ssh -n root@164.163.9.91 "cd ~/NewSeaServer && pm2 restart server"
   if errorlevel 1 (
     echo  AVISO: SSH falhou.
   ) else (

@@ -43,3 +43,16 @@ coverage/
 # ========================
 .vscode/
 .idea/
+
+# ========================
+# Load test (scripts/loadtest.js)
+# ========================
+# Tokens de dispositivo das contas de bot — o servidor vincula um por conta no
+# 1º login (TOFU), então precisam sobreviver entre rodadas.
+.loadtest-tokens.json
+# ========================
+# Saidas locais (nao versionar)
+# ========================
+# Log do deploy (publicar_com_log.bat) e dump do loadtest.
+publicar_log.txt
+depois.json

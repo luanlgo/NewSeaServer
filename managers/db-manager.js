@@ -469,7 +469,7 @@ class DBManager {
       "ALTER TABLE players ADD COLUMN pet_food      FLOAT NOT NULL DEFAULT 0",
       // ── Auth (token de dispositivo, TOFU) ─────────────────────────────────
       "ALTER TABLE players ADD COLUMN secret_hash   VARCHAR(64) DEFAULT NULL",
-      // ── Tutorial (0=pendente, 1=foguete concedido, 2=completo) ────────────
+      // ── Tutorial (0=pendente, 1=relíquia concedida, 2=completo) ───────────
       "ALTER TABLE players ADD COLUMN tutorial_state TINYINT NOT NULL DEFAULT 0",
       // Fim do treino AFK (ms epoch). Sem isto o estado do treino vivia só em
       // memória: um restart do servidor deixava o jogador preso no mapa 5 —
