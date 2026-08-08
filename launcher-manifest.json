@@ -1,8 +1,10 @@
 {
-    "version":  "0.1.19",
+    "version":  "0.1.20",
     "date":  "2026-08-08",
     "changelog":  [
-                      "[v0.1.19] - 2026-08-07",
+                      "[v0.1.20] - 2026-08-08",
+                      "fix(rede): handler aoi_resync + turnRate do feixe do Leviata",
+                      "release: v0.1.19",
                       "fix(build): fixa CRLF nos .bat de publicacao",
                       "chore(infra): loadtest, benchmark de broadcast e deploy com log",
                       "feat(bestiario,rede): 34 skills de monstro por dado + broadcast por area de interesse",
@@ -10,16 +12,14 @@
                       "feat(ataques): 3 mecanicas de boss que nao se resolvem desviando",
                       "fix(ranking): ordenar progresso por XP acumulado, nao pelo mapa atual",
                       "chore(grupo,build): grupo maximo de 4 e recompensa so no mapa da kill",
-                      "feat(mobs,boss): novos modelos de monstro nos mapas 1-4 e 6 + boss passivo nao persegue",
-                      "feat(lua-de-sangue,chat,reliquias,treino): evento noturno, chat de 3 canais e correcoes de XP",
-                      "fix(reliquias): respeitar zona PvE/mapa e escalar dano com o poder de fogo real"
+                      "feat(mobs,boss): novos modelos de monstro nos mapas 1-4 e 6 + boss passivo nao persegue"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.19/SeaOfCode.exe",
-                      "sha256":  "2308be3b93206bc807e327092fd8771acc800cbd90c519fa4dbf9c48ccb06dac",
-                      "size":  726673640
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.20/SeaOfCode.exe",
+                      "sha256":  "78e5e95c6fc4fb7dddf9133e438bc1887805be1e0080c6135957207fa9cc7558",
+                      "size":  747552432
                   }
               ]
 }
