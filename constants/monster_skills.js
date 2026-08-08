@@ -261,6 +261,17 @@ const MONSTER_SKILLS = {
     vfx: 'leviathan_neck_beam', source: 'tartaruga', shape: 'line',
     // Canalizado: o feixe segue o cursor enquanto dura (ver `follow` no Sopro).
     follow: true,
+    // `turnRate`: quanto o pescoco pode GIRAR por segundo, em radianos.
+    //
+    // Sem cap, o `follow` re-mirava instantaneamente a cada leva: o feixe
+    // saltava do angulo do telegraph para cima do jogador no primeiro tick e
+    // colava nele para sempre — acerto garantido, sem jogada possivel.
+    //
+    // 0,30 rad/s e medido: o feixe varre lateralmente `turnRate x distancia`
+    // un/s, e o barco navega ~45 un/s. Entao da para sair contornando enquanto
+    // `d < 45/0,30 = 150` un. Colado no bicho voce ganha do giro; no fim do
+    // alcance (190) ele te segura. A leitura vira "entre na guarda dele".
+    turnRate: 0.30,
     desc: 'Feixe contínuo que segue a sua mira. Circule mais rápido do que o pescoço vira.',
     relic: { manaCost: 5, length: 75, width: 12, sweepArc: 80, turnSpeed: 0.9, castMs: 1200,
              ticks: { count: 20, intervalMs: 120, pct: 0.10 } },
@@ -527,6 +538,7 @@ for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
     travelMs: s.travelMs || null,
     dropIntervalMs: s.dropIntervalMs || null,
     dropWarnMs: s.dropWarnMs || null,
+    turnRate: s.turnRate || null,
     castTime: s.relic.castMs,
     ...s.relic,
   };
@@ -550,6 +562,7 @@ for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
     travelMs: s.travelMs || null,
     dropIntervalMs: s.dropIntervalMs || null,
     dropWarnMs: s.dropWarnMs || null,
+    turnRate: s.turnRate || null,
     telegraph: { color: 0xff4400 },
     ...s.npc,
   };

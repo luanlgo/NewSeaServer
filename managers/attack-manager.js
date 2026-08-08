@@ -201,6 +201,11 @@ class AttackManager {
       npc._castGapFacing = Math.random() * Math.PI * 2;
     }
 
+    // Mira viva das canalizadas com cap de giro (`turnRate`): comeca na direcao
+    // que o TELEGRAPH mostrou. Sem esta semente o 1o tick ja saltaria para cima
+    // do alvo — era metade da queixa ("assim que solta, vai insta no jogador").
+    npc._aimAngle = Math.atan2(targetZ - npc.z, targetX - npc.x);
+
     this.addEvent({
       type:         'npc_telegraph',
       npcId:        npc.id,
@@ -354,15 +359,37 @@ class AttackManager {
           // O cliente só sabe re-mirar o cast LOCAL (que segue o mouse); para
           // cast de bicho quem manda o giro é o servidor, senão o desenho
           // aponta para um lado e o dano sai para o outro.
-          const adx = tx - npc.x, adz = tz - npc.z;
+          let adx = tx - npc.x, adz = tz - npc.z;
           const al  = Math.hypot(adx, adz) || 1;
+
+          // ── Cap de giro ─────────────────────────────────────────────────
+          // Sem isto o feixe re-mirava INSTANTANEAMENTE: saltava do angulo do
+          // telegraph para cima do jogador na 1a leva e colava nele ate o fim.
+          // Nao havia jogada — so tomar o dano. Com o cap ele varre, e da para
+          // sair contornando enquanto a velocidade lateral do barco (~45 un/s)
+          // ganhar da do feixe (`turnRate x distancia`).
+          if (attack.turnRate) {
+            const passo = attack.turnRate * (tickStep || 120) / 1000;
+            let diff = Math.atan2(adz, adx) - npc._aimAngle;
+            // Normaliza para [-PI, PI]: sem isto o feixe daria a volta pelo
+            // caminho longo quando o alvo cruzasse o -180.
+            diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+            npc._aimAngle += Math.max(-passo, Math.min(passo, diff));
+            adx = Math.cos(npc._aimAngle);
+            adz = Math.sin(npc._aimAngle);
+            // O alvo efetivo passa a ser PARA ONDE O FEIXE APONTA — e daqui que
+            // o `_isHit` tira a direcao do corredor.
+            tx = npc.x + adx * al;
+            tz = npc.z + adz * al;
+          }
+
           this.addEvent({
             type: 'npc_skill_aim',
             npcId: npc.id,
             npcX:  npc.x,
             npcZ:  npc.z,
-            dirX:  adx / al,
-            dirZ:  adz / al,
+            dirX:  attack.turnRate ? adx : adx / al,
+            dirZ:  attack.turnRate ? adz : adz / al,
           }, mapLevel);
         }
 

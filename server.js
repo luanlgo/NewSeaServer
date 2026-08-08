@@ -2521,6 +2521,19 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        // ── Cliente perdeu o `full` de alguma entidade ──────────────────────
+        // O AOI manda o registro completo UMA vez, na entrada da visão; depois
+        // dela só vai a tupla slim, que o cliente descarta se não conhecer o id.
+        // Quando isso acontece a entidade fica invisível PARA SEMPRE — viva,
+        // mirando e batendo. O cliente detecta o slim órfão e pede o reenvio
+        // aqui (main.gd::_request_aoi_resync, estrangulado a 2 s).
+        case 'aoi_resync': {
+          if (!player) break;
+          stateBuilder.resetViewer(player);
+          player._aoiLastCd = undefined;   // força o próprio barco a ir completo
+          break;
+        }
+
         case 'input': {
           player.input = { w: !!msg.w, a: !!msg.a, s: !!msg.s, d: !!msg.d };
           // Any WASD key press cancels a pending click-to-move target
