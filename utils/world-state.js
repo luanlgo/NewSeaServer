@@ -25,6 +25,12 @@ function bloodMoonFactor() {
   return _bloodMoonActive ? _bloodMoonMult : 1;
 }
 
+/**
+ * true entre o sorteio (anoitecer) e o amanhecer da Lua de Sangue. Além de
+ * multiplicar atributos e recompensa, é o gate das skills ⭐: o bicho só usa a
+ * ⭐ durante a lua e ela só entra no sorteio de drop nessa janela. O uso da
+ * relíquia pelo jogador NÃO depende disto — ver utils/star-gate.js.
+ */
 function isBloodMoon() {
   return _bloodMoonActive;
 }

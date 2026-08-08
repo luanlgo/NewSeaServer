@@ -23,6 +23,10 @@ MAP_DEFS[1] = {
   size:         MAP_SIZE,
   sideMap: [{norte: 2}],
   npc: {
+    // Mapa de tutorial: o bicho não é hostil. Passar perto não inicia nada —
+    // ele só revida depois de levar dano, e volta a dormir quando o agressor
+    // morre. Mesma regra que o boss deste mapa já usava.
+    retaliateOnly: true,
     count:        6,
     baseHp:       100,
     baseDamage:   8,
@@ -43,7 +47,7 @@ MAP_DEFS[1] = {
     rotOffset: 0,
     hitRadius: 8,
     relicDropChance: 0.01, // 1%
-    attacks: ['impale_line', 'deep_surge', 'cannon_shot'],
+    attacks: ['crab_claw_slam', 'crab_putrid_spray', 'crab_burrow_rush', 'crab_tidal_frenzy'],
     ammoTiers: [
       { minKills: 0,   ammo: 'bala_ferro' },
       { minKills: 100, ammo: 'bala_gelo'  },
@@ -69,7 +73,7 @@ MAP_DEFS[1] = {
     yOffset: -20,
     rotOffset: 0,
     hitRadius: 12,
-    attacks: ['charge_line', 'forked_shot', 'impale_line', 'ink_blast'],
+    attacks: ['crab_boss_barrage', 'crab_boss_mortar', 'crab_boss_tentacles', 'crab_boss_roar'],
     rarities: [
       { id: 'normal',   label: 'Normal',   hpMult: 1.0, rewardMult: 1.0,  chance: 0.40, color: '#888', bg: 'rgba(40,40,40,0.92)' },
       { id: 'raro',     label: 'Raro',     hpMult: 1.5, rewardMult: 1.5,  chance: 0.30, color: '#44f', bg: 'rgba(10,20,60,0.92)' },
@@ -108,6 +112,8 @@ MAP_DEFS[2] = {
   size:         MAP_SIZE * 2,
   sideMap: [{sul: 1, norte: 3}],
   npc: {
+    // Tutorial (ver mapa 1): só revida, e esquece o agressor quando ele morre.
+    retaliateOnly: true,
     count:        9,
     baseHp:       1500,
     baseDamage:   300,
@@ -128,7 +134,7 @@ MAP_DEFS[2] = {
     rotOffset: 0,
     hitRadius: 8,
     relicDropChance: 0.03, // 3%
-    attacks: ['tail_slam', 'cannon_burst', 'venom_pool', 'deep_surge'],
+    attacks: ['drake_chain_arc', 'drake_hunter_orb', 'drake_static_field', 'drake_lightning_web'],
     ammoTiers: [
       { minKills: 200, ammo: 'bala_gelo' },
       { minKills: 400, ammo: 'bala_bala_fogo' },
@@ -153,7 +159,7 @@ MAP_DEFS[2] = {
     yOffset: 3.5,
     rotOffset: 0,
     hitRadius: 12,
-    attacks: ['tail_slam', 'shockwave', 'lava_breath', 'meteor_drop', 'impale_line'],
+    attacks: ['drake_boss_creeping_barrage', 'drake_boss_sonar_rings', 'drake_boss_coral_communion', 'drake_boss_core_overload'],
     rarities: [
       { id: 'normal',   label: 'Normal',   hpMult: 1.0, rewardMult: 1.0,  chance: 0.40, color: '#888', bg: 'rgba(40,40,40,0.92)' },
       { id: 'raro',     label: 'Raro',     hpMult: 1.5, rewardMult: 1.5,  chance: 0.30, color: '#44f', bg: 'rgba(10,20,60,0.92)' },
@@ -208,7 +214,7 @@ MAP_DEFS[3] = {
     rotOffset: 0,
     hitRadius: 8,
     relicDropChance: 0.05, // 5%
-    attacks: ['charge_line', 'venom_pool', 'forked_shot', 'shockwave', 'impale_line'],
+    attacks: ['leviathan_neck_beam', 'leviathan_tide_wall', 'leviathan_shell_bulwark'],
   },
   boss: {
     name:        'Harbor Warden The Coinbreaker',
@@ -227,7 +233,7 @@ MAP_DEFS[3] = {
     yOffset: 3.5,
     rotOffset: 0,
     hitRadius: 12,
-    attacks: ['charge_line', 'venom_pool', 'forked_shot', 'shockwave', 'impale_line'],
+    attacks: ['turtle_boss_wreck_field', 'turtle_boss_gorge_drain', 'turtle_boss_broadside'],
     rarities: [
       { id: 'normal',   label: 'Normal',   hpMult: 1.0, rewardMult: 1.0,  chance: 0.40, color: '#888', bg: 'rgba(40,40,40,0.92)' },
       { id: 'raro',     label: 'Raro',     hpMult: 1.5, rewardMult: 1.5,  chance: 0.30, color: '#44f', bg: 'rgba(10,20,60,0.92)' },
@@ -294,17 +300,17 @@ MAP_DEFS[3] = {
             field: 'as',
             attackSpeedBonus: -1000,
             price: 100000, currency: 'gold',
-            ironPlatesPrice: 10,
+            ironPlatesPrice: 50,
           },
           {
             id: 'cannon_range_upgrade',
             name: 'Alcance',
-            description: '+50 Range',
+            description: '+30 Range',
             icon: '🎯',
             field: 'rn',
-            rangeBonus: 50,
+            rangeBonus: 30,
             price: 5000, currency: 'dobrao',
-            ironPlatesPrice: 20,
+            ironPlatesPrice: 100,
           },
           {
             id: 'cannon_damage_upgrade',
@@ -314,7 +320,7 @@ MAP_DEFS[3] = {
             field: 'dm',
             damageBonus: 0.10,
             price: 10000, currency: 'dobrao',
-            ironPlatesPrice: 30,
+            ironPlatesPrice: 150,
           },
         ],
       }
@@ -348,13 +354,21 @@ MAP_DEFS[4] = {
     dobraoChance: 1,
     dobraoMin:    300,
     dobraoMax:    400,
-    model:       '/models/monster/wrim.glb',
+    model:       '/models/monster/wrim_boss.glb',
     scale: 7,
     yOffset: 50,
     rotOffset: 0,
     hitRadius: 8,
     relicDropChance: 0.11, // 11% — poucos NPCs, mapa difícil
-    attacks: ['impale_line', 'heavy_stomp', 'venom_pool', 'whirlwind', 'lava_breath', 'piercing_beam', 'charge_line', 'cross_blast'],
+    // Repertório COMPLETO do Verme (mob + boss). Não existe boss de verme neste
+    // mapa (`boss: null`) e o próprio NPC já usa o modelo `wrim_boss.glb` —
+    // sem isto os 4 ataques de boss nunca aconteciam no jogo, e o bicho lutava
+    // com um conjunto e largava as relíquias do OUTRO (ver _bestiaryPool no
+    // projectile-manager). As duas ⭐ (abyss_coil e reaper_spiral) seguem
+    // travadas na Lua de Sangue, então fora dela ele usa 6 dos 8.
+    attacks: ['wyrm_maw_lunge', 'wyrm_palp_snare', 'wyrm_pustule_burst', 'wyrm_abyss_coil',
+              'wyrm_boss_spine_crown', 'wyrm_boss_maw_vortex', 'wyrm_boss_leg_cage',
+              'wyrm_boss_reaper_spiral'],
   },
   boss: null,
   visual: {
@@ -480,11 +494,7 @@ MAP_DEFS[6] = {
     //
     // Mapa 6 não tem NPC nenhum (`npc: null`) — a Viúva é a bancada isolada
     // das mecânicas novas: rachar dano, cegar e os pilares.
-    attacks: [
-      'tide_split',
-      'gloom_shroud',
-      'ghost_soul_pillars',
-    ],
+    attacks: ['charnel_death_mark', 'charnel_brood_hatch', 'charnel_chain_bond', 'charnel_funeral_march'],
     // Aura passiva: não entra no sorteio de ataques, ticka sozinha enquanto ela
     // viver (attack-manager.tickAuras).
     auras: ['ghost_dread_aura'],

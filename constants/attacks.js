@@ -531,4 +531,12 @@ const ATTACK_DEFS = {
   },
 };
 
+// ── Ataques do bestiário (9 bichos novos × ~4 skills) ────────────────────────
+// Definidos em monster_skills.js porque cada um é TAMBÉM uma relíquia dropável:
+// manter as duas visões na mesma tabela é o que garante que o ataque que te
+// matou e a relíquia que caiu sejam o mesmo VFX. Aqui só mesclamos a visão
+// "ataque de NPC" (raios de arena, damageMult de bicho, cooldown longo).
+const { MONSTER_ATTACK_DEFS } = require('./monster_skills');
+Object.assign(ATTACK_DEFS, MONSTER_ATTACK_DEFS);
+
 module.exports = { ATTACK_DEFS };

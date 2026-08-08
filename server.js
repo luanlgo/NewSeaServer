@@ -40,7 +40,13 @@ const _resetAttempts    = new Map();     // email → tentativas erradas de cód
 // ─── Map Definitions ─────────────────────────────────────────────────────────
 // Each map defines NPC base stats, XP requirements, and visual hints for the client
 
-const { sendTo } = require('./utils/helpers');
+const { sendTo, sendRaw } = require('./utils/helpers');
+const stateBuilder = require('./utils/state-builder');
+
+// Interest management do broadcast de estado. Ligado por padrão; AOI_ENABLED=0
+// volta para o broadcast completo (rota de fuga se algo aparecer em produção).
+// Requer cliente >= v0.1.19, que entende o formato f/s/r do `state`.
+const AOI_ENABLED = process.env.AOI_ENABLED !== '0';
 const db = require('./managers/db-manager');
 const PlayerManager     = require('./managers/player-manager');
 const NPCManager        = require('./managers/npc-manager');
@@ -51,6 +57,7 @@ const AttackManager     = require('./managers/attack-manager');
 const PartyManager      = require('./managers/party-manager');
 const PetManager        = require('./managers/pet-manager');
 const WallManager       = require('./managers/wall-manager');
+const MonsterSkillManager = require('./managers/monster-skill-manager');
 const MissionBoatManager = require('./managers/mission-boat-manager');
 const FleetEventManager  = require('./managers/fleet-event-manager');
 const WeatherManager     = require('./managers/weather-manager');
@@ -62,23 +69,31 @@ const app    = express();
 
 app.use(compression());
 const server = http.createServer(app);
+// ── Compressão do WebSocket ──────────────────────────────────────────────────
+// DESLIGADA por padrão. Antes daqui o `state` tinha ~69 KB com 200 jogadores e
+// era deflatado UMA VEZ POR CLIENTE: medido, o nível 6 custava ~186% de um core
+// a 10 Hz — e o deflate do `ws` roda na threadpool do libuv (4 threads), então
+// isso virava fila de latência, não só CPU.
+//
+// Com AOI + slim (utils/state-builder.js) o `state` caiu para ~1 KB, que é o
+// próprio `threshold` do ws: não haveria o que comprimir de qualquer forma.
+//
+// Se precisar religar (WS_COMPRESS=1), agora as opções estão no lugar certo:
+// `clientNoContextTakeover`/`serverNoContextTakeover`/`threshold` moravam FORA
+// do objeto `perMessageDeflate` e eram silenciosamente ignoradas pelo ws — cada
+// conexão mantinha um contexto zlib próprio (~300 KB pelos docs do ws, ~60 MB
+// com 200 jogadores) sem nenhum dos limites que o código pedia.
+const WS_COMPRESS = process.env.WS_COMPRESS === '1';
+
 const wss    = new WebSocket.Server({
   server,
   maxPayload: WS_MAX_PAYLOAD, // rejeita frames gigantes (anti-DoS de memória)
-  perMessageDeflate: {
-    zlibDeflateOptions: {
-      chunkSize: 1024,
-      memLevel: 7,
-      level: 6 // mesmo nível do compression HTTP
-    }
-  },
-  zlibDeflateOptions: {
-    chunkSize: 10 * 1024
-  },
-  // Outras opções úteis:
-    clientNoContextTakeover: true,  // Economiza memória
+  perMessageDeflate: WS_COMPRESS ? {
+    zlibDeflateOptions: { chunkSize: 1024, memLevel: 7, level: 1 },
+    clientNoContextTakeover: true,  // economiza memória por conexão
     serverNoContextTakeover: true,
-    threshold: 1024  // Só comprime mensagens > 1KB
+    threshold: 1024,                // só comprime mensagens > 1 KB
+  } : false,
 });
 
 // ── Server-side WebSocket heartbeat ─────────────────────────────────────────
@@ -187,23 +202,55 @@ const _serverMetrics = {
   tickCount: 0,
   slowTicks: 0,         // ticks > 20ms
   lastTickMs: 0,
+  maxTickMs: 0,
+  tickMsSum: 0,         // p/ média — tick isolado é ruidoso demais p/ decidir
+  stateBytesSent: 0,
 };
 global._serverMetrics = _serverMetrics;
+
+// Atraso do event loop: o melhor sinal único de "o servidor está dando conta".
+// O tick é agendado a cada 16 ms; se o loop atrasa mais que isso, a simulação
+// já está andando devagar e TODO mundo sente, mesmo com a rede sobrando.
+// O histograma do perf_hooks é amostrado pelo runtime e custa ~nada.
+const { monitorEventLoopDelay } = require('perf_hooks');
+const _loopLag = monitorEventLoopDelay({ resolution: 10 });
+_loopLag.enable();
 
 app.get('/api/metrics', (req, res) => {
   const token = process.env.METRICS_TOKEN;
   if (token && req.headers.authorization !== `Bearer ${token}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  const mem = process.memoryUsage();
+  const mem  = process.memoryUsage();
+  const upS  = Math.max(1, (Date.now() - _serverMetrics.startTime) / 1000);
+  const ms   = ns => Math.round(ns / 1e5) / 10; // ns → ms com 1 casa
   res.json({
-    uptime:            Math.floor((Date.now() - _serverMetrics.startTime) / 1000),
+    uptime:            Math.floor(upS),
     players:           players ? players.size : 0,
+
+    // ── Tick (alvo: TICK_RATE = 16 ms) ────────────────────────────────────
     tickCount:         _serverMetrics.tickCount,
-    slowTicks:         _serverMetrics.slowTicks,
-    lastTickMs:        _serverMetrics.lastTickMs,
+    slowTicks:         _serverMetrics.slowTicks,     // > 20 ms
+    slowTickPct:       _serverMetrics.tickCount
+      ? +(100 * _serverMetrics.slowTicks / _serverMetrics.tickCount).toFixed(2) : 0,
+    lastTickMs:        +_serverMetrics.lastTickMs.toFixed(2),
+    avgTickMs:         _serverMetrics.tickCount
+      ? +(_serverMetrics.tickMsSum / _serverMetrics.tickCount).toFixed(2) : 0,
+    maxTickMs:         +_serverMetrics.maxTickMs.toFixed(2),
+    // Fração do tempo real gasta simulando. Acima de ~70% não há folga para
+    // picos (boss, frota, muita gente entrando junto).
+    tickLoadPct:       +(100 * _serverMetrics.tickMsSum / (upS * 1000)).toFixed(1),
+
+    // ── Event loop ────────────────────────────────────────────────────────
+    loopLagMeanMs:     ms(_loopLag.mean),
+    loopLagP99Ms:      ms(_loopLag.percentile(99)),
+    loopLagMaxMs:      ms(_loopLag.max),
+
+    // ── Rede ──────────────────────────────────────────────────────────────
     messagesReceived:  _serverMetrics.messagesReceived,
     broadcastsSent:    _serverMetrics.broadcastsSent,
+    stateKBsOut:       +(_serverMetrics.stateBytesSent / 1024 / upS).toFixed(1),
+
     memHeapUsedMB:     Math.round(mem.heapUsed / 1024 / 1024),
     memHeapTotalMB:    Math.round(mem.heapTotal / 1024 / 1024),
     memRssMB:          Math.round(mem.rss / 1024 / 1024),
@@ -354,12 +401,22 @@ const weatherManager     = new WeatherManager(MAP_DEFS);
 const wallManager        = new WallManager();
 playerManager.wallManager = wallManager;
 
+// Motor das 34 relíquias do bestiário (r14..r47) — forma/ritmo/CC vêm dos dados
+// em constants/monster_skills.js, então é UM branch em handleUseRelic() para as
+// 34. O ctx é montado depois (logo abaixo da criação dos managers), porque o
+// motor precisa do projectileManager e dos NPC managers por mapa.
+const monsterSkillManager = new MonsterSkillManager({});
+
 // 1. ProjectileManager first (no npcs yet — injected after)
 const projectileManager = new ProjectileManager(wss, players, null, null, null, MAP_DEFS);
 projectileManager.partyManager = partyManager;
 
 // 2. AttackManager — gerencia ataques especiais de NPC (telegraph + AoE)
 const attackManager = new AttackManager(addEvent, projectileManager);
+// Barragem Rolante do BICHO ergue pedra de verdade a cada passo (wallPerStep) —
+// mesmo registro que a versão de relíquia usa. Sem esta injeção o bloqueio
+// simplesmente não acontece no cast de bicho, silenciosamente.
+attackManager.wallManager = wallManager;
 
 // 2b. WreckManager — ruínas saqueáveis da Zona Vermelha (mapa 11).
 // Injetado em projectileManager/attackManager para o hook onPlayerDeath em
@@ -374,6 +431,71 @@ let   npcManager  = new NPCManager(projectileManager, MAP_DEFS, 1, attackManager
 let   npcManager2 = new NPCManager(projectileManager, MAP_DEFS, 2, attackManager); // map 2 NPCs (let — pode ser recriado)
 npcManager.wallManager  = wallManager;
 npcManager2.wallManager = wallManager;
+// ── ctx do motor de skills do bestiário ──────────────────────────────────────
+// Montado aqui (e não na construção) porque depende do projectileManager. As
+// funções referenciadas são `function` declarations — hoisted, então podem
+// morar mais abaixo no arquivo.
+monsterSkillManager.ctx = {
+  projectileManager,
+  players,
+  wallManager,
+  addEvent,
+  sendTo,
+  relicDamageFor:   (p, d) => relicDamageFor(p, d),
+  relicCanHitPlayer: (c, t) => relicCanHitPlayer(c, t),
+  grantSkillXp:     (p, skill, amt) => grantSkillXp(p, skill, amt, wss),
+  getMapManagerFor: (lvl) => (lvl === 1 ? npcManager : lvl === 2 ? npcManager2 : getMapManager(lvl)),
+  onNpcDamaged:     (killer, npc) => _monsterSkillNpcKill(killer, npc),
+  clampToMap:       (ent) => {
+    // Mesma proteção do arrasto do Arpão: nunca empurrar/puxar pra fora do
+    // mapa nem pra dentro de ilha/muro.
+    const lvl = ent.mapLevel || 1;
+    const size = (MAP_DEFS[lvl] && MAP_DEFS[lvl].size) || 2000;
+    ent.x = Math.max(-size / 2, Math.min(size / 2, ent.x));
+    ent.z = Math.max(-size / 2, Math.min(size / 2, ent.z));
+    pushOutOfIslands(ent, MAP_DEFS[lvl], 8);
+    pushOutOfWalls(ent, wallManager.getActive(lvl), 8);
+  },
+};
+
+/**
+ * Morte de NPC causada por uma relíquia do bestiário. Mesma contabilidade dos
+ * branches de raio/foguete/meteoro (boss vs comum, recompensa, respawn, save),
+ * num lugar só — as 34 skills compartilham esta função em vez de cada uma
+ * carregar a própria cópia do bloco.
+ */
+function _monsterSkillNpcKill(killer, npc) {
+  npc.dead = true;
+  if (npc.isBoss) {
+    addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, isBoss: true, killerId: killer.id }, npc.mapLevel);
+    if (npc.isWorldBoss) {
+      worldBossManager.onWorldBossDead(npc, killer.id);
+    } else {
+      const lvl = npc.mapLevel || 1;
+      const mgr = projectileManager.bossManagers.get(lvl) || (lvl === 2 ? bossManager2 : bossManager);
+      mgr && mgr.onBossDead(npc, killer.id);
+      worldBossManager.onZoneBossDead(npc, killer.id);
+    }
+    projectileManager.npcs.delete(npc.id);
+    return;
+  }
+  const rewards = projectileManager.grantNpcKillRewards(killer, npc);
+  addEvent({ type: 'entity_dead', id: npc.id, isNPC: true, killerId: killer.id, goldDrop: rewards.goldDrop }, npc.mapLevel);
+  const lvl = npc.mapLevel || 1;
+  const mgr = lvl === 1 ? npcManager : lvl === 2 ? npcManager2 : getMapManager(lvl);
+  mgr && mgr.respawnScaled(npc.id, killer.npcKills || 0, lvl);
+  _npcKillBossAccounting(lvl, killer.npcKills || 0);
+  db.save(killer).catch(e => console.error('Save error:', e));
+  const mapDef = MAP_DEFS[killer.mapLevel || 1] || {};
+  sendTo(killer.ws, {
+    type: 'currency_update', gold: killer.gold, dobroes: killer.dobroes,
+    reward: { type: 'gold', amount: rewards.finalGold },
+    npcKills: killer.npcKills, mapXp: killer.mapXp,
+    mapLevel: killer.mapLevel || 1, mapXpNeeded: mapDef.xpToAdvance || 99999,
+    mapFragments: killer.mapFragments || 0,
+  });
+}
+
 // Maps 3+ são criados sob demanda via regularManagers (elimina npcManager3/4/6 hardcoded)
 const regularManagers = new Map(); // mapLevel (3-6) → { npc: NPCManager, boss: BossManager|null }
 // Mapas bônus (7+) — mesma lógica, managers separados para dungeon complete detection
@@ -502,7 +624,9 @@ const fleetEventManager = new FleetEventManager(wss, players, MAP_DEFS, getMapMa
 // Nomes dos monstros do recife (um por mapa 1-3)
 const _REEF_NPC_NAMES = ['Abyssal Stalker', 'Dreadfin Leviathan', 'Gilded Reef Manta'];
 
-// ── Tutorial: o primeiro abate de NPC concede o Foguete Naval (r4) ───────────
+// ── Tutorial: o primeiro abate de NPC concede a Pinça Esmagadora (r14) ───────
+// É a skill do próprio carangueijo, o bicho que o jogador acabou de matar: o
+// primeiro poder vem de quem morreu, que é a promessa do bestiário inteiro.
 // Estado 0→1 aqui; 1→2 só via mensagem tutorial_complete do cliente. A concessão
 // é server-side (e não a pedido do cliente) para não ser forjável.
 function maybeGrantTutorialRelic(killer) {
@@ -513,9 +637,9 @@ function maybeGrantTutorialRelic(killer) {
   killer.gold = (killer.gold || 0) + 1500;
   const instanceId = `rl_tut_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
   if (!killer.inventory.relics) killer.inventory.relics = [];
-  killer.inventory.relics.push({ instanceId, relicId: 'r4' });
+  killer.inventory.relics.push({ instanceId, relicId: 'r14' });
   // Auto-equipa no slot 0 (tecla Q) se o deck está vazio — o passo seguinte do
-  // tutorial pede para usar o foguete sem passar pelo painel de relíquias.
+  // tutorial pede para usar a pinça sem passar pelo painel de relíquias.
   if (!killer.relicDeck || killer.relicDeck.length === 0) killer.relicDeck = [instanceId];
   db.save(killer, true).catch(e => console.error('Save error:', e));
   sendTo(killer.ws, {
@@ -926,8 +1050,142 @@ function progressDailyMission(player, stat, amount = 1) {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Troca de mapa pela borda — detecção + confirmação do jogador
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const BORDER_EDGE  = 20;   // faixa de detecção, em unidades, a partir da borda
+const BORDER_SPAWN = 150;  // offset de nascimento na borda oposta do mapa destino
+
+/** Onde o barco nasce no mapa destino, por direção de saída. */
+const BORDER_SPAWN_AT = {
+  norte: { axis: 'z', value: (s) =>  (s / 2) - BORDER_SPAWN },
+  sul:   { axis: 'z', value: (s) => -(s / 2) + BORDER_SPAWN },
+  left:  { axis: 'x', value: (s) =>  (s / 2) - 80 },
+  right: { axis: 'x', value: (s) => -(s / 2) + 80 },
+};
+
+/** Testes de "chegou na borda" + clamp que segura o barco ali, para um mapa. */
+// Detecção de borda, sem alocação. `lim` = (mapSize / 2) - BORDER_EDGE, ou seja
+// a mesma fronteira que a antiga borderDirs() montava por closure. São tabelas
+// de módulo (criadas uma vez) porque isto roda por jogador a cada tick.
+const BORDER_TEST = {
+  norte: (p, lim) => p.z <= -lim,
+  sul:   (p, lim) => p.z >=  lim,
+  left:  (p, lim) => p.x <= -lim,
+  right: (p, lim) => p.x >=  lim,
+};
+const BORDER_BLOCK = {
+  norte: (p, lim) => { p.z = -lim; },
+  sul:   (p, lim) => { p.z =  lim; },
+  left:  (p, lim) => { p.x = -lim; },
+  right: (p, lim) => { p.x =  lim; },
+};
+
+/**
+ * Borda dividida (ex.: mapa 11 sul → [6, 10]): array de destinos.
+ * Para bordas norte/sul a metade oeste (x<0) vai pro primeiro e a leste pro
+ * segundo; para left/right decide pela metade em z.
+ */
+function resolveBorderTarget(p, dir, targetRaw) {
+  if (!Array.isArray(targetRaw)) return targetRaw;
+  const axis = BORDER_SPAWN_AT[dir]?.axis || 'z';
+  return axis === 'z'
+    ? (p.x < 0 ? targetRaw[0] : targetRaw[1])
+    : (p.z < 0 ? targetRaw[0] : targetRaw[1]);
+}
+
+/**
+ * Lista de entidades mandada na ENTRADA de um mapa (`init` e `map_transition`).
+ *
+ * Com AOI ligada ela vai VAZIA de propósito. O cliente cria uma entidade para
+ * cada item desta lista, mas o servidor só sabe remover (via `r`) aquilo que ele
+ * mesmo mandou pelo AOI — um NPC criado por aqui e fora do raio de visão nunca
+ * entraria na lista de remoção e ficaria de navio-fantasma parado no mapa.
+ *
+ * Não se perde nada: o broadcast seguinte chega em no máximo 100 ms e preenche
+ * tudo que está no alcance. O pré-carregamento de modelos não depende desta
+ * lista — _preload_map_npcs() no cliente lê o mapDef.
+ */
+function entrySnapshot(mgr) {
+  if (AOI_ENABLED) return [];
+  return mgr ? mgr.snapshot() : [];
+}
+
+/** Cancela o aviso de borda (jogador se afastou, morreu, saiu do mapa…). */
+function clearBorderPrompt(p) {
+  if (!p._pendingBorder) return;
+  p._pendingBorder = null;
+  sendTo(p.ws, { type: 'border_prompt_clear' });
+}
+
+/**
+ * Executa a troca de mapa pela borda. Só é chamada depois que o jogador
+ * confirma o aviso — a detecção da borda por si só nunca teleporta ninguém.
+ */
+function applyBorderTransition(p, dir, targetLevel) {
+  const level     = p.mapLevel || 1;
+  const targetDef = MAP_DEFS[targetLevel];
+  const spawn     = BORDER_SPAWN_AT[dir];
+  if (!targetDef || !spawn) return false;
+
+  console.log(`🗺️ ${p.name}: mapa ${level} → ${targetLevel} (${dir})`);
+  const targetSize = targetDef.size;
+  if (spawn.axis === 'z') p.z = spawn.value(targetSize);
+  else                    p.x = spawn.value(targetSize);
+
+  // O eixo livre é mantido do mapa anterior — clampa aos limites do destino
+  // (mapas têm tamanhos diferentes; sem isso dá pra nascer fora da borda)
+  const _edgeClamp = targetSize / 2 - 40;
+  p.x = Math.max(-_edgeClamp, Math.min(_edgeClamp, p.x));
+  p.z = Math.max(-_edgeClamp, Math.min(_edgeClamp, p.z));
+
+  p.mapLevel = targetLevel;
+  p._pendingBorder = null;
+  _notifyWantedHunters(p);
+
+  // islandsVisited — missão diária
+  { const _ivToday = todayDateStr();
+    if (!p._visitedIslandsDate || p._visitedIslandsDate !== _ivToday) {
+      p._visitedIslandsDate = _ivToday; p._visitedIslands = new Set();
+    }
+    const _ivPrev = p._visitedIslands.size;
+    p._visitedIslands.add(targetLevel);
+    if (p._visitedIslands.size > _ivPrev) progressDailyMission(p, 'islandsVisited', 1);
+  }
+
+  p.input = { w: false, a: false, s: false, d: false };
+  p.speed = 0;
+  ensureManagersForMap(targetLevel);
+  db.save(p, true).catch(e => console.error('Save error:', e));
+
+  const targetMgr = getMapManager(targetLevel);
+  const bpKts   = targetDef.boss?.killsToSpawn ?? 10;
+  const bpTot   = getMapKills(targetLevel);
+  const bpAlive = getMapBossAlive(targetLevel);
+  sendTo(p.ws, {
+    type:    'map_transition',
+    toLevel: targetLevel,
+    mapDef:  targetDef,
+    mapSize: targetSize,
+    x:       p.x,
+    z:       p.z,
+    mapXp:   p.mapXp || 0,
+    npcs:    entrySnapshot(targetMgr),
+    bossProgress: targetDef.boss
+      ? (bpKts === 0
+          ? { current: 0, needed: 0, mapLevel: targetLevel, bossAlive: bpAlive }
+          : { current: bpTot % bpKts, needed: bpKts, mapLevel: targetLevel, bossAlive: bpAlive })
+      : null,
+    dailyMissions: targetLevel === 4 ? buildDailyMissions(p) : undefined,
+    wrecks: wreckManager.snapshot(targetLevel),   // ruínas ativas (zona vermelha)
+  });
+  return true;
+}
+
 const TICK_RATE = parseInt(process.env.TICK_RATE || process.env.VITE_TICK_RATE) || 16
 setInterval(() => {
+  const _tickT0 = performance.now();
   const now = Date.now();
   const dt  = (now - lastTick) / 1000;
   lastTick  = now;
@@ -953,18 +1211,22 @@ setInterval(() => {
   }
 
   // ── distanceSailed: rastreia distância percorrida por jogadores ───────────
+  // Guarda a posição anterior em dois escalares em vez de um objeto novo por
+  // jogador por tick (eram ~12,5 mil objetos/s com 200 jogadores, todos lixo
+  // para o GC no tick seguinte).
   players.forEach(p => {
     if (p.dead || p.x === undefined || p.z === undefined) return;
-    if (p._lastMissionPos) {
-      const _ddx  = p.x - p._lastMissionPos.x;
-      const _ddz  = p.z - p._lastMissionPos.z;
+    if (p._lastMissionX !== undefined) {
+      const _ddx  = p.x - p._lastMissionX;
+      const _ddz  = p.z - p._lastMissionZ;
       const _dist = Math.sqrt(_ddx * _ddx + _ddz * _ddz);
       // Sanity check: ignora teleports (> 200u) e movimentos mínimos (< 0.5u)
       if (_dist >= 0.5 && _dist < 200) {
         progressDailyMission(p, 'distanceSailed', Math.round(_dist));
       }
     }
-    p._lastMissionPos = { x: p.x, z: p.z };
+    p._lastMissionX = p.x;
+    p._lastMissionZ = p.z;
   });
 
   // ── AFK Training tick — verifica expiração do tempo de treino (60 s) ────────
@@ -1031,71 +1293,51 @@ setInterval(() => {
   }
 
   // ── Data-driven border detection based on sideMap ───────────────────────────
+  // A borda NUNCA teleporta sozinha: o barco é segurado no limite e o cliente
+  // recebe `border_prompt`. A troca só acontece quando o jogador confirma
+  // (`confirm_map_transition`) — sem isso dava pra sair do mapa sem querer no
+  // meio de uma batalha, só por manobrar perto da borda.
   players.forEach(p => {
-    if (p.dead) return;
-    if (p.afkTraining || MAP_DEFS[p.mapLevel]?.isTrainingMap) return; // AFK: sem transição por borda
+    if (p.dead) { clearBorderPrompt(p); return; }
+    // AFK: sem transição por borda
+    if (p.afkTraining || MAP_DEFS[p.mapLevel]?.isTrainingMap) { clearBorderPrompt(p); return; }
 
     const level = p.mapLevel || 1;
     const mapDef = MAP_DEFS[level];
-    if (!mapDef) return;
+    if (!mapDef) { clearBorderPrompt(p); return; }
 
     const sideMapEntry = mapDef.sideMap?.[0];
-    if (!sideMapEntry) return;
+    if (!sideMapEntry) { clearBorderPrompt(p); return; }
 
-    const mapSize = mapDef.size;
-    const EDGE = 20;   // detecção dentro de 20 unidades da borda
-    const SPAWN = 150; // offset de spawn na borda oposta do mapa destino
+    // `lim` é a mesma fronteira que borderDirs() calculava. A checagem virou
+    // tabela de módulo (BORDER_TEST/BORDER_BLOCK) porque borderDirs() alocava um
+    // objeto com 4 sub-objetos e 8 closures POR JOGADOR, POR TICK — a 62,5 Hz
+    // com 200 jogadores eram ~160 mil alocações por segundo só para comparar
+    // quatro números. A ordem das direções é preservada (memoizada no próprio
+    // sideMapEntry) para não mudar qual saída ganha quando o barco está na
+    // quina de duas bordas.
+    const lim = (mapDef.size / 2) - BORDER_EDGE;
+    const dirs = sideMapEntry._dirs
+      || (sideMapEntry._dirs = Object.keys(sideMapEntry).filter(d => BORDER_TEST[d]));
 
-    const DIRS = {
-      norte: {
-        triggered: () => p.z <= -(mapSize / 2) + EDGE,
-        block:     () => { p.z = -(mapSize / 2) + EDGE; },
-        spawnAxis: 'z',
-        spawnValue: (s) => (s / 2) - SPAWN,
-      },
-      sul: {
-        triggered: () => p.z >= (mapSize / 2) - EDGE,
-        block:     () => { p.z = (mapSize / 2) - EDGE; },
-        spawnAxis: 'z',
-        spawnValue: (s) => -(s / 2) + SPAWN,
-      },
-      left: {
-        triggered: () => p.x <= -(mapSize / 2) + EDGE,
-        block:     () => { p.x = -(mapSize / 2) + EDGE; },
-        spawnAxis: 'x',
-        spawnValue: (s) => (s / 2) - 80,
-      },
-      right: {
-        triggered: () => p.x >= (mapSize / 2) - EDGE,
-        block:     () => { p.x = (mapSize / 2) - EDGE; },
-        spawnAxis: 'x',
-        spawnValue: (s) => -(s / 2) + 80,
-      },
-    };
+    let atBorder = false;
+    for (const dir of dirs) {
+      if (!BORDER_TEST[dir](p, lim)) continue;
+      const block = BORDER_BLOCK[dir];
+      const targetRaw = sideMapEntry[dir];
 
-    let mapChanged = false;
-    for (const [dir, targetRaw] of Object.entries(sideMapEntry)) {
-      if (mapChanged) break;
-      const trans = DIRS[dir];
-      if (!trans || !trans.triggered()) continue;
-
-      // Borda dividida (ex.: mapa 11 sul → [6, 10]): array de destinos.
-      // Para bordas norte/sul a metade oeste (x<0) vai pro primeiro e a
-      // leste pro segundo; para left/right decide pela metade em z.
-      const targetLevel = Array.isArray(targetRaw)
-        ? (trans.spawnAxis === 'z'
-            ? (p.x < 0 ? targetRaw[0] : targetRaw[1])
-            : (p.z < 0 ? targetRaw[0] : targetRaw[1]))
-        : targetRaw;
+      atBorder = true;
+      const targetLevel = resolveBorderTarget(p, dir, targetRaw);
 
       // Mapa 5 (Treino AFK) é acessível apenas por compra — bloqueia borda
       if (targetLevel === 5) {
-        trans.block();
+        block(p, lim);
+        clearBorderPrompt(p);
         break;
       }
 
       const targetDef = MAP_DEFS[targetLevel];
-      if (!targetDef) { trans.block(); break; }
+      if (!targetDef) { block(p, lim); clearBorderPrompt(p); break; }
 
       // Gate de XP: apenas em direção 'norte' quando mapDef.xpToAdvance está definido
       // E apenas se o mapa destino também é de progressão (xpRequired > 0)
@@ -1103,7 +1345,8 @@ setInterval(() => {
       if (dir === 'norte' && mapDef.xpToAdvance && (targetDef.xpRequired || 0) > 0) {
         const xp = p.mapXp || 0;
         if (xp < mapDef.xpToAdvance) {
-          trans.block();
+          block(p, lim);
+          clearBorderPrompt(p);
           if (!p._borderMsgCooldown || Date.now() - p._borderMsgCooldown > 4000) {
             p._borderMsgCooldown = Date.now();
             sendTo(p.ws, { type: 'border_blocked', level, xp, needed: mapDef.xpToAdvance, nextMapName: targetDef.name });
@@ -1112,65 +1355,41 @@ setInterval(() => {
         }
       }
 
-      // Transição confirmada
-      console.log(`🗺️ ${p.name}: mapa ${level} → ${targetLevel} (${dir})`);
-      const targetSize = targetDef.size;
-      if (trans.spawnAxis === 'z') {
-        p.z = trans.spawnValue(targetSize);
-      } else {
-        p.x = trans.spawnValue(targetSize);
+      // Segura o barco na borda e pede confirmação (uma vez por chegada).
+      block(p, lim);
+      const pend = p._pendingBorder;
+      if (!pend || pend.dir !== dir || pend.target !== targetLevel || pend.from !== level) {
+        p._pendingBorder = { dir, target: targetLevel, from: level };
+        sendTo(p.ws, {
+          type:        'border_prompt',
+          toLevel:     targetLevel,
+          nextMapName: targetDef.name,
+          dir,
+        });
       }
-      // O eixo livre é mantido do mapa anterior — clampa aos limites do destino
-      // (mapas têm tamanhos diferentes; sem isso dá pra nascer fora da borda)
-      const _edgeClamp = targetSize / 2 - 40;
-      p.x = Math.max(-_edgeClamp, Math.min(_edgeClamp, p.x));
-      p.z = Math.max(-_edgeClamp, Math.min(_edgeClamp, p.z));
-
-      p.mapLevel = targetLevel;
-      _notifyWantedHunters(p);
-
-      // islandsVisited — missão diária
-      { const _ivToday = todayDateStr();
-        if (!p._visitedIslandsDate || p._visitedIslandsDate !== _ivToday) {
-          p._visitedIslandsDate = _ivToday; p._visitedIslands = new Set();
-        }
-        const _ivPrev = p._visitedIslands.size;
-        p._visitedIslands.add(targetLevel);
-        if (p._visitedIslands.size > _ivPrev) progressDailyMission(p, 'islandsVisited', 1);
-      }
-
-      p.input = { w: false, a: false, s: false, d: false };
-      p.speed = 0;
-      ensureManagersForMap(targetLevel);
-      db.save(p, true).catch(e => console.error('Save error:', e));
-
-      const targetMgr = getMapManager(targetLevel);
-      const bpKts = targetDef.boss?.killsToSpawn ?? 10;
-      const bpTot = getMapKills(targetLevel);
-      const bpAlive = getMapBossAlive(targetLevel);
-      sendTo(p.ws, {
-        type:    'map_transition',
-        toLevel: targetLevel,
-        mapDef:  targetDef,
-        mapSize: targetSize,
-        x:       p.x,
-        z:       p.z,
-        mapXp:   p.mapXp || 0,
-        npcs:    targetMgr ? targetMgr.snapshot() : [],
-        bossProgress: targetDef.boss
-          ? (bpKts === 0
-              ? { current: 0, needed: 0, mapLevel: targetLevel, bossAlive: bpAlive }
-              : { current: bpTot % bpKts, needed: bpKts, mapLevel: targetLevel, bossAlive: bpAlive })
-          : null,
-        dailyMissions: targetLevel === 4 ? buildDailyMissions(p) : undefined,
-        wrecks: wreckManager.snapshot(targetLevel),   // ruínas ativas (zona vermelha)
-      });
-      mapChanged = true;
+      break;
     }
+
+    // Saiu da faixa da borda — some com o aviso
+    if (!atBorder) clearBorderPrompt(p);
   });
 
   // Update NPC managers — mapas 1 e 2 always active, resto dinâmico
-  const _playersForMap = lvl => new Map([...players].filter(([,p]) => (p.mapLevel||1) === lvl));
+  //
+  // O índice é montado UMA VEZ por tick. Antes cada mapa chamava
+  // `new Map([...players].filter(...))`, varrendo TODOS os jogadores: com 200
+  // jogadores e 12 mapas ativos davam ~150 mil iterações e 750 Maps por segundo
+  // só para o GC limpar depois.
+  const _emptyPlayers = new Map();
+  const _playersByMap = new Map();
+  players.forEach((p, id) => {
+    const lvl = p.mapLevel || 1;
+    let m = _playersByMap.get(lvl);
+    if (!m) { m = new Map(); _playersByMap.set(lvl, m); }
+    m.set(id, p);
+  });
+  const _playersForMap = lvl => _playersByMap.get(lvl) || _emptyPlayers;
+
   if (!npcManager.destroyed)  npcManager.update(dt,  _playersForMap(1));
   if (!npcManager2.destroyed) npcManager2.update(dt, _playersForMap(2));
   for (const [lvl, { npc }] of regularManagers) {
@@ -1179,7 +1398,7 @@ setInterval(() => {
   // Mapas bônus (7/8/9)
   for (const [lvl, mgr] of bonusNpcManagers) {
     if (!mgr.destroyed) {
-      const bonusPlayers = new Map([...players].filter(([,p]) => p.mapLevel === lvl));
+      const bonusPlayers = _playersForMap(lvl);
       mgr.update(dt, bonusPlayers);
       // ── Bonus dungeon: máquina de estados npcs → boss → complete ─────────
       // NPCs são deletados de mgr.npcs ao morrer (proxy), não apenas marcados dead.
@@ -1656,21 +1875,86 @@ setInterval(() => {
       bossesByZone.get(z).push(b);
     }
 
-    players.forEach(p => {
-      const zone    = p.mapLevel || 1;
-      const myNpcs  = npcSnapByZone.get(zone) || [];
-      const myBoss  = bossesByZone.get(zone) || [];
-      const myPlayers = playersByZone.get(zone) || [];
-      const myBoat  = missionBoatManager.snapshotFor(zone);
-      const stateMsg = {
-        type:    'state',
-        players: myPlayers,
-        npcs:    [...myNpcs, ...myBoss],
-        weather: weatherManager.get(zone, now),
-      };
-      if (myBoat) stateMsg.missionBoat = myBoat;
-      sendTo(p.ws, stateMsg);
-    });
+    // ── Meta da zona (clima + barco de missões) ────────────────────────────
+    // Vai junto em toda mensagem de state, mas também precisa FORÇAR o envio
+    // quando muda: o cliente remove o barco quando o campo `missionBoat` some
+    // (ver _update_mission_boat em main.gd), então se o barco trocar de mapa num
+    // tick em que ninguém se mexeu, sem esse force o barco ficaria fantasma.
+    if (!global._zoneMeta) global._zoneMeta = new Map();
+    const zoneMeta = new Map();
+    const zonesWithPlayers = new Set();
+    players.forEach(p => zonesWithPlayers.add(p.mapLevel || 1));
+    for (const zone of zonesWithPlayers) {
+      const weather = weatherManager.get(zone, now);
+      const boat    = missionBoatManager.snapshotFor(zone);
+      const prev    = global._zoneMeta.get(zone);
+      const changed = !prev || prev.weather !== weather || !!prev.boat !== !!boat;
+      zoneMeta.set(zone, { weather, boat, changed });
+      global._zoneMeta.set(zone, { weather, boat: !!boat });
+    }
+
+    if (AOI_ENABLED) {
+      // ── Broadcast com interest management ────────────────────────────────
+      // Uma indexação por mapa (O(N)) e depois uma consulta por jogador — em vez
+      // da lista inteira do mapa serializada uma vez por jogador (O(P²)).
+      const liveIds = new Set();
+      const zoneIndex = new Map();
+      for (const zone of zonesWithPlayers) {
+        const entities = [
+          ...(playersByZone.get(zone)  || []),
+          ...(npcSnapByZone.get(zone)  || []),
+          ...(bossesByZone.get(zone)   || []),
+        ];
+        for (const e of entities) liveIds.add(e.id);
+        zoneIndex.set(zone, stateBuilder.buildZone(entities, zone));
+      }
+
+      players.forEach(p => {
+        const zone = p.mapLevel || 1;
+        const idx  = zoneIndex.get(zone);
+        if (!idx) return;
+        const meta = zoneMeta.get(zone);
+        const msg  = stateBuilder.buildFor(p, idx);
+        // Nada entrou, saiu nem se mexeu e a meta da zona não mudou: silêncio.
+        // Num porto com gente parada isso corta a maior parte do tráfego.
+        if (!msg && !(meta && meta.changed)) return;
+        const out = msg || { type: 'state', aoi: 1 };
+        if (meta) {
+          out.weather = meta.weather;
+          if (meta.boat) out.missionBoat = meta.boat;
+        }
+        // Serializa aqui (em vez de deixar o sendTo fazer) só para conseguir
+        // contar os bytes que saem — é o mesmo trabalho, mais um contador.
+        const raw = JSON.stringify(out);
+        _serverMetrics.stateBytesSent += raw.length;
+        _serverMetrics.broadcastsSent++;
+        sendRaw(p.ws, raw);
+      });
+
+      // Baselines de entidades que já morreram/sumiram (só varre quando cresce)
+      stateBuilder.pruneBaseline(liveIds);
+    } else {
+      // ── Broadcast legado (AOI_ENABLED=0) ─────────────────────────────────
+      // Mantido como rota de fuga. Mesmo aqui a mensagem é serializada UMA VEZ
+      // por mapa em vez de uma vez por jogador — ela é idêntica para todo mundo
+      // da zona, então o stringify por jogador era desperdício puro.
+      const rawByZone = new Map();
+      for (const zone of zonesWithPlayers) {
+        const meta = zoneMeta.get(zone);
+        const stateMsg = {
+          type:    'state',
+          players: playersByZone.get(zone) || [],
+          npcs:    [...(npcSnapByZone.get(zone) || []), ...(bossesByZone.get(zone) || [])],
+          weather: meta ? meta.weather : undefined,
+        };
+        if (meta && meta.boat) stateMsg.missionBoat = meta.boat;
+        rawByZone.set(zone, JSON.stringify(stateMsg));
+      }
+      players.forEach(p => {
+        const raw = rawByZone.get(p.mapLevel || 1);
+        if (raw) sendRaw(p.ws, raw);
+      });
+    }
   }
 
   // ── Limpeza de mapas vazios (a cada minuto) — dinâmico ───────────────────
@@ -1705,6 +1989,14 @@ setInterval(() => {
   }
 
   flushEvents();
+
+  // Custo deste tick. Medido no fim, depois do broadcast — é ele que domina.
+  const _tickMs = performance.now() - _tickT0;
+  _serverMetrics.tickCount++;
+  _serverMetrics.lastTickMs = _tickMs;
+  _serverMetrics.tickMsSum += _tickMs;
+  if (_tickMs > _serverMetrics.maxTickMs) _serverMetrics.maxTickMs = _tickMs;
+  if (_tickMs > 20) _serverMetrics.slowTicks++;
 }, TICK_RATE);
 
 // Save all players every 15s — uses a single batch query instead of N individual saves
@@ -1732,6 +2024,55 @@ setInterval(() => {
     }
   });
 }, 1000);
+
+// ── Blips do minimapa ────────────────────────────────────────────────────────
+// O minimapa mostra o mapa INTEIRO, então não pode se alimentar do `state`, que
+// com AOI só carrega o entorno do jogador. Vai em mensagem própria.
+//
+// 2 Hz porque o minimapa tem ~200 px para 2400 unidades de mapa: 1 px ≈ 12 u, e
+// um NPC anda menos de um pixel entre dois broadcasts. Pela mesma razão a
+// posição vai em inteiro — já é mais fina que o pixel que vai desenhá-la.
+//
+// Custo medido com 200 jogadores: +3,7% sobre o tráfego do estado. Barato
+// porque NPC é outra ordem de grandeza que jogador — o mapa mais populoso tem
+// 21 (mapa 10), contra os 200 jogadores. Dos jogadores só vão os do GRUPO
+// (máx. 4): mandar os 200 custaria +30%, oito vezes mais que todos os NPCs.
+const BLIP_RATE_MS = parseInt(process.env.BLIP_RATE_MS) || 500;
+setInterval(() => {
+  if (players.size === 0) return;
+
+  const blipZones = new Set();
+  players.forEach(p => blipZones.add(p.mapLevel || 1));
+
+  // A lista de NPCs é idêntica para todo mundo do mapa: serializa UMA vez por
+  // mapa e reusa o mesmo pedaço de JSON em todas as mensagens.
+  const npcFrag = new Map();
+  for (const zone of blipZones) {
+    const out = [];
+    const collect = (mgr) => {
+      if (!mgr || mgr.destroyed || !mgr.npcs) return;
+      mgr.npcs.forEach(n => {
+        if (!n || n.dead) return;
+        out.push([Math.round(n.x), Math.round(n.z), n.isBoss ? 1 : 0]);
+      });
+    };
+    collect(getMapManager(zone));
+    collect(projectileManager.bossManagers.get(zone)); // boss vive em manager próprio
+    npcFrag.set(zone, JSON.stringify(out));
+  }
+
+  players.forEach(p => {
+    if (!p.ws) return;
+    const zone  = p.mapLevel || 1;
+    // getPartyMembersInZone já exclui o próprio jogador, os mortos e quem está
+    // em outro mapa — é a mesma checagem que a divisão de recompensa usa.
+    const mates = partyManager.getPartyMembersInZone(p.id, zone, players);
+    const pFrag = mates.length
+      ? JSON.stringify(mates.map(m => [Math.round(m.x), Math.round(m.z)]))
+      : '[]';
+    sendRaw(p.ws, `{"type":"blips","n":${npcFrag.get(zone) || '[]'},"p":${pFrag}}`);
+  });
+}, BLIP_RATE_MS);
 
 // ── Helpers para gerenciamento dinâmico de mapas ──────────────────────────────
 function getMapManager(level) {
@@ -1986,7 +2327,7 @@ function teleportPlayerToMap(p, targetLevel, spawnX, spawnZ) {
     x:       p.x,
     z:       p.z,
     mapXp:   p.mapXp || 0,
-    npcs:    targetMgr ? targetMgr.snapshot() : [],
+    npcs:    entrySnapshot(targetMgr),
     bossProgress: targetDef.boss
       ? (bpKts === 0
           ? { current: 0, needed: 0, mapLevel: targetLevel, bossAlive: bpAlive }
@@ -2335,6 +2676,25 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        // ── Borda do mapa: jogador confirmou a viagem (tecla no cliente) ────
+        case 'confirm_map_transition': {
+          if (!player || player.dead) break;
+          const pend = player._pendingBorder;
+          if (!pend) break;
+          // Revalida no servidor: ainda precisa estar encostado NAQUELA borda.
+          const _bLvl = player.mapLevel || 1;
+          const _bDef = MAP_DEFS[_bLvl];
+          // pend.from garante que o aviso não sobreviveu a um teleporte/respawn
+          if (!_bDef || pend.from !== _bLvl) { clearBorderPrompt(player); break; }
+          const _bTest = BORDER_TEST[pend.dir];
+          if (!_bTest || !_bTest(player, (_bDef.size / 2) - BORDER_EDGE)) {
+            clearBorderPrompt(player);
+            break;
+          }
+          applyBorderTransition(player, pend.dir, pend.target);
+          break;
+        }
+
         case 'request_respawn': {
           if (player && player.dead) {
             // ── Morte em mapa bônus: perde o mapa e volta ao normal ──────────
@@ -2375,7 +2735,7 @@ wss.on('connection', (ws) => {
                 x:                returnX,
                 z:                returnZ,
                 mapXp:            player.mapXp || 0,
-                npcs:             retMgr ? retMgr.snapshot() : [],
+                npcs:             entrySnapshot(retMgr),
                 bossProgress:     retMapDef.boss
                   ? { current: 0, needed: retMapDef.boss.killsToSpawn ?? 10, mapLevel: returnLevel, bossAlive: getMapBossAlive(returnLevel) }
                   : null,
@@ -2599,6 +2959,20 @@ wss.on('connection', (ws) => {
         case 'use_relic': {
           if (!player) break;
           handleUseRelic(player, msg);
+          break;
+        }
+
+        // ── Mira contínua de relíquia canalizada ─────────────────────────────
+        // Sopro Pútrido, Barragem Giratória e Jato do Pescoço re-miram a cada
+        // tick. O cliente manda a posição do cursor enquanto a skill roda; o
+        // motor lê a última mira em _resolveOnce. É só uma posição no mundo —
+        // nenhum dano depende deste pacote, então não precisa de validação
+        // além do descarte por idade (1 s) que o motor já faz.
+        case 'relic_aim': {
+          if (!player) break;
+          const ax = Number(msg.x), az = Number(msg.z);
+          if (!Number.isFinite(ax) || !Number.isFinite(az)) break;
+          player._relicAim = { x: ax, z: az, t: Date.now() };
           break;
         }
 
@@ -2872,7 +3246,7 @@ async function handleLogin(ws, msg) {
   player.pvpKills      = saved.pvpKills      || 0;
   player.difficulty    = saved.difficulty    || 0;
   // Tutorial: contas veteranas (≥20 abates) pulam o onboarding — e não recebem
-  // o foguete de brinde, que é recompensa do primeiro abate de novato.
+  // a relíquia de brinde, que é recompensa do primeiro abate de novato.
   player.tutorialState = saved.tutorialState || 0;
   if (player.tutorialState === 0 && player.npcKills >= 20) player.tutorialState = 2;
   // Treino AFK: sem isto o estado só existia em memória e um restart do servidor
@@ -2990,7 +3364,9 @@ async function handleLogin(ws, msg) {
   const initShots = salvoCount(player);
   const initZone    = player.mapLevel || 1;
   ensureManagersForMap(initZone); // garante managers ativos para o mapa inicial do jogador
-  const initPlayers = playerManager.snapshot()
+  // Idem entrySnapshot(): com AOI a lista vai vazia e o primeiro broadcast
+  // preenche só quem está no alcance de visão.
+  const initPlayers = AOI_ENABLED ? [] : playerManager.snapshot()
     .filter(ps => (ps.mapLevel || 1) === initZone);
   sendTo(ws, {
     type:             'init',
@@ -3003,7 +3379,7 @@ async function handleLogin(ws, msg) {
     x:                player.x,
     z:                player.z,
     mapSize:          (MAP_DEFS[initZone] && MAP_DEFS[initZone].size),
-    npcs:             MAP_DEFS[initZone]?.isTrainingMap ? [] : (getMapManager(initZone) || npcManager).snapshot(),
+    npcs:             MAP_DEFS[initZone]?.isTrainingMap ? [] : entrySnapshot(getMapManager(initZone) || npcManager),
     players:          initPlayers,
     gold:             player.gold,
     dobroes:          player.dobroes,
@@ -3732,7 +4108,7 @@ function handleLeaveAfkTraining(player) {
     type: 'map_transition', toLevel: _retMap,
     mapDef: MAP_DEFS[_retMap], mapSize: _retSize,
     x: player.x, z: player.z, mapXp: player.mapXp || 0,
-    npcs: _retMgr ? _retMgr.snapshot() : [],
+    npcs: entrySnapshot(_retMgr),
     bossProgress: null,
     dailyMissions: _retMap === 4 ? buildDailyMissions(player) : undefined,
   });
@@ -4001,7 +4377,7 @@ function handleEnterBonusMap(player, msg, ws) {
     x:              0,
     z:              0,
     mapXp:          player.mapXp || 0,
-    npcs:           mgr ? mgr.snapshot() : [],
+    npcs:           entrySnapshot(mgr),
     bossProgress:   null,
     isBonusMap:     true,
     bonusMapId:     mapId,
@@ -4040,7 +4416,7 @@ function handleLeaveBonusMap(player, ws) {
     x:            returnX,
     z:            returnZ,
     mapXp:        player.mapXp || 0,
-    npcs:         mgr ? mgr.snapshot() : [],
+    npcs:         entrySnapshot(mgr),
     bossProgress: mapDef.boss
       ? { current: 0, needed: mapDef.boss.killsToSpawn ?? 10, mapLevel: returnLevel, bossAlive: getMapBossAlive(returnLevel) }
       : null,
@@ -5219,6 +5595,13 @@ function handleUseRelic(player, msg) {
       range:    player.relicAuraRange,
       duration: relicDef.duration,
     }, player.mapLevel);
+
+  } else if (relicDef.effect === 'monster_skill') {
+    // ── Bestiário (r14..r47) ──────────────────────────────────────────
+    // UM branch para as 34: a diferença entre a Pinça Esmagadora e a Marcha
+    // Fúnebre é DADO (forma/ticks/cc/special em constants/monster_skills.js),
+    // não código. Ver managers/monster-skill-manager.js.
+    monsterSkillManager.cast(player, relicDef, rTx, rTz, effectPayload);
   }
 
   // Treino: concede XP de relíquia por usar (sem NPCs para acertar)

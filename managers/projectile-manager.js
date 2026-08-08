@@ -9,10 +9,56 @@ const {
   SHOW_LOG, CANNON_DEFS, MAP_DEFS, difficultyRewardMult,
 } = require('../constants');
 
+const { SKILLS_BY_SOURCE, MONSTER_SKILLS } = require('../constants/monster_skills');
+const { starDropAllowed } = require('../utils/star-gate');
+
+// Pool de relíquias de um bicho = os ataques que ele REALMENTE usa.
+//
+// Antes vinha do nome do MODELO, e isso desalinhou o Verme: ele luta com o
+// conjunto do mob mas o modelo é `wrim_boss.glb`, então largava as relíquias de
+// BOSS — e as do mob ficaram indroppáveis, porque nenhum NPC usa `wrim.glb`.
+// Ou seja, exatamente ao contrário. Derivar dos ATAQUES mantém a promessa da
+// tabela ("o ataque que te matou é a relíquia que cai") e ainda serve o caso
+// novo: um bicho com os dois conjuntos solta os dois.
+//
+// O modelo fica de reserva para NPC sem lista de ataques.
+function _bestiaryPool(npc) {
+  const ids = [];
+  for (const a of (npc && npc.attacks) || []) {
+    const skill = MONSTER_SKILLS[a];
+    if (skill && skill.relicId) ids.push(skill.relicId);
+  }
+  if (ids.length) return ids;
+
+  const m = npc && npc.npcModel;
+  if (typeof m !== 'string') return null;
+  const stem = m.split('/').pop().replace(/\.glb$/i, '');
+  return SKILLS_BY_SOURCE[stem] || null;
+}
+
 // ownedIds: Set de relicIds que o jogador já possui (para evitar duplicatas)
-function _rollRelicDrop(ownedIds = new Set()) {
-  // Filtra apenas relíquias que o jogador ainda não tem
-  const available = Object.entries(RELIC_DEFS).filter(([id]) => !ownedIds.has(id));
+// npc:      se for um dos 9 bichos do bestiário, ele só solta os PRÓPRIOS ataques
+//           (o ataque que te matou é a relíquia que cai). Só cai no sorteio
+//           global quando o bicho não tem conjunto próprio ou você já tem os 4.
+function _rollRelicDrop(ownedIds = new Set(), npc = null) {
+  // ⭐ só cai na Lua de Sangue. Fora dela o conjunto do bicho vale como se ela
+  // não existisse — o jogador leva as outras, e a ⭐ fica como o troféu de uma
+  // noite específica. Quem já ganhou usa quando quiser (sem gate de uso).
+  const takeable = (id) => !ownedIds.has(id) && starDropAllowed(id);
+
+  const doBicho = _bestiaryPool(npc);
+  const pool = doBicho ? doBicho.filter(takeable) : [];
+  if (pool.length > 0) {
+    // Dentro do conjunto do bicho o sorteio é uniforme: as 4 skills dele são
+    // igualmente "dele", e a raridade já está embutida na chance de drop do NPC.
+    const relicId = pool[Math.floor(Math.random() * pool.length)];
+    const instanceId = `rl_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
+    return { instanceId, relicId, rarity: RELIC_DEFS[relicId].rarity };
+  }
+
+  // Filtra apenas relíquias que o jogador ainda não tem (e respeita o gate ⭐:
+  // sem isto o sorteio global devolveria de dia a mesma ⭐ barrada acima)
+  const available = Object.entries(RELIC_DEFS).filter(([id]) => takeable(id));
   if (available.length === 0) return null; // já tem todas
 
   // Reconstrói pesos apenas para as disponíveis
@@ -430,6 +476,27 @@ class ProjectileManager {
       }
     }
 
+    // ── Relic: Carapaça Eriçada (r32) — mitiga e DEVOLVE parte do golpe ─────
+    // As placas eriçadas são o kit de tanque do leviatã-tartaruga: reduzem o
+    // dano e refletem uma fração em quem bateu. O reflect só vale contra
+    // atirador conhecido (proj.ownerId) e nunca se auto-aplica.
+    if (!isNPC && target.relicBulwarkExpires && now < target.relicBulwarkExpires) {
+      const mitigated = Math.round(finalDmg * (target.relicBulwarkReduction || 0.4));
+      finalDmg = Math.max(0, finalDmg - mitigated);
+      const reflect = Math.round(mitigated * (target.relicBulwarkReflect || 0.3));
+      if (reflect > 0 && proj.ownerId && proj.ownerId !== target.id) {
+        const shooter = this.players.get(proj.ownerId)
+                     || (this.npcs && this.npcs.get(proj.ownerId));
+        if (shooter && !shooter.dead) {
+          shooter.hp = Math.max(0, shooter.hp - reflect);
+          this._broadcastToMap(target.mapLevel || 1, {
+            type: 'bulwark_reflect', targetId: target.id,
+            shooterId: proj.ownerId, dmg: reflect, hp: shooter.hp,
+          });
+        }
+      }
+    }
+
     // ── Pet: relíquia defensiva intercepta ANTES do dano ser aplicado ───────
     if (!isNPC && this.petManager) {
       finalDmg = this.petManager.interceptOwnerDamage(target, finalDmg);
@@ -638,7 +705,7 @@ class ProjectileManager {
       if (Math.random() < Math.min(0.95, (npc.relicDropChance || 0) * rewardMult)) {
         if (!killer.inventory.relics) killer.inventory.relics = [];
         const ownedIds = new Set(killer.inventory.relics.map(r => r.relicId));
-        const dropped  = _rollRelicDrop(ownedIds);
+        const dropped  = _rollRelicDrop(ownedIds, npc);
         if (dropped) {
           killer.inventory.relics.push(dropped);
           const relicDef   = RELIC_DEFS[dropped.relicId];
@@ -941,6 +1008,25 @@ class ProjectileManager {
     const MAX_PROJECTILES_PER_TICK = 5000;
     let processed = 0;
 
+    // ── Broad-phase por mapa ────────────────────────────────────────────────
+    // `this.npcs` é o Proxy que agrega TODOS os managers, então o código antigo
+    // varria os NPCs do mundo inteiro para cada projétil e só descartava pelo
+    // mapLevel lá dentro do checkHit. Bucketizar uma vez por tick troca
+    // O(projéteis × entidades_do_mundo) por O(entidades) + O(projéteis × mesmo_mapa).
+    //
+    // Iterar um array congelado (em vez do Map vivo) é seguro: o checkHit já
+    // começa descartando alvo morto, e quem nasce no meio do tick simplesmente
+    // entra na conta do tick seguinte.
+    const npcsByMap    = new Map();
+    const playersByMap = new Map();
+    const _bucket = (map, key, item) => {
+      let arr = map.get(key);
+      if (!arr) { arr = []; map.set(key, arr); }
+      arr.push(item);
+    };
+    this.npcs.forEach(n    => { if (n && !n.dead) _bucket(npcsByMap,    n.mapLevel || 1, n); });
+    this.players.forEach(p => { if (p && !p.dead) _bucket(playersByMap, p.mapLevel || 1, p); });
+
     // Usar entries() para poder deletar durante iteração
     for (const [id, p] of this.projectiles.entries()) {
       if (processed++ > MAX_PROJECTILES_PER_TICK) {
@@ -1017,8 +1103,12 @@ class ProjectileManager {
         if (t1 <= 1 && t2 >= 0) this.hit(p, target, isNPC);
       };
 
-      this.npcs.forEach(target => checkHit(target, true));
-      this.players.forEach(target => checkHit(target, false));
+      // Só as entidades do mapa do dono do projétil — o checkHit mantém a
+      // checagem de mapLevel como segunda barreira.
+      const _mapNpcs = npcsByMap.get(p.ownerMapLevel);
+      if (_mapNpcs) for (let i = 0; i < _mapNpcs.length; i++) checkHit(_mapNpcs[i], true);
+      const _mapPlayers = playersByMap.get(p.ownerMapLevel);
+      if (_mapPlayers) for (let i = 0; i < _mapPlayers.length; i++) checkHit(_mapPlayers[i], false);
 
       if (p.dead) continue; // killed by collision above
 

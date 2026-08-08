@@ -48,6 +48,15 @@ const RELIC_DEFS = {
          damage: 1500, damagePct: 0.50, range: 130, hitRadius: 14, travelMs: 500, pullStopDist: 30, stunMs: 800, castTime: 300 },
 };
 
+// ── Relíquias do bestiário (r14..r47) ────────────────────────────────────────
+// As 34 skills dos 9 bichos novos. Todas usam o MESMO branch genérico
+// `effect: 'monster_skill'` no handleUseRelic() — a forma do acerto, o dano e o
+// CC vêm dos dados (shape/ticks/cc/special), não de código por relíquia.
+// Fonte única: constants/monster_skills.js, que também alimenta o ATTACK_DEFS
+// usado pelo próprio bicho. Drop: cada bicho só solta as SUAS (SKILLS_BY_SOURCE).
+const { MONSTER_RELIC_DEFS } = require('./monster_skills');
+Object.assign(RELIC_DEFS, MONSTER_RELIC_DEFS);
+
 // ── RELIC_RARITIES — peso de drop por raridade ────────────────────────────────
 const RELIC_RARITIES = {
   comum:    { label: 'Comum',    color: '#aaaaaa', dropWeight: 5    },

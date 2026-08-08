@@ -8,7 +8,7 @@ const CANNON_DEFS = {
   c4: { name: 'Quebrador de Leviatãs',               price: 1000, currency: 'gold',   damage: 20, range: 120, cooldown: 3200, lifesteal: 0.1, doubleShot: false },
   // Elite — vendidos apenas na Ilha do Comércio (Mapa 3)
   c5: { name: 'Canhão Duplo do fogo abissal', price: 300,  currency: 'dobrao', damage: 10, range: 120, cooldown: 3000, lifesteal: 0.2, doubleShot: true, isElite: true },
-  c6: { name: 'Ruína dos Sete Mares Duplo',   price: 2000, currency: 'dobrao', damage: 20, range: 150, cooldown: 3000, lifesteal: 0.3, doubleShot: true, isElite: true },
+  c6: { name: 'Ruína dos Sete Mares Duplo',   price: 2000, currency: 'dobrao', damage: 20, range: 120, cooldown: 3000, lifesteal: 0.3, doubleShot: true, isElite: true },
 };
 
 // ── AMMO_DEFS ─────────────────────────────────────────────────────────────────
@@ -31,9 +31,9 @@ const SAIL_DEFS = {
 
 // ── CANNON_RESEARCH_COSTS — custo por nível de pesquisa ──────────────────────
 const CANNON_RESEARCH_COSTS = [
-  { ironPlates: 10, gold:    100000 }, // nível 1
-  { ironPlates: 20, dobroes:   5000 }, // nível 2
-  { ironPlates: 30, dobroes:  10000 }, // nível 3
+  { ironPlates:  50, gold:    100000 }, // nível 1
+  { ironPlates: 100, dobroes:   5000 }, // nível 2
+  { ironPlates: 150, dobroes:  10000 }, // nível 3
 ];
 
 module.exports = { CANNON_DEFS, AMMO_DEFS, SAIL_DEFS, CANNON_RESEARCH_COSTS };

@@ -215,6 +215,14 @@ class NPCManager {
       _lastRescaleTime: 0,
       _lastDamageTime: 0,
 
+      // ── Bicho pacífico (mapas de tutorial) ────────────────────────────────
+      // `retaliateOnly` no def do mapa faz o bicho nascer DORMINDO: ele ignora
+      // o jogador por completo até levar dano. Era um conceito que só o boss
+      // tinha; os bichos comuns caçavam por proximidade desde o spawn.
+      retaliateOnly: !!npcDef.retaliateOnly,
+      aggroState:    npcDef.retaliateOnly ? 'passive' : 'aggressive',
+      _lastCheckedDmgTime: 0,
+
       relicDropChance:  npcDef.relicDropChance || 0, // chance de drop de relíquia ao morrer
 
       // Flag de sistema de ataque:
@@ -555,12 +563,31 @@ class NPCManager {
         }
       }
 
-      // Boss `retaliateOnly` ainda em 'passive' (mapas de tutorial) ignora o
+      // ── Reset por morte do agressor ──────────────────────────────────────
+      // "Se o jogador morre, só é atacado de novo se atacar." Sem isto o novato
+      // revivia e era recebido pelo mesmo bicho ainda agressivo. Vale para
+      // bicho comum e boss — quem só revida volta a dormir quando perde o alvo.
+      // O relógio de dano é sincronizado junto, senão o dano ANTIGO reacordava
+      // o bicho no tique seguinte.
+      // O `npc.targetId` é obrigatório aqui: sem ele, o tique que ACORDA o bicho
+      // (que ainda não escolheu alvo) era lido como "alvo morreu" e o punha para
+      // dormir de novo — ele oscilava entre os dois estados e nunca atacava.
+      if (npc.retaliateOnly && npc.aggroState === 'aggressive' && npc.targetId) {
+        const _tgt = playersMap.get(npc.targetId);
+        if (!_tgt || _tgt.dead) {
+          npc.aggroState = 'passive';
+          npc.targetId   = null;
+          npc._lastCheckedDmgTime = npc.lastDamageTime || 0;
+        }
+      }
+
+      // NPC `retaliateOnly` ainda em 'passive' (mapas de tutorial) ignora o
       // jogador POR COMPLETO — sem alvo de combate ele cai no ramo de vagar.
       // Antes só o ataque era bloqueado e ele continuava perseguindo, ficando a
       // rodear o jogador sem fazer nada. Basta levar dano para virar 'aggressive'
-      // e voltar a engajar normalmente.
-      if (npc.isBoss && npc.retaliateOnly && npc.aggroState === 'passive') {
+      // e voltar a engajar normalmente. Sem `isBoss`: o bicho comum do mapa de
+      // tutorial precisa exatamente do mesmo tratamento.
+      if (npc.retaliateOnly && npc.aggroState === 'passive') {
         nearestForCombat = null;
         npc.targetId = null;
       }
@@ -601,17 +628,18 @@ class NPCManager {
       // pegajoso (AGGRO/DEAGGRO) + leash do spawn — ver bloco padrão abaixo.
       if (!dodging) {
 
-        // ── Aggro por dano recebido — vale para TODO boss, melee ou não ─────────
+        // ── Aggro por dano recebido — boss E bicho comum ────────────────────────
         // Antes isto vivia só dentro do ramo melee. Os bosses dos mapas 1 e 2 não
         // definem moveType, então nunca saíam de 'passive' — e como o caminho
         // deles (attackManager.tryAttack) não olhava aggroState, atacavam sempre.
-        // Um boss `retaliateOnly` depende exclusivamente deste gatilho para acordar.
-        if (npc.isBoss && npc.aggroState === 'passive') {
+        // Quem só revida depende exclusivamente deste gatilho para acordar; sem
+        // o `isBoss` ele passou a servir também ao bicho pacífico do tutorial.
+        if (npc.aggroState === 'passive') {
           const dmgT = npc.lastDamageTime || 0;
           if (dmgT > (npc._lastCheckedDmgTime || 0)) {
             npc.aggroState = 'aggressive';
             npc._proximityMap?.clear();
-            console.log(`👹 Boss map${npc.mapLevel} → AGRESSIVO (dano recebido)`);
+            if (npc.isBoss) console.log(`👹 Boss map${npc.mapLevel} → AGRESSIVO (dano recebido)`);
           }
           npc._lastCheckedDmgTime = dmgT;
         }
@@ -674,7 +702,14 @@ class NPCManager {
           }
 
           // — Processar fases do cast ativo
-          if (npc._currentCast) {
+          //
+          // SO casts em formato objeto, criados pelo laco acima. O attackManager
+          // tambem escreve em _currentCast, mas guarda a STRING do id do ataque —
+          // desestruturar a string devolve atk=undefined e o atk.phase1End abaixo
+          // lanca TypeError. Como nao ha try/catch neste update, a excecao matava
+          // o resto do tick: o boss parava de atacar e ate a aura (que ticka mais
+          // abaixo, na mesma iteracao) deixava de rodar durante o cast.
+          if (npc._currentCast && typeof npc._currentCast === 'object') {
             const { atk, startTime, targetX, targetZ } = npc._currentCast;
             const elapsed = now - startTime;
 
@@ -732,12 +767,31 @@ class NPCManager {
             // Agressivo — persegue o mais próximo (walk perto, run longe)
             if (nearestForCombat) {
               npc.targetId = nearestForCombat.id;
+
+              // Ataques de ATTACK_DEFS também para o boss melee.
+              //
+              // Este bloco inteiro é o ramo `if (npc.isBoss && moveType==='melee')`,
+              // e o movimento padrão logo abaixo é o `else` dele — ou seja, um boss
+              // melee NUNCA alcança o tryAttack de lá. Sem esta chamada ele só
+              // consegue atacar por cast em formato objeto (o emerge). Removido o
+              // emerge, a Viúva ficou sem ataque nenhum: só a aura aparecia, porque
+              // ela ticka fora dos dois ramos.
+              if (this.attackManager) {
+                this.attackManager.tryAttack(
+                  npc, nearestForCombat, [...playersMap.values()], this.zoneLevel);
+              }
+
               const mAng = Math.atan2(nearestForCombat.x - npc.x, nearestForCombat.z - npc.z);
               let mDiff = mAng - npc.rotation;
               while (mDiff >  Math.PI) mDiff -= Math.PI * 2;
               while (mDiff < -Math.PI) mDiff += Math.PI * 2;
               npc.rotation += clamp(mDiff, -0.08, 0.08);
-              if (nearestDistForCombat <= (npc.closeRange || 200)) {
+              if (npc._currentCast) {
+                // Freia durante o cast para o telegraph ficar legível — espelha o
+                // que o caminho padrão faz ao ver _currentCast preenchido.
+                npc.speed     = 0;
+                npc.moveState = 'cast';
+              } else if (nearestDistForCombat <= (npc.closeRange || 200)) {
                 npc.speed     = SHIP_SPEED * 0.7125 * (npc.slowMult || 1); // 50% × 1.5
                 npc.moveState = 'walk';
               } else {

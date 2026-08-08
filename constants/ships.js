@@ -173,9 +173,9 @@ const SHIP_RELIQC = {
 // ── SHIP_UPGRADE_DEFS — upgrades comprados na ilha (vida, defesa, dano) ───────
 // dobroes: custo fixo por nível | goldDustPerLevel: pó de ouro escala × nível atual
 const SHIP_UPGRADE_DEFS = [
-  { id: 'hp',      icon: '❤️', label: 'Vida do Navio',  dobroes: 20000, goldDustPerLevel: 500, maxLevel: 30 },
-  { id: 'defense', icon: '🛡', label: 'Defesa do Navio', dobroes: 20000, goldDustPerLevel: 500, maxLevel: 30 },
-  { id: 'damage',  icon: '⚔️', label: 'Dano do Navio',   dobroes: 30000, goldDustPerLevel: 500, maxLevel: 30 },
+  { id: 'hp',      icon: '❤️', label: 'Vida do Navio',  dobroes: 20000, goldDustPerLevel: 2500, maxLevel: 30 },
+  { id: 'defense', icon: '🛡', label: 'Defesa do Navio', dobroes: 20000, goldDustPerLevel: 2500, maxLevel: 30 },
+  { id: 'damage',  icon: '⚔️', label: 'Dano do Navio',   dobroes: 30000, goldDustPerLevel: 2500, maxLevel: 30 },
 ];
 
 // ── BONUS_NPC_DEFS — navios piratas NPC que usam canhões (usesCannons: true) ────
