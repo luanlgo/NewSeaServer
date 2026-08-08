@@ -1,0 +1,10 @@
+# Scripts do Windows precisam de CRLF.
+#
+# O cmd.exe le um .bat avancando por OFFSET de byte assumindo CRLF. Com LF ele
+# perde um byte por linha e o arquivo se desmonta: "set" vira "et", as variaveis
+# ficam vazias e o script morre no comeco — parado num `pause`, com cara de
+# travado. Sem esta regra, um checkout em maquina com core.autocrlf diferente
+# reintroduz o problema.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
