@@ -287,4 +287,21 @@ const BONUS_NPC_DEFS = {
   },
 };
 
-module.exports = { SHIP_DEFS, SHIP_RELIQC, SHIP_UPGRADE_DEFS, BONUS_NPC_DEFS };
+// ── Vagas de curandeiro por navio ────────────────────────────────────────────
+// A regra é por CATEGORIA, não por navio: quem é `isElite` leva o dobro. Assim
+// um navio novo entra na tabela sem precisar lembrar de dar vaga a ele.
+// A fragata inicial é gratuita e não se encaixa em nenhuma das duas — fica com
+// a cota normal, que é o comportamento mais próximo do que ela tinha (1 vaga).
+const HEALER_SLOTS_NORMAL = 5;
+const HEALER_SLOTS_ELITE  = 10;
+
+/** Quantos curandeiros este navio comporta. Aceita o def ou o id. */
+function maxHealersFor(shipDefOrId) {
+  const def = typeof shipDefOrId === 'string' ? SHIP_DEFS[shipDefOrId] : shipDefOrId;
+  return def && def.isElite ? HEALER_SLOTS_ELITE : HEALER_SLOTS_NORMAL;
+}
+
+module.exports = {
+  SHIP_DEFS, SHIP_RELIQC, SHIP_UPGRADE_DEFS, BONUS_NPC_DEFS,
+  HEALER_SLOTS_NORMAL, HEALER_SLOTS_ELITE, maxHealersFor,
+};

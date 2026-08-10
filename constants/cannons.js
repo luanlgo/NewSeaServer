@@ -23,10 +23,13 @@ const AMMO_DEFS = {
 };
 
 // ── SAIL_DEFS ─────────────────────────────────────────────────────────────────
+// speedBonus derrubado de 10/20/30% para 3/5/7%: com até 3 velas equipadas, o
+// valor antigo somava +90% de velocidade só de pano, mais que qualquer outra
+// fonte do jogo junta. O teto do tier de ouro é 5% e o do tier de dobrão, 7%.
 const SAIL_DEFS = {
-  vela_quadrada: { name: 'Vela Quadrada', price: 200,  currency: 'gold',   speedBonus: 0.1, accelBonus: 0.005 },
-  vela_estai:    { name: 'Vela de Estai', price: 400,  currency: 'gold',   speedBonus: 0.2, accelBonus: 0.010 },
-  vela_latina:   { name: 'Vela Latina',   price: 150,  currency: 'dobrao', speedBonus: 0.3, accelBonus: 0.015 },
+  vela_quadrada: { name: 'Vela Quadrada', price: 200,  currency: 'gold',   speedBonus: 0.03, accelBonus: 0.005 },
+  vela_estai:    { name: 'Vela de Estai', price: 400,  currency: 'gold',   speedBonus: 0.05, accelBonus: 0.010 },
+  vela_latina:   { name: 'Vela Latina',   price: 150,  currency: 'dobrao', speedBonus: 0.07, accelBonus: 0.015 },
 };
 
 // ── CANNON_RESEARCH_COSTS — custo por nível de pesquisa ──────────────────────
