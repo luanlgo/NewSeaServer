@@ -1,25 +1,25 @@
 {
-    "version":  "0.1.20",
-    "date":  "2026-08-08",
+    "version":  "0.1.21",
+    "date":  "2026-08-10",
     "changelog":  [
-                      "[v0.1.20] - 2026-08-08",
+                      "[v0.1.21] - 2026-08-09",
+                      "feat(reliquias,bichos): sucção da Corneta e skills de monstro",
+                      "feat(talentos): liga 87 dos 120 stats e tira o teto de XP",
+                      "feat(navios,velas): curandeiros por navio e vela mais lenta",
+                      "release: v0.1.20",
                       "fix(rede): handler aoi_resync + turnRate do feixe do Leviata",
                       "release: v0.1.19",
                       "fix(build): fixa CRLF nos .bat de publicacao",
                       "chore(infra): loadtest, benchmark de broadcast e deploy com log",
                       "feat(bestiario,rede): 34 skills de monstro por dado + broadcast por area de interesse",
-                      "release: v0.1.18",
-                      "feat(ataques): 3 mecanicas de boss que nao se resolvem desviando",
-                      "fix(ranking): ordenar progresso por XP acumulado, nao pelo mapa atual",
-                      "chore(grupo,build): grupo maximo de 4 e recompensa so no mapa da kill",
-                      "feat(mobs,boss): novos modelos de monstro nos mapas 1-4 e 6 + boss passivo nao persegue"
+                      "release: v0.1.18"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.20/SeaOfCode.exe",
-                      "sha256":  "78e5e95c6fc4fb7dddf9133e438bc1887805be1e0080c6135957207fa9cc7558",
-                      "size":  747552432
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.21/SeaOfCode.exe",
+                      "sha256":  "318d7bd770d9063346ab5bcf4aeccbed4741d51c7cdf107ebb5dfa6d462761d8",
+                      "size":  748149504
                   }
               ]
 }
