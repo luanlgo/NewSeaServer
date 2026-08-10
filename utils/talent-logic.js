@@ -25,20 +25,62 @@ function getCostTier(totalSpent, costTiers) {
 }
 
 /**
+ * Soma os níveis investidos por chave de `stat`.
+ *
+ * São 120 talentos em 4 árvores e cada um declara um `stat` próprio, então
+ * ninguém consulta talento por id: o resto do servidor lê `player.tal[stat]`.
+ * O valor já sai na unidade exibida na UI (unit 'pct' → pontos percentuais),
+ * quem consome é que divide por 100.
+ *
+ * @returns {Object<string, number>} mapa stat → total acumulado
+ */
+function aggregateTalentStats(player, talentDefs) {
+  const levels = player.talents || {};
+  const tal = {};
+  for (const [id, def] of Object.entries(talentDefs)) {
+    const lvl = levels[id] || 0;
+    if (!lvl) continue;
+    tal[def.stat] = (tal[def.stat] || 0) + lvl * def.perLevel;
+  }
+  return tal;
+}
+
+/** Total de um único stat, sem precisar do mapa inteiro. */
+function sumTalentStat(player, talentDefs, statKey) {
+  const levels = player.talents || {};
+  let total = 0;
+  for (const [id, def] of Object.entries(talentDefs)) {
+    if (def.stat !== statKey) continue;
+    total += (levels[id] || 0) * def.perLevel;
+  }
+  return total;
+}
+
+/**
  * Aplica os bônus de talento no objeto player.
- * Modifica as propriedades talentDefenseBonus, talentCannonBonus, etc.
+ *
+ * Preenche `player.tal` (mapa stat → total) e projeta nos campos que o resto do
+ * servidor já lia antes das árvores novas (talentDamageBonus, talentGoldBonus…).
+ * Os stats sem campo dedicado ainda não têm efeito — ver `wired` em
+ * constants/talents.js.
  */
 function applyTalentBonuses(player, talentDefs) {
-  const t = player.talents || {};
-  player.talentDefenseBonus = (t.defesa      || 0) * (talentDefs.defesa?.perLevel      || 300) / 10000;
-  player.talentCannonBonus  = (t.canhoes     || 0) * (talentDefs.canhoes?.perLevel     || 2);
-  player.talentDamageBonus  = (t.dano        || 0) * (talentDefs.dano?.perLevel        || 2)   / 100;
-  player.talentRelicBonus   = (t.dano_relic  || 0) * (talentDefs.dano_relic?.perLevel  || 3)   / 100;
-  player.talentGoldBonus    = (t.riqueza     || 0) * (talentDefs.riqueza?.perLevel     || 3)   / 100;
-  player.talentDobraoBonus  = (t.ganancioso  || 0) * (talentDefs.ganancioso?.perLevel  || 3)   / 100;
-  player.talentXpBonus      = (t.mestre      || 0) * (talentDefs.mestre?.perLevel      || 5)   / 100;
-  // Chance EXTRA de crítico de relíquia (soma à base). 5 níveis × 5% = +25%.
-  player.talentRelicCritBonus = (t.crit_relic || 0) * (talentDefs.crit_relic?.perLevel || 5) / 100;
+  const tal = aggregateTalentStats(player, talentDefs);
+  player.tal = tal;
+
+  const pct = (k) => (tal[k] || 0) / 100;
+
+  player.talentDefenseBonus   = pct('damage_reduction_pct');
+  player.talentCannonBonus    = tal.cannon_slots || 0;
+  player.talentDamageBonus    = pct('damage_pct');
+  player.talentRelicBonus     = pct('relic_damage_pct');
+  player.talentGoldBonus      = pct('gold_drop_pct');
+  player.talentDobraoBonus    = pct('dobrao_drop_pct');
+  player.talentXpBonus        = pct('xp_drop_pct');
+  // Chance EXTRA de crítico de relíquia (soma à base).
+  player.talentRelicCritBonus = pct('relic_crit_chance');
+  // Multiplicador da regeneração de mana (1.0 = sem bônus).
+  player.talentManaRegenBonus = pct('mana_regen_pct');
 }
 
 /**
@@ -47,10 +89,45 @@ function applyTalentBonuses(player, talentDefs) {
 function recalcMaxHp(player, shipDefs, talentDefs) {
   const shipDef    = shipDefs[player.activeShip] || shipDefs.fragata;
   const skillHpPct = player.skills?.vida ? (player.skills.vida.level - 1) / 100 : 0;
-  const talentFlat = (player.talents?.hp || 0) * (talentDefs.hp?.perLevel || 500);
+  const talentFlat = sumTalentStat(player, talentDefs, 'max_hp_flat')
+                   + sumTalentStat(player, talentDefs, 'max_hp_flat_2');
+  // Casco Reforçado e Coração do Abismo somam PERCENTUAL da vida base do navio
+  // — não do total já somado, senão o flat do Casco de Ferro seria multiplicado
+  // duas vezes e os dois talentos se potencializariam sem que o texto prometa.
+  const talentPct  = (sumTalentStat(player, talentDefs, 'max_hp_pct')
+                    + sumTalentStat(player, talentDefs, 'abyssal_heart_pct')) / 100;
   const hpLevel    = player.shipIslandUpgrades?.hp ?? 0;
   const islandHp   = Math.round(hpLevel * shipDef.hp * 0.05); // +5% do HP base do navio por nível
-  player.maxHp = Math.floor(shipDef.hp * (1 + skillHpPct)) + talentFlat + islandHp;
+  player.maxHp = Math.floor(shipDef.hp * (1 + skillHpPct + talentPct)) + talentFlat + islandHp;
+}
+
+/**
+ * Converte um player do sistema antigo (10 talentos de até 5 níveis) para as
+ * árvores novas. Os valores por nível mudaram, então converter os níveis
+ * desbalancearia o build: zera os ids antigos e devolve o total como pontos
+ * livres, que o jogador redistribui onde quiser.
+ *
+ * Idempotente — depois da primeira passada não sobra id antigo para migrar.
+ *
+ * @returns {number} quantos pontos foram devolvidos (0 = nada a fazer)
+ */
+function migrateLegacyTalents(player, legacyMap) {
+  const talents = player.talents;
+  if (!talents) return 0;
+
+  let refund = 0;
+  let found  = false;
+  for (const legacyId of Object.keys(legacyMap)) {
+    if (!(legacyId in talents)) continue;
+    found = true;
+    refund += talents[legacyId] || 0;
+    delete talents[legacyId];
+  }
+  if (!found) return 0;
+
+  talents.totalSpent  = 0;
+  player.talentPoints = (player.talentPoints || 0) + refund;
+  return refund;
 }
 
 /**
@@ -58,7 +135,7 @@ function recalcMaxHp(player, shipDefs, talentDefs) {
  * Retorna uma string de erro, ou null se a compra é válida.
  * Não faz nenhum I/O — apenas lê o estado do player e retorna.
  */
-function validateBuyTalent(player, talentId, { talentDefs, costTiers, xpBase, xpGrowth, xpCap = Infinity }) {
+function validateBuyTalent(player, talentId, { talentDefs, costTiers, xpBase, xpGrowth, xpCap = Infinity, ringGate = null }) {
   const tDef = talentDefs[talentId];
   if (!tDef) return 'Talento inválido.';
 
@@ -67,6 +144,16 @@ function validateBuyTalent(player, talentId, { talentDefs, costTiers, xpBase, xp
   const totalSpent = talents.totalSpent   || 0;
 
   if (curLevel >= tDef.max) return `${tDef.name} já está no nível máximo!`;
+
+  // Gate de anel: os anéis externos só abrem com pontos investidos NA MESMA
+  // árvore. Sem isso um jogador novo compraria o capstone direto.
+  if (ringGate && tDef.ring > 0) {
+    const need = ringGate[tDef.ring] || 0;
+    const spentInTree = countTreeSpent(player, talentDefs, tDef.tree);
+    if (spentInTree < need) {
+      return `Investe ${need} pontos em ${tDef.tree} para abrir este anel (tem ${spentInTree}).`;
+    }
+  }
 
   const xpReq = calcXpRequired(totalSpent, xpBase, xpGrowth, xpCap);
   if ((player.mapXp || 0) < xpReq) {
@@ -87,4 +174,25 @@ function validateBuyTalent(player, talentId, { talentDefs, costTiers, xpBase, xp
   return null; // sem erro
 }
 
-module.exports = { calcXpRequired, getCostTier, applyTalentBonuses, recalcMaxHp, validateBuyTalent };
+/** Quantos pontos o jogador investiu numa árvore específica. */
+function countTreeSpent(player, talentDefs, tree) {
+  const levels = player.talents || {};
+  let total = 0;
+  for (const [id, def] of Object.entries(talentDefs)) {
+    if (def.tree !== tree) continue;
+    total += levels[id] || 0;
+  }
+  return total;
+}
+
+module.exports = {
+  calcXpRequired,
+  getCostTier,
+  aggregateTalentStats,
+  sumTalentStat,
+  countTreeSpent,
+  applyTalentBonuses,
+  recalcMaxHp,
+  migrateLegacyTalents,
+  validateBuyTalent,
+};

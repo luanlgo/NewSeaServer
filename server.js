@@ -42,6 +42,8 @@ const _resetAttempts    = new Map();     // email → tentativas erradas de cód
 
 const { sendTo, sendRaw } = require('./utils/helpers');
 const stateBuilder = require('./utils/state-builder');
+// Tradução dos 120 talentos em multiplicadores — ver utils/talent-effects.js.
+const fx = require('./utils/talent-effects');
 
 // Interest management do broadcast de estado. Ligado por padrão; AOI_ENABLED=0
 // volta para o broadcast completo (rota de fuga se algo aparecer em produção).
@@ -62,6 +64,9 @@ const MissionBoatManager = require('./managers/mission-boat-manager');
 const FleetEventManager  = require('./managers/fleet-event-manager');
 const WeatherManager     = require('./managers/weather-manager');
 const { pushOutOfIslands, pushOutOfWalls } = require('./utils/collision');
+// Deck de relíquia é POSICIONAL (índice = tecla, null = vazia) — ver o arquivo.
+const { normalizeDeck: _normalizeDeck, firstFreeSlot: _firstFreeSlot,
+        equipAt, unequipAt } = require('./utils/relic-deck');
 
 
 const compression = require('compression');
@@ -149,6 +154,7 @@ const {
   MAP_DEFS,
   getPvpZone,
   SHIP_DEFS,
+  maxHealersFor,
   PIRATE_DEFS,
   FRAGMENT_EXPLORE_COST,
   FRAGMENT_EXPLORE_FALLBACK_COST,
@@ -169,6 +175,8 @@ const {
   TALENT_XP_BASE,
   TALENT_XP_GROWTH,
   TALENT_XP_CAP,
+  RING_GATE,
+  LEGACY_TALENT_MAP,
   DIFFICULTIES,
   difficultyDef,
   difficultyRewardMult,
@@ -177,11 +185,14 @@ const {
   DAILY_MISSION_COUNT,
 } = require('./constants');
 const {
-  calcXpRequired:     _calcXpRequired,
-  getCostTier:        _getCostTier,
-  applyTalentBonuses: _applyTalentBonuses,
-  recalcMaxHp:        _recalcMaxHp,
-  validateBuyTalent:  _validateBuyTalent,
+  calcXpRequired:       _calcXpRequired,
+  getCostTier:          _getCostTier,
+  applyTalentBonuses:   _applyTalentBonuses,
+  recalcMaxHp:          _recalcMaxHp,
+  sumTalentStat:        _sumTalentStat,
+  countTreeSpent:       _countTreeSpent,
+  migrateLegacyTalents: _migrateLegacyTalents,
+  validateBuyTalent:    _validateBuyTalent,
 } = require('./utils/talent-logic');
 const { calcMaxCannons: _calcMaxCannons, trimCannons: _trimCannons } = require('./utils/combat-calc');
 const worldState = require('./utils/world-state');
@@ -400,6 +411,8 @@ const weatherManager     = new WeatherManager(MAP_DEFS);
 // partyManager); ver managers/wall-manager.js e utils/collision.js.
 const wallManager        = new WallManager();
 playerManager.wallManager = wallManager;
+// Vento de Esquadra (res_esquadra) precisa saber quem está no grupo de quem.
+playerManager.partyManager = partyManager;
 
 // Motor das 34 relíquias do bestiário (r14..r47) — forma/ritmo/CC vêm dos dados
 // em constants/monster_skills.js, então é UM branch em handleUseRelic() para as
@@ -638,9 +651,16 @@ function maybeGrantTutorialRelic(killer) {
   const instanceId = `rl_tut_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
   if (!killer.inventory.relics) killer.inventory.relics = [];
   killer.inventory.relics.push({ instanceId, relicId: 'r14' });
-  // Auto-equipa no slot 0 (tecla Q) se o deck está vazio — o passo seguinte do
-  // tutorial pede para usar a pinça sem passar pelo painel de relíquias.
-  if (!killer.relicDeck || killer.relicDeck.length === 0) killer.relicDeck = [instanceId];
+  // Auto-equipa na primeira tecla livre — o passo seguinte do tutorial pede para
+  // usar a pinça sem passar pelo painel de relíquias. Com o deck posicional,
+  // "vazio" é ter só nulls; testar `length === 0` deixava de auto-equipar
+  // qualquer jogador que já tivesse um deck de 4 buracos.
+  const maxRelT = killer.maxRelics || 4;
+  const livre = _firstFreeSlot(killer.relicDeck, maxRelT);
+  if (livre !== -1) {
+    killer.relicDeck = _normalizeDeck(killer.relicDeck, maxRelT);
+    killer.relicDeck[livre] = instanceId;
+  }
   db.save(killer, true).catch(e => console.error('Save error:', e));
   sendTo(killer.ws, {
     type:           'relic_state',
@@ -768,6 +788,8 @@ function recalcCannons(player) {
     player.cannonLifesteal   = 0;
     player.cannonDamage      = 0;
     player.cannonCooldown    = 0;
+    player.cannonCritChance  = 0;
+    player.cannonCritMult    = 2.0;
     return;
   }
 
@@ -781,6 +803,10 @@ function recalcCannons(player) {
 
   let bestRange = 0, sumCd = 0, bestLifesteal = 0, totalDmg = 0;
   let equippedC6Count = 0;
+  // Crítico do canhão: "melhor de", mesma convenção do lifesteal — equipar dois
+  // c6 com a Pontaria não dobra a chance, e um c6 sem o upgrade não dilui a de
+  // quem tem (seria o oposto do que "melhorar um canhão" promete).
+  let bestCrit = 0, bestCritMult = 0;
 
   debugServer(`[server] recalcCannons for player ${player.name || player.id}: cannons=${JSON.stringify(player.cannons)}`);
   player.cannons.forEach(cid => {
@@ -803,6 +829,10 @@ function recalcCannons(player) {
         if (ud.attackSpeedBonus) effectiveCooldown = Math.max(500, effectiveCooldown + ud.attackSpeedBonus);
         if (ud.rangeBonus)       effectiveRange    += ud.rangeBonus;
         if (ud.damageBonus)      effectiveDamage   = Math.round(effectiveDamage * (1 + ud.damageBonus));
+        if (ud.critChance && ud.critChance > bestCrit) {
+          bestCrit     = ud.critChance;
+          bestCritMult = ud.critMult || 2.0;
+        }
       }
       equippedC6Count++;
     }
@@ -819,6 +849,8 @@ function recalcCannons(player) {
   player.cannonLifesteal   = Math.min(bestLifesteal, 0.5);
   player.cannonDamage      = Math.round(totalDmg / player.cannons.length);
   player.cannonCooldown    = 0;
+  player.cannonCritChance  = Math.min(bestCrit, 0.5);
+  player.cannonCritMult    = bestCritMult || 2.0;
   debugServer(`[server]   -> result: cannonRange=${player.cannonRange}, cooldownMax=${player.cannonCooldownMax}, lifesteal=${player.cannonLifesteal}`);
 }
 
@@ -939,6 +971,13 @@ function applySkillMultipliers(player) {
 // Aplica bônus de talentos nos campos de player usados pelo servidor
 function applyTalentBonuses(player) { _applyTalentBonuses(player, TALENT_DEFS); }
 function recalcMaxHp(player)        { _recalcMaxHp(player, SHIP_DEFS, TALENT_DEFS); }
+
+// HP plano vindo dos talentos (Casco de Ferro + Madeira Nobre). Os navios bônus
+// recalculam o maxHp por fora do recalcMaxHp e precisam da mesma parcela.
+function talentFlatHp(player) {
+  return _sumTalentStat(player, TALENT_DEFS, 'max_hp_flat')
+       + _sumTalentStat(player, TALENT_DEFS, 'max_hp_flat_2');
+}
 
 // ── Missões Diárias ──────────────────────────────────────────────────────────
 function todayDateStr() {
@@ -1505,11 +1544,15 @@ setInterval(() => {
   // ── Healer pirate tick ────────────────────────────────────────────────────
   players.forEach(p => {
     if (p.dead || p.hp >= p.maxHp) return;
-    const healerType = p.pirates?.find(pr => pr === 'healer' || pr === 'healer_elite');
-    if (!healerType) return;
+    // TODOS os curandeiros equipados curam, não só o primeiro: com várias vagas
+    // por navio, o `find` de antes fazia o 2º ao 10º não valerem nada.
+    const healers = (p.pirates || []).filter(pr => pr === 'healer' || pr === 'healer_elite');
+    if (!healers.length) return;
 
-    const pirateDef = PIRATE_DEFS[healerType];
-    if (!pirateDef?.healPct || !pirateDef?.healInterval) return;
+    // O intervalo e a regra de ficar fora de combate são iguais nos dois tipos;
+    // o primeiro serve de referência para o relógio.
+    const pirateDef = PIRATE_DEFS[healers[0]];
+    if (!pirateDef?.healInterval) return;
 
     const timeSinceCombat = now - (p.lastCombatTime || 0);
     if (pirateDef.needsIdle && timeSinceCombat < (pirateDef.combatCooldown || 2000)) return;
@@ -1519,7 +1562,10 @@ setInterval(() => {
 
     if (p._healerTimer >= pirateDef.healInterval) {
       p._healerTimer = 0;
-      const amount = Math.max(1, Math.round(p.maxHp * pirateDef.healPct));
+      // Soma a cura de cada curandeiro; Recuperação (def_recuperacao) multiplica.
+      let bruto = 0;
+      for (const h of healers) bruto += PIRATE_DEFS[h]?.healAmount || 0;
+      const amount = Math.max(1, Math.round(bruto * fx.healingReceivedMult(p)));
       const prev = p.hp;
       p.hp = Math.min(p.maxHp, p.hp + amount);
       const healed = p.hp - prev;
@@ -2005,16 +2051,16 @@ setInterval(() => {
 }, 15000);
 
 // ── Mana regen: +0,5/s por jogador (metade da velocidade antiga de +1/s) ──────
-// O capstone do capitão "Guardião das Relíquias" (talento slot_reliquia, máx 3)
-// dá +20% de velocidade de recuperação POR NÍVEL (nível 3 = +60%). Acumulador
-// fracionário por jogador para a taxa < 1 e o bônus não perderem resolução.
+// O talento "Fluxo de Mana" (árvore Recurso, anel 1) dá +8% de velocidade de
+// recuperação por nível — no máximo (10) são +80%. Acumulador fracionário por
+// jogador para a taxa < 1 e o bônus não perderem resolução.
 const MANA_REGEN_PER_SEC = 0.5;
 setInterval(() => {
   players.forEach(p => {
     if (!p || !p.name || !p._dbLoaded) return;
     if (p.mana >= p.maxMana) { p._manaAcc = 0; return; }
-    let rate = MANA_REGEN_PER_SEC;
-    rate *= 1 + 0.20 * (p.talents?.slot_reliquia || 0);   // +20% por nível do talento
+    // Fluxo de Mana sempre, Concentração só fora de combate.
+    let rate = MANA_REGEN_PER_SEC * fx.manaRegenMult(p);
     p._manaAcc = (p._manaAcc || 0) + rate;
     if (p._manaAcc >= 1) {
       const add = Math.floor(p._manaAcc);
@@ -3253,8 +3299,14 @@ async function handleLogin(ws, msg) {
   player.skills        = saved.skills || { ataque:{level:1,xp:0}, velocidade:{level:1,xp:0}, defesa:{level:1,xp:0}, vida:{level:1,xp:0}, reliquia:{level:1,xp:0} };
   if (!player.skills.vida)     player.skills.vida     = { level:1, xp:0 }; // compatibilidade
   if (!player.skills.reliquia) player.skills.reliquia = { level:1, xp:0 }; // compatibilidade
-  // Talentos
-  player.talents       = saved.talents || { hp:0, defesa:0, canhoes:0, dano:0, dano_relic:0, riqueza:0, ganancioso:0, mestre:0, slot_reliquia:0, totalSpent:0 };
+  // Talentos — as árvores novas usam ids próprios (atk_/def_/res_/mob_), então
+  // um save do sistema antigo entra aqui com 10 chaves que não existem mais.
+  // migrateLegacyTalents apaga essas chaves e devolve o total como pontos livres.
+  player.talents       = saved.talents || { totalSpent: 0 };
+  const refunded       = _migrateLegacyTalents(player, LEGACY_TALENT_MAP);
+  if (refunded > 0) {
+    console.log(`[TALENTOS] ${player.name}: ${refunded} ponto(s) do sistema antigo devolvidos`);
+  }
   player.npcKills      = saved.npcKills      || 0;
   player.pvpKills      = saved.pvpKills      || 0;
   player.difficulty    = saved.difficulty    || 0;
@@ -3289,8 +3341,11 @@ async function handleLogin(ws, msg) {
   // Relics
   player.inventory.relics = saved.inventory.relics || [];
   const shipReliqC = SHIP_RELIQC[savedShipId] || {};
-  player.relicDeck = (saved.equipped.relics || []).filter(Boolean).slice(0, shipReliqC.maxHelic ?? 8);
-  player.maxMana   = shipReliqC.maxMana ?? 8;
+  // `filter(Boolean)` aqui COMPACTAVA o deck no login: quem guardou só o slot do
+  // E acordava com ela no Q. O vazio tem de sobreviver ao save/load.
+  player.relicDeck = _normalizeDeck(saved.equipped.relics, shipReliqC.maxHelic ?? 8);
+  // Reservatório Arcano soma mana máxima em cima do que o navio dá.
+  player.maxMana   = (shipReliqC.maxMana ?? 8) + fx.maxManaBonus(player);
   player.maxRelics = shipReliqC.maxHelic ?? 4;
   player.mana = player.maxMana;
   player.relicGoldShieldActive = false;
@@ -3305,6 +3360,12 @@ async function handleLogin(ws, msg) {
     ? rawUpg
     : { hp: 0, defense: 0, damage: 0 };
   player.cannonUpgradesData = saved.cannonUpgradesData || [];
+  // Migração: quem comprou o antigo "+30 de Alcance" (`rn`) recebe a Pontaria
+  // Mortal (`cr`) no lugar — mesmo slot, mesmo dinheiro já pago. Sem isto o
+  // upgrade sumia do canhão em silêncio no primeiro login depois da troca.
+  for (const u of player.cannonUpgradesData) {
+    if (u && u.rn) { u.cr = 1; u.rn = 0; }
+  }
   player.ironPlates          = saved.ironPlates          || 0;
   player.goldDust            = saved.goldDust            || 0;
   player.gunpowder           = saved.gunpowder           || 0;
@@ -3333,7 +3394,7 @@ async function handleLogin(ws, msg) {
   player.inventory.uva = Number(saved.petFood || 0);   // comida (coluna pet_food)
   // Pad cannonUpgradesData to match inventory.cannons length
   while (player.cannonUpgradesData.length < player.inventory.cannons.length) {
-    player.cannonUpgradesData.push({ as: 0, rn: 0, dm: 0 });
+    player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0 });
   }
 
   // Pré-carrega maxCannons do navio bônus ANTES do trim — evita cortar canhões
@@ -3354,6 +3415,9 @@ async function handleLogin(ws, msg) {
   // Enforce ship cannon limit (maxCannons já correto para navios bônus)
   player.cannons = _trimCannons(player.cannons, player.maxCannons).cannons;
   player.pirates = saved.equipped?.pirates || [];
+  // Vagas de curandeiro do navio ativo — e corta o excedente de um save antigo
+  // feito num navio maior.
+  refreshHealerSlots(player);
   recalcCannons(player);
   applySkillMultipliers(player); // also calls recalcMaxHp internally
 
@@ -3363,7 +3427,7 @@ async function handleLogin(ws, msg) {
     const ship = player.activeBonusShipStats;
     const baseHp     = ship.maxHp || ship.hp || 1000;
     const skillHpPct = player.skills?.vida ? (player.skills.vida.level - 1) / 100 : 0;
-    const talentFlat = (player.talents?.hp || 0) * (TALENT_DEFS.hp?.perLevel || 500);
+    const talentFlat = talentFlatHp(player);
     const hpLevel    = player.shipIslandUpgrades?.hp ?? 0;
     const islandHp   = Math.round(baseHp * hpLevel * 0.05);
     player.maxHp = Math.floor(baseHp * (1 + skillHpPct)) + talentFlat + islandHp;
@@ -3403,6 +3467,7 @@ async function handleLogin(ws, msg) {
     maxCharges:       initShots,
     cannons:          player.cannons,
     maxCannons:       player.maxCannons,
+    maxHealers:       player.maxHealers,
     inventory:        player.inventory,
     skills:   player.skills,
     npcKills:   player.npcKills || 0,
@@ -3660,7 +3725,7 @@ function handleBuyCannon(player, msg, ws) {
   for (let i = 0; i < qty; i++) {
     player.inventory.cannons.push(msg.cannonId);
     // Keep cannonUpgradesData in sync with inventory
-    player.cannonUpgradesData.push({ as: 0, rn: 0, dm: 0 });
+    player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0 });
   }
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(ws, {
@@ -3723,16 +3788,51 @@ function handleEquipCannonSync(player, msg, ws) {
   });
 }
 
+/**
+ * Recalcula as vagas de curandeiro do navio ativo e corta o excesso.
+ *
+ * Precisa rodar em TODA troca de navio: quem descia de um elite (10 vagas) para
+ * um normal (5) continuaria com os 10 equipados e curando o dobro do permitido.
+ *
+ * @returns {number} quantos curandeiros foram desequipados
+ */
+function refreshHealerSlots(player) {
+  player.maxHealers = maxHealersFor(player.activeShip);
+  const atuais = player.pirates || [];
+  if (atuais.length <= player.maxHealers) return 0;
+  const removidos = atuais.length - player.maxHealers;
+  player.pirates = atuais.slice(0, player.maxHealers);
+  return removidos;
+}
+
 function handleEquipPirateSync(player, msg, ws) {
   const incoming = msg.pirates || [];
   const healers  = incoming.filter(p => p === 'healer' || p === 'healer_elite');
 
-  player.pirates          = healers.slice(0, 1);
+  // Não dá para equipar mais curandeiros do que o jogador POSSUI: o cliente
+  // manda a lista inteira e sem esta checagem daria para forjar 10 iguais
+  // tendo comprado um só.
+  const estoque = {};
+  for (const pid of (player.inventory?.pirates || [])) estoque[pid] = (estoque[pid] || 0) + 1;
+  const validos = [];
+  for (const h of healers) {
+    if ((estoque[h] || 0) <= 0) continue;
+    estoque[h] -= 1;
+    validos.push(h);
+  }
+
+  player.maxHealers       = maxHealersFor(player.activeShip);
+  player.pirates          = validos.slice(0, player.maxHealers);
   player.homingCharges    = 0;
   player.damageMultiplier = 1.0;
 
   db.save(player, true).catch(e => console.error('Save error:', e));
-  sendTo(ws, { type:'pirate_state', pirates: player.pirates, homingCharges: player.homingCharges });
+  sendTo(ws, {
+    type: 'pirate_state',
+    pirates: player.pirates,
+    maxHealers: player.maxHealers,
+    homingCharges: player.homingCharges,
+  });
 }
 
 function handleCancelActiveMission(player) {
@@ -4142,10 +4242,10 @@ function handleBuyCannonUpgrade(player, msg, ws) {
   }
   if (!player.cannonUpgradesData) player.cannonUpgradesData = [];
   while (player.cannonUpgradesData.length <= idx) {
-    player.cannonUpgradesData.push({ as: 0, rn: 0, dm: 0 });
+    player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0 });
   }
   const upg = player.cannonUpgradesData[idx];
-  const field = cupgDef.field; // 'as', 'rn', or 'dm'
+  const field = cupgDef.field; // 'as', 'cr' ou 'dm'
   if (upg[field]) { sendTo(ws, { type:'error', message:'Upgrade já aplicado neste canhão' }); return; }
   // ── Custo primário (gold ou dobrao) ─────────────────────────────────────
   if (cupgDef.currency === 'gold') {
@@ -4570,7 +4670,7 @@ function handleActivateBonusShip(player, msg, ws) {
   // Aplica stats do navio bônus com todos os bônus de talento / skill / ilha
   const baseHp     = ship.maxHp || ship.hp || 1000;
   const skillHpPct = player.skills?.vida ? (player.skills.vida.level - 1) / 100 : 0;
-  const talentFlat = (player.talents?.hp || 0) * (TALENT_DEFS.hp?.perLevel || 500);
+  const talentFlat = talentFlatHp(player);
   const hpLevel    = player.shipIslandUpgrades?.hp ?? 0;
   const islandHp   = Math.round(baseHp * hpLevel * 0.05);
   player.maxHp      = Math.floor(baseHp * (1 + skillHpPct)) + talentFlat + islandHp;
@@ -4578,6 +4678,7 @@ function handleActivateBonusShip(player, msg, ws) {
   player.maxCannons = (ship.cannon || 5) + (player.talentCannonBonus || 0);
   player.activeShip = ship.modelKey || ship.id || player.activeShip;
   player.activeBonusShipStats = ship; // persiste para restaurar no próximo login
+  refreshHealerSlots(player);
 
   // Aplica propriedades visuais do tipo base do navio
   const baseDef = SHIP_DEFS[player.activeShip] || SHIP_DEFS.fragata;
@@ -4692,11 +4793,8 @@ function handleEquipRelic(player, msg) {
   const instance = relicInv.find(r => r.instanceId === instanceId);
   if (!instance) return;
   // (Relíquia pode estar no deck E no pet ao mesmo tempo — usos independentes)
-  if (!player.relicDeck) player.relicDeck = [];
-  // Remove from current deck position if already equipped
-  player.relicDeck = player.relicDeck.filter(id => id !== instanceId);
-  player.relicDeck.splice(deckPosition, 0, instanceId);
-  if (player.relicDeck.length > maxRel) player.relicDeck = player.relicDeck.slice(0, maxRel);
+  // O deck é POSICIONAL: índice = tecla, `null` = tecla vazia. Ver utils/relic-deck.js.
+  player.relicDeck = equipAt(player.relicDeck, maxRel, instanceId, deckPosition);
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(player.ws, {
     type:           'relic_state',
@@ -4709,8 +4807,9 @@ function handleEquipRelic(player, msg) {
 
 function handleUnequipRelic(player, msg) {
   const { deckPosition: uPos } = msg;
+  const maxRelU = player.maxRelics || 4;
   if (!player.relicDeck) return;
-  if (uPos == null || uPos < 0 || uPos >= player.relicDeck.length) return;
+  if (uPos == null || uPos < 0 || uPos >= maxRelU) return;
   // Deactivate gold shield if it was equipped
   const uInstanceId = player.relicDeck[uPos];
   if (uInstanceId) {
@@ -4729,7 +4828,8 @@ function handleUnequipRelic(player, msg) {
       }
     }
   }
-  player.relicDeck.splice(uPos, 1);
+  // Esvazia A TECLA — as outras não se mexem (ver utils/relic-deck.js).
+  player.relicDeck = unequipAt(player.relicDeck, maxRelU, uPos);
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(player.ws, {
     type:           'relic_state',
@@ -4767,7 +4867,7 @@ function shipFirepower(player) {
 const RELIC_CRIT_BASE = 0.10;
 
 function rollRelicCrit(player) {
-  return Math.random() < (RELIC_CRIT_BASE + (player.talentRelicCritBonus || 0));
+  return Math.random() < (RELIC_CRIT_BASE + fx.relicCritBonus(player));
 }
 
 // Multiplicador do efeito conforme o crítico sorteado para o uso atual.
@@ -4781,7 +4881,9 @@ function relicCritMult(player) {
 function relicDamageFor(player, relicDef) {
   const pct   = relicDef.damagePct;
   const raw   = (pct != null) ? shipFirepower(player) * pct : (relicDef.damage || 0);
-  const bonus = 1 + (player.talentRelicBonus || 0) + (player.skillRelicBonus || 0);
+  // Foco Arcano + Sobrecarga Arcana entram por relicDamageMult; o Estilhaço
+  // (dano em área) é somado por quem monta a AoE, não aqui.
+  const bonus = fx.relicDamageMult(player) + (player.skillRelicBonus || 0);
   // O crítico entra aqui para cobrir TODAS as relíquias de dano de uma vez
   // (raio, foguete, meteoro, aura, arpão e o uso pelo pet).
   return Math.max(1, Math.round(raw * bonus * relicCritMult(player)));
@@ -4801,7 +4903,8 @@ function relicCanHitPlayer(caster, target) {
 // Alcance máximo de mira das relíquias "miradas" (runas) = alcance do canhão do
 // jogador. Assim, trocar/melhorar canhões estende também o alcance das skills.
 function relicCastRange(player) {
-  return player.cannonRange || 80;
+  // Braço Longo estica o alcance das runas miradas.
+  return (player.cannonRange || 80) * fx.relicRangeMult(player);
 }
 
 function handleUseRelic(player, msg) {
@@ -4831,7 +4934,13 @@ function handleUseRelic(player, msg) {
   }
 
   const now2 = Date.now();
-  const manaCost = relicDef.manaCost || 0;
+  // Economia Arcana desconta e Sobrecarga Arcana encarece — o custo real da
+  // relíquia para ESTE jogador. Mínimo 1 quando a relíquia cobra alguma coisa,
+  // senão o desconto no máximo transformaria toda relíquia barata em gratuita.
+  const baseManaCost = relicDef.manaCost || 0;
+  const manaCost = baseManaCost > 0
+    ? Math.max(1, Math.round(baseManaCost * fx.relicManaCostMult(player)))
+    : 0;
 
   // Toggle relics (gold shield) — mana cost on activation only
   if (relicDef.toggle) {
@@ -4884,7 +4993,20 @@ function handleUseRelic(player, msg) {
   if (MAP_DEFS[player.mapLevel]?.isTrainingMap) {
     grantSkillXp(player, 'reliquia', Math.max(1, manaCost * 4), wss);
   }
-  if (relicDef.castTime) player.castExpires = Date.now() + relicDef.castTime; // cast penalty
+  // Conjuração Ágil encurta a penalidade de cast.
+  if (relicDef.castTime) player.castExpires = Date.now() + relicDef.castTime * fx.relicCastMult(player);
+
+  // ── Talentos pendurados no USO da relíquia ──────────────────────────────
+  // Impulso Arcano (velocidade por 4s) e Barreira Arcana (escudo em vida).
+  fx.onRelicUsed(player, now2);
+  const barreira = fx.relicShieldAmount(player);
+  if (barreira > 0 && player.hp < player.maxHp) {
+    player.hp = Math.min(player.maxHp, player.hp + barreira);
+    addEvent({
+      type: 'heal', targetId: player.id, amount: barreira,
+      x: player.x, z: player.z, hp: player.hp, maxHp: player.maxHp,
+    }, player.mapLevel || 1);
+  }
 
   // Apply effect
   let effectPayload = { type: 'relic_used', instanceId: instanceId2, effect: relicDef.effect, mana: player.mana, maxMana: player.maxMana, crit: player._relicCrit };
@@ -4892,9 +5014,9 @@ function handleUseRelic(player, msg) {
   if (relicDef.effect === 'heal_ship') {
     // Cura escala com o HP máximo (healPct) em vez de valor fixo — sempre
     // relevante independente do tamanho do barco. Fallback para healAmount fixo.
-    const healValue = critMult * ((relicDef.healPct != null)
+    const healValue = Math.round(critMult * fx.healingReceivedMult(player) * ((relicDef.healPct != null)
       ? Math.round(player.maxHp * relicDef.healPct)
-      : (relicDef.healAmount || 0));
+      : (relicDef.healAmount || 0)));
     const healed = Math.min(healValue, player.maxHp - player.hp);
     player.hp = Math.min(player.maxHp, player.hp + healValue);
     effectPayload.hp    = player.hp;
@@ -5149,6 +5271,9 @@ function handleUseRelic(player, msg) {
     const attMs = critDur(relicDef.duration);
     player.relicAttractExpires = now2 + attMs;
     player.relicAttractRange   = relicDef.range;
+    // Sucção contínua enquanto o chamado dura — ver o trecho do attract em
+    // managers/npc-manager.js. Fica no player porque o puxão é POR LANÇADOR.
+    player.relicAttractPull    = relicDef.pullSpeed || 0;
     effectPayload.duration     = attMs;
     effectPayload.range        = relicDef.range;
     // Broadcast attract event só para clientes do mesmo mapa
@@ -5732,7 +5857,7 @@ function handleBuyTalent(player, msg) {
   const { talentId } = msg;
   const tDef = TALENT_DEFS[talentId];
   if (!tDef) return;
-  if (!player.talents) player.talents = { hp:0, defesa:0, canhoes:0, dano:0, dano_relic:0, riqueza:0, ganancioso:0, mestre:0, slot_reliquia:0, totalSpent:0 };
+  if (!player.talents) player.talents = { totalSpent: 0 };
   const curLevel    = player.talents[talentId] || 0;
   const totalSpent  = player.talents.totalSpent || 0;
 
@@ -5740,6 +5865,17 @@ function handleBuyTalent(player, msg) {
   if (curLevel >= tDef.max) {
     sendTo(player.ws, { type: 'error', message: `${tDef.name} já está no nível máximo!` });
     return;
+  }
+
+  // Gate de anel: os anéis externos só abrem com pontos investidos NA MESMA
+  // árvore — senão dava para comprar um capstone com o primeiro ponto da conta.
+  if (tDef.ring > 0) {
+    const need  = RING_GATE[tDef.ring] || 0;
+    const spent = _countTreeSpent(player, TALENT_DEFS, tDef.tree);
+    if (spent < need) {
+      sendTo(player.ws, { type: 'error', message: `Investe ${need} pontos em ${tDef.tree} para abrir este anel (tem ${spent}).` });
+      return;
+    }
   }
 
   // Requisito de XP (não gasta XP, apenas verifica o mínimo)
@@ -5770,7 +5906,7 @@ function handleBuyTalent(player, msg) {
   applyTalentBonuses(player);
 
   // Efeitos imediatos de certos talentos
-  if (tDef.stat === 'hp') {
+  if (tDef.stat === 'max_hp_flat' || tDef.stat === 'max_hp_flat_2') {
     recalcMaxHp(player);
     player.hp = Math.min(player.hp, player.maxHp);
   }
@@ -5837,12 +5973,14 @@ function handleEquipNavio(player, msg, ws) {
   // Trim equipped cannons if over new limit
   const trimResult3 = _trimCannons(player.cannons, player.maxCannons);
   if (trimResult3.removed > 0) { player.cannons = trimResult3.cannons; recalcCannons(player); }
+  // Idem para os curandeiros: elite tem 10 vagas, navio normal 5.
+  refreshHealerSlots(player);
   // Update mana/relic slots for new ship
   const newShipReliqC = SHIP_RELIQC[msg.shipId] || {};
   player.maxMana   = newShipReliqC.maxMana   ?? 8;
   player.maxRelics = newShipReliqC.maxHelic  ?? 4;
   player.mana = Math.min(player.mana, player.maxMana);
-  player.relicDeck = (player.relicDeck || []).slice(0, player.maxRelics);
+  player.relicDeck = _normalizeDeck(player.relicDeck, player.maxRelics);
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(ws, {
     type:      'ship_update',
@@ -5850,6 +5988,8 @@ function handleEquipNavio(player, msg, ws) {
     maxHp:     player.maxHp,
     hp:        player.hp,
     maxCannons: player.maxCannons,
+    maxHealers: player.maxHealers,
+    pirates:   player.pirates || [],
     maxMana:   player.maxMana,
     mana:      player.mana,
     relicDeck: player.relicDeck || [],

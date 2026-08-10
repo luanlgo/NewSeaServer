@@ -2,6 +2,19 @@
 const { uid, rand, clamp, sendTo } = require('../utils/helpers');
 const { pushOutOfIslands, pushOutOfWalls } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, MAX_CANNON_SLOTS, CANNON_DEFS, PIRATE_DEFS, MAP_DEFS } = require('../constants');
+const fx = require('../utils/talent-effects');
+
+// Giro base por tique (o valor que existia solto como 0.3 dentro do update).
+const TURN_RATE = 0.3;
+// Quanto da velocidade se perde numa curva fechada, antes do Casco Liso.
+// Sem isso `drag_reduction_pct` (def_cascoliso) não teria o que reduzir.
+const TURN_DRAG = 0.45;
+// Rampas de aceleração/frenagem, em fração da velocidade-alvo por segundo.
+// Escolhidas rápidas de propósito: a 6/s o navio chega à velocidade cheia em
+// ~0,17s, então o toque continua imediato como antes e os talentos de
+// aceleração (res_impulso) e de frenagem (def_ancoragem) ainda têm o que mexer.
+const ACCEL_PER_SEC = 6.0;
+const BRAKE_PER_SEC = 8.0;
 
 class PlayerManager {
   constructor() {
@@ -188,11 +201,51 @@ class PlayerManager {
     return Array.from(this.players.values());
   }
 
+  /**
+   * Vento de Esquadra (res_esquadra): quem tem o talento doa velocidade ao
+   * grupo por perto. Calculado uma vez por tique e guardado em cada jogador,
+   * porque o loop de movimento roda por jogador e não pode varrer o grupo
+   * inteiro a cada um.
+   */
+  _refreshPartySpeedAuras() {
+    if (!this.partyManager?.getPartyMembersInZone) return;
+    for (const p of this.players.values()) {
+      if (p.dead) continue;
+      const membros = this.partyManager.getPartyMembersInZone(p.id, p.mapLevel || 1, this.players);
+      let bonus = 0;
+      for (const m of membros) bonus += fx.partySpeedAura(m);
+      p._partySpeedBonus = bonus;
+    }
+  }
+
+  /**
+   * Calafate, Bombas de Porão e Reparos de Emergência. Acumulador fracionário
+   * porque as três somam menos de 1 de vida por segundo nos primeiros níveis.
+   */
+  _processTalentRegen(player, dt, now) {
+    if (player.dead || !player.maxHp || player.hp >= player.maxHp) {
+      player._regenAcc = 0;
+      return;
+    }
+    const perSec = fx.hpRegenPerSec(player, now);
+    if (perSec <= 0) return;
+    player._regenAcc = (player._regenAcc || 0) + perSec * dt;
+    if (player._regenAcc >= 1) {
+      const add = Math.floor(player._regenAcc);
+      player._regenAcc -= add;
+      player.hp = Math.min(player.maxHp, player.hp + add);
+    }
+  }
+
   update(dt) {
     const now = Date.now();
-    
+    this._refreshPartySpeedAuras();
+
     // Usar for...of em vez de forEach para melhor performance
     for (const player of this.players.values()) {
+      // A regeneração roda ANTES do guard de stun/morte: quem está atordoado
+      // continua se reparando, e quem morreu já é filtrado dentro dela.
+      this._processTalentRegen(player, dt, now);
       if (player.dead || (player.stunExpires && player.stunExpires > now)) continue;
 
       // Atualizar timestamp
@@ -223,11 +276,20 @@ class PlayerManager {
         dx /= len;
         dz /= len;
 
+        // Arrancada: marca a saída da imobilidade uma vez só.
+        if (!player._wasMoving) {
+          fx.onMoveStart(player, now);
+          player._wasMoving = true;
+        }
+
         const targetAngle = Math.atan2(dx, dz);
         let diff = targetAngle - player.rotation;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        player.rotation += diff * 0.3;
+
+        // Leme Leve gira mais rápido sempre; Deriva só perto da velocidade máxima.
+        const atFullSpeed = (player._velFrac || 0) > 0.85;
+        player.rotation += diff * Math.min(1, TURN_RATE * fx.turnRateMult(player, atFullSpeed));
 
         const relicSpeed = 1 + (player.relicSpeedBonus || 0);
         // Penalidade de cast: ao atirar canhão ou usar relíquia o jogador fica lento
@@ -235,13 +297,48 @@ class PlayerManager {
         const hasCast   = !!(player.castExpires && player.castExpires > now);
         const slowMult  = player.slowMult || 1;
         const castMult  = hasCast ? Math.min(0.50, slowMult) : 1.0; // 50% during cast, or slower if already debuffed
-        player.speed = SHIP_SPEED * slowMult * (player.shipSpeedMult || 1.0) *
-                      (player.skillSpeedMult || 1.0) * (player.sailSpeedMult || 1.0) * relicSpeed * castMult;
+
+        // Curva fechada custa velocidade; o Casco Liso devolve parte da perda.
+        const turnDrag = 1 - (Math.abs(diff) / Math.PI) * TURN_DRAG * (1 - fx.dragReduction(player));
+        // Marcha à Ré só vale quando o barco anda mesmo para trás.
+        const reverse  = (player.input?.s && !player.input?.w) ? fx.reverseSpeedMult(player) : 1.0;
+
+        const target = SHIP_SPEED * slowMult * (player.shipSpeedMult || 1.0) *
+                      (player.skillSpeedMult || 1.0) * (player.sailSpeedMult || 1.0) *
+                      relicSpeed * castMult * turnDrag * reverse *
+                      fx.speedMult(player, { now, partyBonus: player._partySpeedBonus || 0 });
+
+        // Rampa de aceleração — `_velFrac` é a fração da velocidade-alvo já
+        // atingida. Impulso encurta a subida.
+        const rate = ACCEL_PER_SEC * fx.accelMult(player);
+        player._velFrac = Math.min(1, (player._velFrac || 0) + rate * dt);
+        player.speed = target * player._velFrac;
+
         player.x += dx * player.speed * dt * 30;
         player.z += dz * player.speed * dt * 30;
       } else {
-        player.speed = 0;
+        // Sem comando o navio DESLIZA até parar, em vez de travar no lugar —
+        // é isso que dá sentido a "tempo para parar" (def_ancoragem). A rampa
+        // padrão é curta de propósito (~0,12s), então quem não tem o talento
+        // sente praticamente o mesmo de antes.
+        player._wasMoving = false;
+        const brake = BRAKE_PER_SEC / fx.stopTimeMult(player);
+        player._velFrac = Math.max(0, (player._velFrac || 0) - brake * dt);
+        if (player._velFrac > 0.01) {
+          const coast = SHIP_SPEED * (player.slowMult || 1) * (player.shipSpeedMult || 1.0) *
+                        (player.skillSpeedMult || 1.0) * (player.sailSpeedMult || 1.0) *
+                        fx.speedMult(player, { now, partyBonus: player._partySpeedBonus || 0 });
+          player.speed = coast * player._velFrac;
+          player.x += Math.sin(player.rotation) * player.speed * dt * 30;
+          player.z += Math.cos(player.rotation) * player.speed * dt * 30;
+        } else {
+          player._velFrac = 0;
+          player.speed = 0;
+        }
       }
+
+      // Acúmulos e janelas dos talentos de combate.
+      fx.tickCombatState(player, now);
 
       player.damageMultiplier = 1.0;
 
@@ -347,8 +444,11 @@ class PlayerManager {
   }
 
   recalcCannonStats(p) {
+    // Miras Longas estica o alcance do canhão — e, por tabela, o das runas
+    // miradas, que usam cannonRange como base em relicCastRange().
+    const rangeMult = fx.cannonRangeMult(p);
     if (!p || !p.cannons || !p.cannons.length) {
-      p.cannonRange = 80;
+      p.cannonRange = 80 * rangeMult;
       p.cannonCooldownMax = 5000;
       p.cannonLifesteal = 0;
       p.cannonCooldown = 0;
@@ -362,7 +462,7 @@ class PlayerManager {
           bestLifesteal = Math.max(bestLifesteal, def.lifesteal || 0);
         }
       }
-      p.cannonRange = range;
+      p.cannonRange = range * rangeMult;
       p.cannonCooldownMax = Math.round(sumCd / p.cannons.length);
       // show highest lifesteal available; actual healing occurs per shot
       p.cannonLifesteal = Math.min(bestLifesteal, 0.5);

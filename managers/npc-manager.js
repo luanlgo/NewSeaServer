@@ -3,6 +3,7 @@ const { uid, rand, clamp, dist2D } = require('../utils/helpers');
 const { pushOutOfIslands, pushOutOfWalls } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, NPC_COUNT, MAP_DEFS, WORLD_BOSS_DEF, HIT_RADIUS, difficultyMult } = require('../constants');
 const { bloodMoonFactor } = require('../utils/world-state');
+const fx = require('../utils/talent-effects');
 
 // ── Equilíbrio de aggro dos NPCs normais (navios piratas / monstros) ─────────
 // Bosses ignoram estes limites (perseguem sem distância máxima).
@@ -389,7 +390,11 @@ class NPCManager {
         
         for (const p of playersMap.values()) {
           if (!p.dead && !p.isPeaceful && !(p.safeUntil && now < p.safeUntil)) {
-            const d = dist2D(npc, p);
+            // Sombra do Mar (def_sombra): o bicho enxerga o jogador mais longe
+            // do que ele realmente está, então desiste dele mais cedo. Dividir a
+            // distância percebida é o jeito de encolher o alcance de percepção
+            // sem tocar em cada `range` espalhado pelo AttackManager.
+            const d = dist2D(npc, p) / fx.stealthRangeMult(p);
             if (d < nearestDist_) {
               nearestDist_ = d;
               nearest_ = p;
@@ -531,6 +536,26 @@ class NPCManager {
         npc.speed = Math.min(npc.speed + 0.08, SHIP_SPEED * 0.9 * (npc.slowMult || 1));
         npc.x += Math.sin(npc.rotation) * npc.speed * dt * 30;
         npc.z += Math.cos(npc.rotation) * npc.speed * dt * 30;
+        // ── Sucção: o chamado ARRASTA, não só chama ──────────────────────────
+        // Virar o leme sozinho lê como "o bicho resolveu vir"; o puxão radial
+        // por cima é o que faz a Corneta parecer um sorvedouro. `pullSpeed` é
+        // pequeno de propósito (12 un/s contra ~45 un/s de barco): dá para ver o
+        // bicho sendo puxado sem que ele perca a manobra — a leitura pedida foi
+        // "buraco negro, mas não tão forte".
+        //
+        // Boss fica de fora pela convenção do projeto (chefe só leva slow) e o
+        // piso de distância evita o bicho vibrando dentro do casco.
+        const pullSpd = attractPlayer.relicAttractPull || 0;
+        if (pullSpd > 0 && !npc.isBoss) {
+          const ax = attractPlayer.x - npc.x, az = attractPlayer.z - npc.z;
+          const ad = Math.hypot(ax, az);
+          const MIN_PULL_DIST = 30;
+          if (ad > MIN_PULL_DIST) {
+            const stepPull = Math.min(pullSpd * dt, ad - MIN_PULL_DIST);
+            npc.x += (ax / ad) * stepPull;
+            npc.z += (az / ad) * stepPull;
+          }
+        }
         {
           const ms = (MAP_DEFS[npc.mapLevel] && MAP_DEFS[npc.mapLevel].size);
           npc.x = clamp(npc.x, -ms / 2, ms / 2);

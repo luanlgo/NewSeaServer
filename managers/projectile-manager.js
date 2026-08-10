@@ -1,6 +1,7 @@
 // managers/projectile-manager.js
 const { projUid, dist2D, broadcast, sendTo } = require('../utils/helpers');
 const { calcProjectileDamage, calcKillGold, calcKillXp } = require('../utils/combat-calc');
+const fx = require('../utils/talent-effects');
 const db = require('./db-manager');
 const {
   PROJECTILE_SPEED, PROJECTILE_LIFETIME, HIT_RADIUS,
@@ -197,6 +198,26 @@ class ProjectileManager {
       _createdAt: Date.now(),
     };
 
+    // ── Crítico do canhão (Pontaria Mortal do c6) ────────────────────────────
+    // Sorteado POR TIRO, não por salva: com o c6 sendo `doubleShot`, sortear uma
+    // vez só faria a salva inteira crescer ou não junto, e a leitura vira
+    // "rodada boa/rodada ruim" em vez de "aquele tiro entrou bonito".
+    //
+    // Fica FORA do bloco de homing de propósito: `isCrit` só existia lá dentro,
+    // e como nenhum pirata do jogo tem `homingRadius`, crítico nenhum acontecia.
+    // Olho de Águia soma à chance do canhão e a Cascata empurra o tiro seguinte
+    // a um crítico; Sangue Frio engorda o multiplicador com a vida alta.
+    if (!shooter.isNPC) {
+      const baseChance = shooter.cannonCritChance || 0;
+      const chance     = fx.critChance(shooter, baseChance);
+      if (chance > 0) {
+        const hpFrac = shooter.maxHp ? shooter.hp / shooter.maxHp : 1;
+        proj.isCrit = Math.random() < chance;
+        if (proj.isCrit) proj.critMult = fx.critMult(shooter, shooter.cannonCritMult || 2.0, hpFrac);
+        fx.noteCritRoll(shooter, proj.isCrit);
+      }
+    }
+
     // HOMING
     if (!shooter.isNPC && shooter.homingCharges > 0) {
       let bestHoming = { radius: 0, strength: 0, crit: 0 };
@@ -277,7 +298,11 @@ class ProjectileManager {
     return proj;
   }
 
-  spawnSalvo(shooter, targetX, targetZ) {
+  /**
+   * @param {boolean} [isFree] salva de graça do Tiro Duplo: não gasta munição
+   *                           nem pólvora e não re-arma a recarga do canhão.
+   */
+  spawnSalvo(shooter, targetX, targetZ, isFree = false) {
     const dx       = targetX - shooter.x;
     const dz       = targetZ - shooter.z;
     const distance = Math.hypot(dx, dz);
@@ -297,7 +322,7 @@ class ProjectileManager {
     const spreadRadius = Math.min(12, Math.max(3, distance * 0.08));
 
     // Consume ammo before firing
-    if (shooter.currentAmmo !== 'bala_ferro') {
+    if (!isFree && shooter.currentAmmo !== 'bala_ferro') {
       const stock = shooter.inventory?.ammo?.[shooter.currentAmmo] || 0;
       if (stock < totalShots) {
         shooter.currentAmmo = 'bala_ferro';
@@ -311,7 +336,7 @@ class ProjectileManager {
 
     // ── Pólvora: consome 1 por salvo, concede +10% dano ──────────────────────
     let gunpowderMult = 1.0;
-    if (!shooter.isNPC && (shooter.gunpowder || 0) > 0) {
+    if (!isFree && !shooter.isNPC && (shooter.gunpowder || 0) > 0) {
       shooter.gunpowder -= 1;
       gunpowderMult = 1.10;
       // Inform client of new gunpowder stock
@@ -346,6 +371,14 @@ class ProjectileManager {
       }
 
       const proj = this.spawn(shooter, impactX, impactZ, ls, (shooter.damageMultiplier || 1.0) * gunpowderMult, shooter.cannonDamage || 0);
+      // Salva Cerrada só paga quando o navio despeja a bordada inteira — com um
+      // canhão só não há "salva".
+      proj.isFullSalvo = totalShots > 1;
+      // Bala de Corrente: o projétil atravessa e ainda pega um segundo alvo.
+      if (!proj.piercing && Math.random() < fx.pierceChance(shooter)) {
+        proj.piercing   = true;
+        proj.hitTargets = new Set();
+      }
       spawnedProjs.push({
         id:       proj.id,
         ownerId:  proj.ownerId,
@@ -375,18 +408,105 @@ class ProjectileManager {
     }
 
     shooter.lastActionTime = Date.now();
-    shooter.cannonCooldown = shooter.cannonCooldownMax;
 
-    sendTo(shooter.ws, {
-      type:          'cannon_state',
-      charges:       0,
-      maxCharges:    totalShots,
-      cooldown:      shooter.cannonCooldown,
-      cooldownMax:   shooter.cannonCooldownMax,
-      homingCharges: shooter.homingCharges,
-      ammo:          shooter.inventory?.ammo,
-      range:         shooter.cannonRange,
-    });
+    // A salva de graça não re-arma a recarga: se armasse, o Tiro Duplo puniria
+    // quem o comprou, zerando o progresso do cooldown a cada sorteio.
+    if (!isFree) {
+      // Pólvora Seca encurta a recarga. O cooldownMax fica intacto: é ele que o
+      // resto do servidor usa como "recarga do navio", e mexer nele faria o
+      // desconto acumular a cada tiro.
+      shooter.cannonCooldown = Math.max(1, Math.round(shooter.cannonCooldownMax * fx.reloadMult(shooter)));
+
+      sendTo(shooter.ws, {
+        type:          'cannon_state',
+        charges:       0,
+        maxCharges:    totalShots,
+        cooldown:      shooter.cannonCooldown,
+        cooldownMax:   shooter.cannonCooldownMax,
+        homingCharges: shooter.homingCharges,
+        ammo:          shooter.inventory?.ammo,
+        range:         shooter.cannonRange,
+      });
+
+      // ── Tiro Duplo: uma segunda bordada, sem munição e sem recarga ────────
+      if (Math.random() < fx.doubleShotChance(shooter)) {
+        this.spawnSalvo(shooter, targetX, targetZ, true);
+      }
+    }
+  }
+
+  /**
+   * Talentos que disparam DEPOIS de o dano entrar. Ficam fora de hit() só para
+   * não engordar mais uma função que já é a mais longa do arquivo.
+   *
+   * - Sanguessuga cura o atirador com uma fração do dano causado.
+   * - Casco de Espinhos devolve parte do golpe a quem bateu.
+   * - Absorção transforma dano recebido em mana.
+   * - Sentinela soma uma pilha de redução por golpe recebido.
+   * - Segundo Fôlego e Teimosia são os dois salva-vidas: rodam por último, já
+   *   com o hp atualizado, e Teimosia é a ÚNICA que pode ressuscitar de 0.
+   */
+  _applyTalentOnHit(shooter, target, targetIsPlayer, dmg, proj, now) {
+    // Sanguessuga — vale contra qualquer alvo, inclusive NPC.
+    if (shooter && !shooter.dead) {
+      const heal = fx.lifestealAmount(shooter, dmg);
+      if (heal > 0 && shooter.hp < shooter.maxHp) {
+        shooter.hp = Math.min(shooter.maxHp, shooter.hp + heal);
+        this._broadcastToMap(shooter.mapLevel || 1, {
+          type: 'heal', targetId: shooter.id, amount: heal,
+          x: shooter.x, z: shooter.z, hp: shooter.hp, maxHp: shooter.maxHp,
+        });
+      }
+    }
+
+    if (!targetIsPlayer) return;
+
+    fx.onHitTaken(target, now);
+
+    // Absorção — o dano recebido vira mana (acumulador fracionário, igual ao
+    // regen: 1% de um golpe de 40 é 0,4 e sem acumulador nunca viraria mana).
+    const mana = fx.damageToMana(target, dmg);
+    if (mana > 0 && target.maxMana) {
+      target._absorbAcc = (target._absorbAcc || 0) + mana;
+      if (target._absorbAcc >= 1) {
+        const add = Math.floor(target._absorbAcc);
+        target._absorbAcc -= add;
+        target.mana = Math.min(target.maxMana, (target.mana || 0) + add);
+        sendTo(target.ws, { type: 'mana_update', mana: target.mana, maxMana: target.maxMana });
+      }
+    }
+
+    // Casco de Espinhos — devolve ao atacante conhecido, nunca a si mesmo.
+    const thorns = fx.thornsDamage(target, dmg);
+    if (thorns > 0 && proj.ownerId && proj.ownerId !== target.id) {
+      const atk = this.players.get(proj.ownerId) || (this.npcs && this.npcs.get(proj.ownerId));
+      if (atk && !atk.dead) {
+        atk.hp = Math.max(0, atk.hp - thorns);
+        this._broadcastToMap(target.mapLevel || 1, {
+          type: 'thorns_reflect', targetId: target.id,
+          shooterId: proj.ownerId, dmg: thorns, hp: atk.hp,
+        });
+      }
+    }
+
+    // Teimosia — 1 de vida em vez da morte. Só se o golpe é que matou.
+    if (target.hp <= 0) {
+      const save = fx.deathSaveChance(target);
+      if (save > 0 && Math.random() < save) {
+        target.hp = 1;
+        this._broadcastToMap(target.mapLevel || 1, { type: 'death_save', targetId: target.id, hp: 1 });
+      }
+    }
+
+    // Segundo Fôlego — cura ao cruzar 25%, no máximo 1× por minuto.
+    const wind = fx.secondWindHeal(target, now);
+    if (wind > 0) {
+      target.hp = Math.min(target.maxHp, target.hp + wind);
+      this._broadcastToMap(target.mapLevel || 1, {
+        type: 'heal', targetId: target.id, amount: wind,
+        x: target.x, z: target.z, hp: target.hp, maxHp: target.maxHp,
+      });
+    }
   }
 
   // hit() only accumulates damage into _hitBatch — no broadcasts here.
@@ -415,8 +535,10 @@ class ProjectileManager {
         // Cura escala com o poder de fogo do atirante (healMult × cannonDamage).
         // O valor fixo antigo (5 HP) era imperceptível na escala atual de HP.
         const healMult    = ammo.healMult || 3;
-        const HEAL_AMOUNT = Math.max(ammo.healAmount || 5,
-                                     Math.round((shooter2.cannonDamage || 0) * healMult));
+        // Recuperação (def_recuperacao) é do lado de QUEM RECEBE a cura.
+        const HEAL_AMOUNT = Math.round(Math.max(ammo.healAmount || 5,
+                                     Math.round((shooter2.cannonDamage || 0) * healMult))
+                                     * fx.healingReceivedMult(target));
         target.hp = Math.min(target.maxHp, target.hp + HEAL_AMOUNT);
         this._broadcastToMap(target.mapLevel || 1, {
           type: 'heal', targetId: target.id,
@@ -435,15 +557,48 @@ class ProjectileManager {
     }
 
     const ammo       = AMMO_DEFS[proj.ammoType] || AMMO_DEFS.bala_ferro;
-    const critMult   = proj.isCrit ? 1.5 : 1.0;
+    // 1.5 é o crítico do homing (o antigo); o do canhão traz o próprio no
+    // projétil, senão a Pontaria Mortal valeria o mesmo que o upgrade de Dano.
+    const critMult   = proj.isCrit ? (proj.critMult || 1.5) : 1.0;
     const damageMult = proj.damageMultiplier || 1.0;
     const shooter2   = !proj.ownerIsNPC ? this.players.get(proj.ownerId) : null;
     const skillDmg   = shooter2?.skillDamageMult || 1.0;
     const targetIsPlayer = !this.npcs.has(target.id);
     const skillDef   = (targetIsPlayer && target.skillDefense) ? (1 - target.skillDefense) : 1.0;
-    // Talent bonuses: attacker damage (+2% per dano level) and target defense (-3% DR per defesa level now configured via constants)
-    const talentDmg  = shooter2 ? (1 + (shooter2.talentDamageBonus || 0)) : 1.0;
-    const talentDef  = (targetIsPlayer && target.talentDefenseBonus) ? (1 - target.talentDefenseBonus) : 1.0;
+    const now        = Date.now();
+
+    // ── Talentos do ATIRADOR ────────────────────────────────────────────────
+    // Um multiplicador só, montado com o contexto do golpe: contra quem, a que
+    // distância, com que vida dos dois lados, e com os acúmulos em pé.
+    const talentDmg  = shooter2 ? fx.outgoingDamageMult(shooter2, {
+      targetIsPlayer,
+      targetIsNPC:    !targetIsPlayer,
+      targetIsBoss:   !!target.isBoss,
+      targetHpFrac:   target.maxHp ? target.hp / target.maxHp : 1,
+      targetHasCC:    !!((target.slowExpires && now < target.slowExpires)
+                      || (target.stunExpires && now < target.stunExpires)),
+      dist:           dist2D(shooter2, target),
+      isFirstHit:     fx.consumeOpener(shooter2, target.id),
+      attackerHpFrac: shooter2.maxHp ? shooter2.hp / shooter2.maxHp : 1,
+      isFullSalvo:    !!proj.isFullSalvo,
+      isSpecialAmmo:  !!proj.ammoType && proj.ammoType !== 'bala_ferro',
+    }) : 1.0;
+
+    // ── Talentos do ALVO ────────────────────────────────────────────────────
+    // A Bala Perfurante do atirador come parte da redução; o resto (crítico,
+    // parado, solo/grupo, vs NPC/jogador…) sai de damageReduction.
+    const allyCount = (targetIsPlayer && this.partyManager?.getPartyMembersInZone)
+      ? this.partyManager.getPartyMembersInZone(target.id, target.mapLevel || 1, this.players).length
+      : 0;
+    const talentDef = targetIsPlayer ? (1 - fx.damageReduction(target, {
+      fromNPC:    !!proj.ownerIsNPC,
+      fromPlayer: !proj.ownerIsNPC,
+      isCrit:     !!proj.isCrit,
+      isStill:    !target.speed,
+      inParty:    allyCount > 0,
+      allyCount,
+      pen:        shooter2 ? fx.armorPen(shooter2) : 0,
+    })) : 1.0;
     // Island upgrades: defense (-5% per level) and damage (+10% per level)
     const islandDef  = (targetIsPlayer && target.shipIslandUpgrades?.defense)
       ? (1 - Math.min(target.shipIslandUpgrades.defense * 0.05, 0.80))
@@ -455,7 +610,15 @@ class ProjectileManager {
     const baseDmg    = ammo.damage + (proj.cannonDmg || 0);
     const dmg        = calcProjectileDamage({ baseDmg, critMult, damageMult, skillDmg, skillDef, talentDmg, talentDef, islandDef, islandDmg });
 
-    const now = Date.now();
+    // ── Manobra Evasiva / Alvo Difícil: o tiro passa raspando ───────────────
+    // Antes de qualquer mitigação — desviar é não ser atingido, não levar menos.
+    if (targetIsPlayer) {
+      const dodge = fx.dodgeChance(target, !!target.speed);
+      if (dodge > 0 && Math.random() < dodge) {
+        this._broadcastToMap(target.mapLevel || 1, { type: 'dodge', targetId: target.id });
+        return;
+      }
+    }
 
     // ── Relic: invincibility (r2) ────────────────────────────────────────────
     if (!isNPC && target.relicInvincibleExpires && now < target.relicInvincibleExpires) {
@@ -508,10 +671,19 @@ class ProjectileManager {
 
     target.hp = Math.max(0, target.hp - finalDmg);
 
+    // ── Talentos que reagem ao golpe ────────────────────────────────────────
+    // Ordem importa: Teimosia e Segundo Fôlego precisam rodar DEPOIS do hp cair,
+    // senão salvariam com base na vida de antes.
+    if (shooter2) fx.onHitDealt(shooter2);
+    this._applyTalentOnHit(shooter2, target, targetIsPlayer, finalDmg, proj, now);
+
     // Apply state changes immediately (server-authoritative)
     if (ammo.slow > 0) {
-      target.slowMult    = 1 - ammo.slow;
-      target.slowExpires = now + ammo.slowDur;
+      // Casco Escorregadio suaviza a INTENSIDADE, Vontade de Ferro encurta a DURAÇÃO.
+      const slowPower = ammo.slow * (targetIsPlayer ? fx.slowStrengthMult(target) : 1);
+      const slowDur   = ammo.slowDur * (targetIsPlayer ? fx.ccDurationMult(target) : 1);
+      target.slowMult    = 1 - slowPower;
+      target.slowExpires = now + slowDur;
     }
     if (ammo.dotDmg > 0) {
       const effect = proj.ammoType === 'bala_sangue' ? 'bleed' : 'fire';
@@ -520,6 +692,14 @@ class ProjectileManager {
         dmg: ammo.dotDmg, tick: ammo.dotTick, dur: ammo.dotDur,
         next: now + ammo.dotTick, ownerId: proj.ownerId, effect,
       });
+    }
+    // Óleo Incendiário: o acerto queima o alvo por 3s com uma fração do golpe.
+    if (shooter2) {
+      const burn = fx.burnDot(shooter2, finalDmg);
+      if (burn) {
+        if (!target.dots) target.dots = [];
+        target.dots.push({ ...burn, next: now + burn.tick, ownerId: shooter2.id });
+      }
     }
     // Stun is rolled ONCE per salvo (not per projectile) in _flushHitBatch
     if (!isNPC) {
@@ -642,6 +822,21 @@ class ProjectileManager {
 
     if (killer) {
       killer.npcKills = (killer.npcKills || 0) + 1;
+
+      // Carnificina (pilha de dano), Ventania (velocidade 5s) e Colheita de
+      // Almas (mana por abate) — todas penduradas no mesmo evento.
+      fx.onKill(killer);
+      const manaKill = fx.manaOnKill(killer);
+      if (manaKill > 0 && killer.maxMana) {
+        killer._manaKillAcc = (killer._manaKillAcc || 0) + manaKill;
+        if (killer._manaKillAcc >= 1) {
+          const add = Math.floor(killer._manaKillAcc);
+          killer._manaKillAcc -= add;
+          killer.mana = Math.min(killer.maxMana, (killer.mana || 0) + add);
+          sendTo(killer.ws, { type: 'mana_update', mana: killer.mana, maxMana: killer.maxMana });
+        }
+      }
+
       finalGold = calcKillGold({
         baseGold,
         dropBonus:      killer.dropBonus     || 0,
@@ -650,13 +845,26 @@ class ProjectileManager {
       const xpPerKill = npcMapDef.npc?.xpPerKill || 12;
       xpGained = calcKillXp({ xpPerKill, talentXpBonus: killer.talentXpBonus || 0 });
 
+      // Sabedoria Antiga paga só em cima de chefe; o Tesouro do Abismo entra em
+      // tudo. lootMult já soma o XP geral no ramo de chefe, então o bônus base
+      // sai de calcKillXp e aqui vai só a diferença.
+      if (npc.isBoss) xpGained = Math.round(xpGained * (1 + (killer.tal?.xp_boss_pct || 0) / 100));
+      finalGold = Math.round(finalGold * (1 + (killer.tal?.abyssal_treasure_pct || 0) / 100));
+      xpGained  = Math.round(xpGained  * (1 + (killer.tal?.abyssal_treasure_pct || 0) / 100));
+
       // Dificuldade multiplica as recompensas (metade do fator de HP/dano)
       finalGold = Math.round(finalGold * rewardMult);
       xpGained  = Math.round(xpGained  * rewardMult);
 
+      // Veia de Ouro — chance de dobrar o ouro do espólio.
+      if (Math.random() < fx.goldDoubleChance(killer)) finalGold *= 2;
+
       // Dobrao drop (só para o killer — não é dividido)
       if ((npcDef.dobraoChance || 0) > 0 && Math.random() < (npcDef.dobraoChance + (killer.talentDobraoBonus || 0))) {
-        const dobraoAmt = Math.round(Math.floor(Math.random() * (npcDef.dobraoMax - npcDef.dobraoMin + 1) + npcDef.dobraoMin) * rewardMult);
+        let dobraoAmt = Math.round(Math.floor(Math.random() * (npcDef.dobraoMax - npcDef.dobraoMin + 1) + npcDef.dobraoMin)
+                                   * rewardMult * fx.lootMult(killer, 'dobrao'));
+        // Cofre Duplo — mesma ideia da Veia de Ouro, do lado do dobrão.
+        if (Math.random() < fx.dobraoDoubleChance(killer)) dobraoAmt *= 2;
         killer.dobroes = (killer.dobroes || 0) + dobraoAmt;
       }
 
@@ -782,6 +990,9 @@ class ProjectileManager {
         hp: target.hp, maxHp: target.maxHp,
         dmg: totalDmg, x: target.x, z: target.z,
         goldStolen,
+        // O número já sai marcado como crítico: o `crit_hit` abaixo é posicional
+        // (só x/z) e não dava para saber QUAL número dele veio.
+        crit: hasCrit,
       });
 
       // ONE status_effect per effect type per target
