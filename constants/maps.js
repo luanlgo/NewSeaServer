@@ -302,15 +302,29 @@ MAP_DEFS[3] = {
             price: 100000, currency: 'gold',
             ironPlatesPrice: 50,
           },
+          // ── Era "+30 de Alcance" (campo `rn`) ────────────────────────────
+          // O alcance se sabotava: a dispersão do tiro cresce com a distância
+          // (spreadRadius = min(12, max(3, dist×0.08)) no projectile-manager) e
+          // o raio de acerto é 8. A 120 un a salva já perde ~31% dos tiros; a
+          // 150 un, que era o alcance comprado, o teto de dispersão (12) derruba
+          // isso para ~44% de acerto. Pagava-se caro para atirar pior.
+          //
+          // No lugar, o crítico — que existia inteiro no motor e NUNCA
+          // acontecia: `isCrit` só era sorteado dentro do bloco de homing, cuja
+          // única fonte é `PIRATE_DEFS[].critChance`, e os dois piratas do jogo
+          // são healers com 0. `critMult` 2.0 (e não os 1.5 do homing) é o que
+          // faz a média (+20%) não empatar com o upgrade de Dano (+10%), que é
+          // comprado junto e não no lugar deste.
           {
-            id: 'cannon_range_upgrade',
-            name: 'Alcance',
-            description: '+30 Range',
-            icon: '🎯',
-            field: 'rn',
-            rangeBonus: 30,
-            price: 5000, currency: 'dobrao',
-            ironPlatesPrice: 100,
+            id: 'cannon_crit_upgrade',
+            name: 'Pontaria Mortal',
+            description: '20% de crítico (×2)',
+            icon: '💢',
+            field: 'cr',
+            critChance: 0.20,
+            critMult: 2.0,
+            price: 12000, currency: 'dobrao',
+            ironPlatesPrice: 150,
           },
           {
             id: 'cannon_damage_upgrade',

@@ -168,6 +168,12 @@ const MONSTER_SKILLS = {
   wyrm_palp_snare: {
     relicId: 'r23', name: 'Laços dos Palpos', icon: '🪢', rarity: 'incomum',
     vfx: 'wyrm_palp_snare', source: 'wrim', shape: 'cone',
+    // `rangeFromCannons`: medido — o cone de 95 fixo ERRAVA a partir de 100 un,
+    // que é a distância em que o jogo inteiro acontece (o canhão alcança 80–120
+    // e é de lá que se atira). Na prática a relíquia "não fazia nada": você
+    // puxava de onde estava e o laço parava antes do bicho. Colado no canhão,
+    // o que você consegue mirar você consegue fisgar.
+    rangeFromCannons: true,
     desc: 'Laços prendem em cone largo e ARRASTAM os presos para perto de você.',
     // Alcance subido (era 60/130). Um cone que ARRASTA para perto precisa
     // pegar quem esta longe — no alcance antigo so pegava quem ja estava
@@ -272,8 +278,14 @@ const MONSTER_SKILLS = {
     // `d < 45/0,30 = 150` un. Colado no bicho voce ganha do giro; no fim do
     // alcance (190) ele te segura. A leitura vira "entre na guarda dele".
     turnRate: 0.30,
+    // Mesmo remédio do Laço, pela mesma medida: o feixe de 75 un morria antes do
+    // alcance do canhão, então da distância de combate os 20 tiques caíam na
+    // água. E `width` subiu de 12 para 24 (a do bicho): num corredor de 12 un o
+    // centro do bicho tinha de estar a 6 un do eixo — 12 un de erro de mira já
+    // zerava a skill inteira. Era o "não está dando o dano por tick".
+    rangeFromCannons: true,
     desc: 'Feixe contínuo que segue a sua mira. Circule mais rápido do que o pescoço vira.',
-    relic: { manaCost: 5, length: 75, width: 12, sweepArc: 80, turnSpeed: 0.9, castMs: 1200,
+    relic: { manaCost: 5, length: 75, width: 24, sweepArc: 80, turnSpeed: 0.9, castMs: 1200,
              ticks: { count: 20, intervalMs: 120, pct: 0.10 } },
     npc:   { rangeMin: 0, rangeMax: 190, length: 190, width: 24, sweepArc: 80, turnSpeed: 0.9, damageMult: 0.35, castTime: 1200, cooldown: 18000, weight: 6,
              ticks: { count: 20, intervalMs: 120 } },
@@ -287,7 +299,12 @@ const MONSTER_SKILLS = {
     // uma vez so. `travelMs` tem de casar com o `travel_duration` do desenho.
     special: 'tidewall', travelMs: 1200,
     desc: 'Uma parede de água avança empurrando tudo à frente. Saia pela LATERAL.',
-    relic: { manaCost: 6, width: 80, length: 100, band: 14, damagePct: 0.70, castMs: 1300,
+    // `length` DOBRADO (era 100): a onda parava antes do alcance do canhão, e
+    // uma parede que avança tem de chegar em quem está longe — é o alcance que
+    // faz a skill. `travelMs` fica em 1200 (a frente só corre mais rápido, 167
+    // un/s contra os 217 un/s da versão do bicho) porque esse número tem de
+    // continuar casando com o `travel_duration` do desenho.
+    relic: { manaCost: 6, width: 80, length: 200, band: 14, damagePct: 0.70, castMs: 1300,
              cc: { pushDist: 45 } },
     npc:   { rangeMin: 0, rangeMax: 260, width: 200, length: 260, band: 30, damageMult: 2.4, castTime: 1300, cooldown: 15000, weight: 5,
              cc: { pushDist: 45 } },
@@ -318,7 +335,12 @@ const MONSTER_SKILLS = {
     // seria acerto garantido — o jogo deixaria de ter saída.
     dropIntervalMs: 1000, dropWarnMs: 700,
     desc: 'Seis destroços caem UM POR VEZ, cada um em cima de você, e viram obstáculos por 8 s. Não pare.',
-    relic: { manaCost: 7, count: 6, spread: 75, radius: 12, damagePct: 0.35, castMs: 1300,
+    // A chuva mirada só existia na mão do BICHO — a relíquia largava as seis de
+    // uma vez em pontos sorteados (ver _castWreckRain no monster-skill-manager).
+    // Com a queda mirada, `spread` deixa de valer e o raio de impacto DOBRA
+    // (12 → 24): 12 un debaixo de um destroço que cai em cima de você é uma
+    // marcação que só pune quem estiver parado no pixel.
+    relic: { manaCost: 7, count: 6, spread: 75, radius: 24, damagePct: 0.35, castMs: 1300,
              holdMs: 8000, obstacleRadius: 8 },
     npc:   { rangeMin: 0, rangeMax: 220, count: 6, spread: 200, radius: 30, damageMult: 1.1, castTime: 1300, cooldown: 20000, weight: 4,
              holdMs: 8000, obstacleRadius: 16 },
@@ -359,7 +381,13 @@ const MONSTER_SKILLS = {
     // um estouro instantâneo e virou uma sequência que dá para ler — quem está
     // no próximo elo tem essa janela para sair do raio.
     desc: 'O raio pula entre até 4 alvos próximos, perdendo 25% de força a cada pulo. Cada pulo é marcado antes de cair.',
-    relic: { manaCost: 4, count: 4, jumpRange: 35, radius: 5, damagePct: 0.70, falloff: 0.75, castMs: 1000 },
+    // `seekRadius` é a tolerância de mira do PRIMEIRO elo (ver _chainTargets).
+    // Antes esse papel era do `radius` (5 un!): era preciso clicar a 5 un do
+    // centro do bicho para a cadeia sequer começar, e por isso a relíquia
+    // "não fazia nada". `jumpRange` subiu de 35 para 60 pelo mesmo motivo — a
+    // 35 un dois bichos quase nunca estão perto o bastante para o raio pular.
+    relic: { manaCost: 4, count: 4, jumpRange: 60, seekRadius: 45, radius: 14,
+             damagePct: 0.70, falloff: 0.75, castMs: 1000 },
     npc:   { rangeMin: 0, rangeMax: 140, count: 4, jumpRange: 90, radius: 15, damageMult: 2.0, falloff: 0.75, castTime: 1200, cooldown: 15000, weight: 5,
              jumpCastMs: 550 },
   },
@@ -371,7 +399,12 @@ const MONSTER_SKILLS = {
     // alcançar (ou expirar) estoura com o dano cheio + atordoamento.
     // `orbTickPct` é a fração do dano por leva; o estouro usa o dano inteiro.
     desc: 'Uma orbe persegue você, corrói quem estiver dentro dela e estoura atordoando ao alcançar. Corra em curva.',
-    relic: { manaCost: 5, radius: 18, orbSpeed: 22, lifeMs: 4000, catchRadius: 9, damagePct: 0.90, castMs: 1000,
+    // `orbSpeed` 45 (era 22): a 22 un/s a orbe andava METADE da velocidade do
+    // barco — nunca alcançava nada que se mexesse e lia como bolha à deriva.
+    // 45 é rápido o bastante para caçar e ainda dá para fugir em curva, que é a
+    // leitura da skill. `catchRadius` sobe junto (9 → 14) porque o bicho é bem
+    // maior que o ponto onde o servidor guarda o centro dele.
+    relic: { manaCost: 5, radius: 18, orbSpeed: 45, lifeMs: 4000, catchRadius: 14, damagePct: 0.90, castMs: 1000,
              orbTickMs: 400, orbTickPct: 0.18, cc: { stunMs: 1000 } },
     npc:   { rangeMin: 0, rangeMax: 200, radius: 45, orbSpeed: 70, lifeMs: 4000, catchRadius: 18, damageMult: 1.6, castTime: 1000, cooldown: 14000, weight: 5,
              orbTickMs: 400, orbTickPct: 0.18, cc: { stunMs: 1000 } },

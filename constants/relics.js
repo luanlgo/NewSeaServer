@@ -30,7 +30,10 @@ const RELIC_DEFS = {
   r5:  { name: 'Escudo de Ouro',    icon: '🛡️',  rarity: 'lendário', effect: 'gold_shield', manaCost: 4, toggle: true,  damageReduction: 0.50, goldCostPct: 0.10 },
   r6:  { name: 'Vento Furioso',     icon: '💨',  rarity: 'comum',    effect: 'speed_boost', manaCost: 4, toggle: false, duration: 5000, speedBonus: 0.50,
          petUsable: true, petTarget: 'dono',    petRange: 'curto' },
-  r7:  { name: 'Corneta do Abismo', icon: '📯',  rarity: 'raro',     effect: 'attract',     manaCost: 5, toggle: false, duration: 6000, range: 900 },
+  // `pullSpeed`: sucção radial em unidades/segundo, POR CIMA da navegação que a
+  // atração já provoca. 12 contra os ~45 un/s do barco é o "buraco negro fraco"
+  // — o bicho vem visivelmente arrastado, mas ainda manobra.
+  r7:  { name: 'Corneta do Abismo', icon: '📯',  rarity: 'raro',     effect: 'attract',     manaCost: 5, toggle: false, duration: 6000, range: 900, pullSpeed: 12 },
   r8:  { name: 'Meteoro',           icon: '☄️',  rarity: 'épico',    effect: 'meteor',      manaCost: 7, toggle: false, damage: 2400, damagePct: 1.30, targetMouse: true, radius: 55,  castTime: 700, count: 1,
          petUsable: true, petTarget: 'inimigo', petRange: 'longo' },
   r9:  { name: 'Teleporte',         icon: '🌀',  rarity: 'raro',     effect: 'teleport',    manaCost: 5, toggle: false, targetMouse: true, maxRange: 150 },

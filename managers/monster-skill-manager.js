@@ -320,10 +320,15 @@ class MonsterSkillManager {
     const chain = [];
     const used = new Set();
     let cx = ox, cz = oz;
-    // O primeiro elo aceita `radius` de folga em volta do cursor; os seguintes
-    // precisam estar a `jumpRange` do elo anterior — é isso que faz a cadeia
-    // "espalhar" em vez de virar um AoE circular.
-    let reach = def.radius || 8;
+    // O primeiro elo aceita uma folga em volta do CURSOR; os seguintes precisam
+    // estar a `jumpRange` do elo anterior — é isso que faz a cadeia "espalhar"
+    // em vez de virar um AoE circular.
+    //
+    // `seekRadius` e não `radius`: o raio de dano da cadeia é pequeno de
+    // propósito (é um arco, não uma bomba), e usá-lo como tolerância de mira
+    // exigia clicar a 5 un do CENTRO do bicho — na prática a relíquia nunca
+    // engatava. São duas coisas diferentes e agora têm dois números.
+    let reach = def.seekRadius || def.radius || 8;
     for (let i = 0; i < maxJumps; i++) {
       let best = null, bestD = Infinity;
       for (const t of pool) {
@@ -435,7 +440,12 @@ class MonsterSkillManager {
     // o alvo. Ancorada no cursor, o desenho aparecia lá, e no fim do cast a
     // orbe saltava para o lançador para só então começar a voar — o "teleporte"
     // que se via. A âncora tem que ficar onde a orbe nasce.
-    const fromCaster = (shape === 'cone' || shape === 'line'
+    // `rays` (Coroa de Espinhos) entra aqui pelo mesmo motivo: a coroa gira em
+    // volta de QUEM LANÇOU. É o que o desenho sempre fez (o cliente ancora
+    // `rays` no caster) e o que o bicho faz (attack-manager: origin = cast.x/z).
+    // Centrada no cursor, o jogador via os raios girando no próprio barco e o
+    // dano caía num círculo lá longe — a queixa de "não está causando dano".
+    const fromCaster = (shape === 'cone' || shape === 'line' || shape === 'rays'
                      || def.special === 'orb' || def.atCaster);
     const ox = fromCaster ? player.x : cx;
     const oz = fromCaster ? player.z : cz;
@@ -458,6 +468,13 @@ class MonsterSkillManager {
       // no telegraph. Sorteada de novo na resolucao, o setor seguro desenhado
       // ficaria num lugar e o buraco no dano em outro.
       gapFacing = Math.random() * Math.PI * 2;
+    }
+
+    // Chuva de destroços (Cemitério de Naufrágios): não existe "um cast" — são
+    // N quedas miradas, cada uma com o próprio aviso. Sai ANTES do broadcast do
+    // campo inteiro, que é justamente o que desenhava os seis de uma vez.
+    if (def.dropIntervalMs) {
+      return this._castWreckRain(player, def, cx, cz, castMs, effectPayload);
     }
 
     // 1. Aviso imediato — todo mundo no mapa vê o telegraph com o tempo certo.
@@ -500,6 +517,12 @@ class MonsterSkillManager {
         burstRadius: def.burstRadius, stepDistance: def.stepDistance,
         stepCount: def.stepCount, firstDistance: def.firstDistance,
         beamWidth: def.beamWidth, obstacleRadius: def.obstacleRadius,
+        // Medidas com nome próprio que ficavam de fora do payload: sem elas o
+        // desenho caía no default da demo, que é a escala de BICHO — a mordida
+        // do Vórtice em 80 quando o dano é 32, o braço da Ceifa em 28 quando é
+        // 12, a corrente dos Grilhões em 120 quando é 45.
+        catchRadius: def.catchRadius, biteRadius: def.biteRadius,
+        armWidth: def.armWidth, maxLength: def.maxLength,
         // Canalizada: o cliente gira o efeito seguindo o cursor.
         follow: def.follow || false,
         // Dash: o corredor fica PLANTADO onde nasceu (o caster viaja, o
@@ -520,6 +543,7 @@ class MonsterSkillManager {
     getMapManagerFor(mapLvl)?.notifyDangerZone(ox, oz, danger, castMs);
 
     // 2. Specials que não são "forma + dano" resolvem por conta própria.
+    if (def.special === 'orb') return this._castHunterOrb(player, def, cx, cz, castMs, effectPayload);
     if (def.special === 'bulwark') return this._castBulwark(player, def, castMs, effectPayload);
     if (def.special === 'obstacles') this._castObstacles(player, def, ox, oz, pts, castMs, dx, dz);
     if (def.special === 'charge')   return this._castCharge(player, def, ox, oz, dx, dz, pts, effectPayload);
@@ -719,6 +743,181 @@ class MonsterSkillManager {
 
     effectPayload.targetX = ox;
     effectPayload.targetZ = oz;
+  }
+
+  /**
+   * Orbe Caçadora (relíquia): espelho do `_runHunterOrb` do bicho — a orbe
+   * NASCE no lançador, viaja atrás do alvo vivo, corrói quem estiver dentro dela
+   * a cada `orbTickMs` e estoura (dano cheio + atordoamento) ao alcançar.
+   *
+   * O `special: 'orb'` não tinha implementação nenhuma neste motor: a relíquia
+   * caía na resolução comum e resolvia UM círculo de raio 18 EM CIMA DO PRÓPRIO
+   * BARCO no fim do cast, enquanto o desenho voava atrás de um alvo escolhido
+   * pelo cliente. Ou seja: a orbe que se via não era a que machucava, e o dano
+   * saía onde não havia nada. Agora a posição é autoritativa e vai no
+   * `relic_orb_move` — o desenho segue o mesmo ponto do dano.
+   */
+  _castHunterOrb(player, def, cx, cz, castMs, effectPayload) {
+    const { addEvent } = this.ctx;
+    const mapLvl  = player.mapLevel || 1;
+    const tickMs  = def.orbTickMs   || 400;
+    const life    = def.lifeMs      || 4000;
+    const speed   = def.orbSpeed    || 45;      // unidades por segundo
+    const radius  = def.radius      || 18;
+    const catchR  = def.catchRadius || 12;
+    const orb     = { x: player.x, z: player.z };
+    // A presa é escolhida no CURSOR e reavaliada a cada leva: se ela morrer ou
+    // trocar de mapa, a orbe passa a caçar o inimigo mais perto DELA.
+    let prey = this._nearestEnemy(player, cx, cz);
+    let startAt = 0;
+
+    const strike = (hits, bx, bz) => {
+      if (!hits.length) return;
+      addEvent({
+        type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
+        vfx: def.vfx, originX: bx, originZ: bz, points: null, hits, radius,
+      }, mapLvl);
+      const npcHits = hits.filter(h => h.isNPC).length;
+      if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
+    };
+
+    const burst = (bx, bz) => {
+      // O estouro é o acerto cheio (índice 0 = é ele que aplica o cc/stun).
+      strike(this._resolveOnce(player, def, 'circle', bx, bz, 0, 1, null, null, 0), bx, bz);
+      addEvent({ type: 'relic_orb_end', casterId: player.id, x: bx, z: bz }, mapLvl);
+    };
+
+    const step = () => {
+      if (player.dead) return;
+      if (!prey || prey.dead || (prey.mapLevel || 1) !== mapLvl) {
+        prey = this._nearestEnemy(player, orb.x, orb.z);
+      }
+      if (prey) {
+        const dx = prey.x - orb.x, dz = prey.z - orb.z;
+        const d  = Math.hypot(dx, dz) || 1;
+        const stepDist = speed * (tickMs / 1000);
+        if (d <= stepDist || d <= catchR) {        // alcançou
+          orb.x = prey.x; orb.z = prey.z;
+          return burst(orb.x, orb.z);
+        }
+        orb.x += (dx / d) * stepDist;
+        orb.z += (dz / d) * stepDist;
+      }
+      addEvent({ type: 'relic_orb_move', casterId: player.id, x: orb.x, z: orb.z, radius }, mapLvl);
+
+      // Corrosão: fração do dano em quem estiver DENTRO da orbe agora. Índice 1
+      // de propósito — o atordoamento é só do estouro.
+      strike(this._resolveOnce(player,
+        { ...def, damagePct: (def.damagePct || 0.9) * (def.orbTickPct || 0.18) },
+        'circle', orb.x, orb.z, 0, 1, null, null, 1), orb.x, orb.z);
+
+      if (Date.now() - startAt >= life) return burst(orb.x, orb.z);
+      setTimeout(step, tickMs);
+    };
+
+    setTimeout(() => { startAt = Date.now(); step(); }, castMs);
+
+    effectPayload.targetX = player.x;
+    effectPayload.targetZ = player.z;
+    effectPayload.castMs  = castMs;
+  }
+
+  /** O inimigo válido mais próximo de um ponto, ou null. Mesmas regras de alvo
+   *  do `_targetsIn` (NPC do mapa vivo + jogador que a relíquia pode acertar). */
+  _nearestEnemy(player, x, z) {
+    const { projectileManager, players, relicCanHitPlayer } = this.ctx;
+    let best = null, bestD = Infinity;
+    projectileManager.npcs.forEach(npc => {
+      if (npc.dead || (npc.mapLevel || 1) !== (player.mapLevel || 1)) return;
+      const d = Math.hypot(npc.x - x, npc.z - z);
+      if (d < bestD) { bestD = d; best = npc; }
+    });
+    players.forEach(p => {
+      if (!relicCanHitPlayer(player, p)) return;
+      const d = Math.hypot(p.x - x, p.z - z);
+      if (d < bestD) { bestD = d; best = p; }
+    });
+    return best;
+  }
+
+  /**
+   * Cemitério de Naufrágios (relíquia): espelha o `_runWreckRain` do bicho —
+   * UMA queda por `dropIntervalMs`, cada uma mirada em ONDE O ALVO ESTÁ naquele
+   * instante, com `dropWarnMs` de janela de fuga.
+   *
+   * Antes as seis caíam juntas em pontos sorteados num disco de 75 un: virava
+   * sorteio, o alvo raramente estava debaixo de alguma, e a skill que o bicho
+   * usa como perseguição virava confete na mão do jogador. Agora a leitura é a
+   * mesma dos dois lados: quem parar, leva; e cada destroço fecha a arena.
+   *
+   * O alvo é uma PESSOA, não um lugar: escolhido no cursor e reavaliado a cada
+   * queda (se ele morrer, a chuva segue para o inimigo mais perto do lançador).
+   */
+  _castWreckRain(player, def, cx, cz, castMs, effectPayload) {
+    const { addEvent, wallManager } = this.ctx;
+    const mapLvl = player.mapLevel || 1;
+    const drops  = Math.max(1, def.count || 6);
+    const gapMs  = def.dropIntervalMs || 1000;
+    const warnMs = def.dropWarnMs || 700;
+    const hold   = def.holdMs || 8000;
+    const r      = def.obstacleRadius || 8;
+    let prey = this._nearestEnemy(player, cx, cz);
+
+    for (let i = 0; i < drops; i++) {
+      setTimeout(() => {
+        if (player.dead) return;
+        if (!prey || prey.dead || (prey.mapLevel || 1) !== mapLvl) {
+          prey = this._nearestEnemy(player, player.x, player.z);
+        }
+        const dx = prey ? prey.x : cx;
+        const dz = prey ? prey.z : cz;
+
+        // Aviso DESTA queda. `count: 1` e `spread: 0` prendem o destroço no
+        // ponto anunciado — sem isso a skill sorteia o ponto dela dentro do
+        // `spread_radius` e a marcação aparece longe de onde a peça cai.
+        addEvent({
+          type: 'monster_skill_cast', casterId: player.id, crit: player._relicCrit,
+          skill: def.skill, vfx: def.vfx, shape: 'multi', special: null,
+          originX: dx, originZ: dz, targetX: dx, targetZ: dz, dirX: 0, dirZ: 1,
+          castMs: warnMs, points: [{ x: 0, z: 0 }],
+          params: {
+            radius: def.radius, count: 1, spread: 0,
+            obstacleRadius: r, holdMs: hold, dropIndex: i,
+          },
+        }, mapLvl);
+
+        setTimeout(() => {
+          if (player.dead) return;
+          const hits = this._resolveOnce(player, { ...def, count: 1 },
+            'circle', dx, dz, 0, 1, null, null, 0);
+          addEvent({
+            type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
+            vfx: def.vfx, originX: dx, originZ: dz, points: null, hits,
+            radius: def.radius || 24,
+          }, mapLvl);
+
+          // E o destroço vira obstáculo de verdade (mesmo wallManager do bicho).
+          if (wallManager) {
+            wallManager.addWall(mapLvl, {
+              id: `ms_${player.id}_${Date.now()}_${i}`,
+              x: dx, z: dz, hw: r, hh: r, rot: 0, durationMs: hold,
+            });
+          }
+          addEvent({
+            type: 'monster_skill_obstacles', casterId: player.id, skill: def.skill,
+            vfx: def.vfx, originX: dx, originZ: dz,
+            points: [{ x: 0, z: 0 }], radius: r, holdMs: hold,
+          }, mapLvl);
+
+          const npcHits = hits.filter(h => h.isNPC).length;
+          if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
+        }, warnMs);
+      }, castMs + i * gapMs);
+    }
+
+    effectPayload.targetX = cx;
+    effectPayload.targetZ = cz;
+    effectPayload.castMs  = castMs;
   }
 
   /**

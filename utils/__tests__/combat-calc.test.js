@@ -1,15 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { calcProjectileDamage, calcKillGold, calcKillXp } from '../combat-calc.js';
 import { applyTalentBonuses } from '../talent-logic.js';
+import { TALENT_DEFS } from '../../constants/talents.js';
 
-// ── Fixtures ──────────────────────────────────────────────────────────────────
-
-const TALENT_DEFS = {
-  dano:     { name: 'Artilheiro',   max: 5, perLevel: 2,   stat: 'damage'    },
-  defesa:   { name: 'Armadura',     max: 5, perLevel: 300, stat: 'defense'   },
-  riqueza:  { name: 'Pilhador',     max: 5, perLevel: 3,   stat: 'gold_drop' },
-  mestre:   { name: 'Estudioso',    max: 5, perLevel: 5,   stat: 'xp_drop'   },
-};
+// Os defs REAIS. Um fixture local aqui já ficou para trás uma vez, na troca dos
+// 10 talentos antigos pelas 4 árvores — e o teste continuou verde medindo nada.
+//
+// Talentos usados abaixo (árvore · efeito por nível):
+//   atk_artilharia  Ataque   +2%   de dano
+//   def_armadura    Defesa   +1,5% de redução de dano
+//   res_pilhador    Recurso  +3%   de ouro
+//   res_estudioso   Recurso  +4%   de XP
 
 // ── calcProjectileDamage — dano base ──────────────────────────────────────────
 
@@ -30,41 +31,47 @@ describe('calcProjectileDamage — sem talentos', () => {
 
 // ── TALENTO DE DANO ───────────────────────────────────────────────────────────
 
-describe('Talento de Dano (Artilheiro) — efeito real no combate', () => {
+describe('Artilharia Pesada — efeito real no combate', () => {
   it('sem talento de dano: talentDmg = 1.0 (sem efeito)', () => {
-    const attacker = { talents: { dano: 0 } };
+    const attacker = { talents: { atk_artilharia: 0 } };
     applyTalentBonuses(attacker, TALENT_DEFS);
 
     const talentDmg = 1 + (attacker.talentDamageBonus || 0);
-    const dmg = calcProjectileDamage({ baseDmg: 100, talentDmg });
-    expect(dmg).toBe(100);
+    expect(calcProjectileDamage({ baseDmg: 100, talentDmg })).toBe(100);
   });
 
-  it('talento dano nível 1 (+2%): 100 → 102', () => {
-    const attacker = { talents: { dano: 1 } };
+  it('nível 1 (+2%): 100 → 102', () => {
+    const attacker = { talents: { atk_artilharia: 1 } };
     applyTalentBonuses(attacker, TALENT_DEFS);
 
     const talentDmg = 1 + attacker.talentDamageBonus;
     expect(calcProjectileDamage({ baseDmg: 100, talentDmg })).toBe(102);
   });
 
-  it('talento dano nível 5 (+10%): 100 → 110', () => {
-    const attacker = { talents: { dano: 5 } };
+  it('nível 5 (+10%): 100 → 110', () => {
+    const attacker = { talents: { atk_artilharia: 5 } };
     applyTalentBonuses(attacker, TALENT_DEFS);
 
     const talentDmg = 1 + attacker.talentDamageBonus;
     expect(calcProjectileDamage({ baseDmg: 100, talentDmg })).toBe(110);
   });
 
+  it('nível máximo 10 (+20%): 100 → 120', () => {
+    const attacker = { talents: { atk_artilharia: 10 } };
+    applyTalentBonuses(attacker, TALENT_DEFS);
+
+    const talentDmg = 1 + attacker.talentDamageBonus;
+    expect(calcProjectileDamage({ baseDmg: 100, talentDmg })).toBe(120);
+  });
+
   it('dano aumenta progressivamente com cada nível', () => {
     const damages = [];
-    for (let level = 0; level <= 5; level++) {
-      const attacker = { talents: { dano: level } };
+    for (let level = 0; level <= 10; level++) {
+      const attacker = { talents: { atk_artilharia: level } };
       applyTalentBonuses(attacker, TALENT_DEFS);
       const talentDmg = 1 + (attacker.talentDamageBonus || 0);
       damages.push(calcProjectileDamage({ baseDmg: 100, talentDmg }));
     }
-    // cada nível deve aumentar ou manter o dano
     for (let i = 1; i < damages.length; i++) {
       expect(damages[i]).toBeGreaterThanOrEqual(damages[i - 1]);
     }
@@ -73,33 +80,33 @@ describe('Talento de Dano (Artilheiro) — efeito real no combate', () => {
 
 // ── TALENTO DE DEFESA ─────────────────────────────────────────────────────────
 
-describe('Talento de Defesa (Armadura Grossa) — efeito real no combate', () => {
+describe('Armadura Grossa — efeito real no combate', () => {
   it('sem talento de defesa: talentDef = 1.0 (sem redução)', () => {
-    const defender = { talents: { defesa: 0 } };
+    const defender = { talents: { def_armadura: 0 } };
     applyTalentBonuses(defender, TALENT_DEFS);
 
     const talentDef = 1 - (defender.talentDefenseBonus || 0);
     expect(calcProjectileDamage({ baseDmg: 100, talentDef })).toBe(100);
   });
 
-  it('talento defesa nível 1 (-3%): 100 → 97', () => {
-    const defender = { talents: { defesa: 1 } };
+  it('nível 2 (−3%): 100 → 97', () => {
+    const defender = { talents: { def_armadura: 2 } };
     applyTalentBonuses(defender, TALENT_DEFS);
 
     const talentDef = 1 - defender.talentDefenseBonus;
     expect(calcProjectileDamage({ baseDmg: 100, talentDef })).toBe(97);
   });
 
-  it('talento defesa nível 3 (-9%): 100 → 91', () => {
-    const defender = { talents: { defesa: 3 } };
+  it('nível 6 (−9%): 100 → 91', () => {
+    const defender = { talents: { def_armadura: 6 } };
     applyTalentBonuses(defender, TALENT_DEFS);
 
     const talentDef = 1 - defender.talentDefenseBonus;
     expect(calcProjectileDamage({ baseDmg: 100, talentDef })).toBe(91);
   });
 
-  it('talento defesa nível 5 (-15%): 100 → 85', () => {
-    const defender = { talents: { defesa: 5 } };
+  it('nível máximo 10 (−15%): 100 → 85', () => {
+    const defender = { talents: { def_armadura: 10 } };
     applyTalentBonuses(defender, TALENT_DEFS);
 
     const talentDef = 1 - defender.talentDefenseBonus;
@@ -108,8 +115,8 @@ describe('Talento de Defesa (Armadura Grossa) — efeito real no combate', () =>
 
   it('dano recebido diminui progressivamente com cada nível de defesa', () => {
     const damages = [];
-    for (let level = 0; level <= 5; level++) {
-      const defender = { talents: { defesa: level } };
+    for (let level = 0; level <= 10; level++) {
+      const defender = { talents: { def_armadura: level } };
       applyTalentBonuses(defender, TALENT_DEFS);
       const talentDef = 1 - (defender.talentDefenseBonus || 0);
       damages.push(calcProjectileDamage({ baseDmg: 100, talentDef }));
@@ -122,66 +129,61 @@ describe('Talento de Defesa (Armadura Grossa) — efeito real no combate', () =>
 
 // ── CONFRONTO: Atacante com dano vs Defensor com defesa ──────────────────────
 
-describe('Confronto — atacante com talento de dano vs defensor com talento de defesa', () => {
-  it('defesa nível 5 do alvo reduz dano de atacante com dano nível 5', () => {
-    const attacker = { talents: { dano: 5 } };
-    const defender = { talents: { defesa: 5 } };
+describe('Confronto — atacante com Artilharia vs defensor com Armadura', () => {
+  it('Armadura 10 do alvo reduz o dano de um atacante com Artilharia 5', () => {
+    const attacker = { talents: { atk_artilharia: 5 } };
+    const defender = { talents: { def_armadura: 10 } };
     applyTalentBonuses(attacker, TALENT_DEFS);
     applyTalentBonuses(defender, TALENT_DEFS);
 
-    const talentDmg = 1 + attacker.talentDamageBonus; // 1.10
+    const talentDmg = 1 + attacker.talentDamageBonus;  // 1.10
     const talentDef = 1 - defender.talentDefenseBonus; // 0.85
 
-    const dmgComTalentosAmbos   = calcProjectileDamage({ baseDmg: 100, talentDmg, talentDef });
-    const dmgSoAtacante          = calcProjectileDamage({ baseDmg: 100, talentDmg });
-    const dmgSoDefensor          = calcProjectileDamage({ baseDmg: 100, talentDef });
+    const dmgComTalentosAmbos = calcProjectileDamage({ baseDmg: 100, talentDmg, talentDef });
+    const dmgSoAtacante       = calcProjectileDamage({ baseDmg: 100, talentDmg });
+    const dmgSoDefensor       = calcProjectileDamage({ baseDmg: 100, talentDef });
 
-    // Com defesa, o dano deve ser menor do que sem defesa
     expect(dmgComTalentosAmbos).toBeLessThan(dmgSoAtacante);
-    // Com defesa, o dano deve ser menor do que o base sem talentos
     expect(dmgSoDefensor).toBeLessThan(100);
-    // 100 * 1.10 * 0.85 = 93.5 → arredonda para 94
+    // 100 × 1.10 × 0.85 = 93,5 → 94
     expect(dmgComTalentosAmbos).toBe(Math.round(100 * 1.10 * 0.85));
   });
 
-  it('attacker sem talento vs defensor com defesa nível 3', () => {
-    const defender = { talents: { defesa: 3 } };
+  it('atacante sem talento vs defensor com Armadura 6', () => {
+    const defender = { talents: { def_armadura: 6 } };
     applyTalentBonuses(defender, TALENT_DEFS);
 
     const talentDef = 1 - defender.talentDefenseBonus; // 0.91
-    const dmg = calcProjectileDamage({ baseDmg: 50, talentDef });
-    // 50 * 0.91 = 45.5 → 46
-    expect(dmg).toBe(Math.round(50 * 0.91));
+    // 50 × 0,91 = 45,5 → 46
+    expect(calcProjectileDamage({ baseDmg: 50, talentDef })).toBe(Math.round(50 * 0.91));
   });
 });
 
 // ── TALENTO DE OURO ───────────────────────────────────────────────────────────
 
-describe('Talento de Ouro (Pilhador) — efeito real nos drops', () => {
+describe('Pilhador — efeito real nos drops', () => {
   it('sem talento: ouro base intacto', () => {
     const killer = { talents: {} };
     applyTalentBonuses(killer, TALENT_DEFS);
     expect(calcKillGold({ baseGold: 100, talentGoldBonus: killer.talentGoldBonus || 0 })).toBe(100);
   });
 
-  it('talento ouro nível 1 (+3%): 100 → 103', () => {
-    const killer = { talents: { riqueza: 1 } };
+  it('nível 1 (+3%): 100 → 103', () => {
+    const killer = { talents: { res_pilhador: 1 } };
     applyTalentBonuses(killer, TALENT_DEFS);
     expect(calcKillGold({ baseGold: 100, talentGoldBonus: killer.talentGoldBonus })).toBe(103);
   });
 
-  it('talento ouro nível 5 (+15%): 100 → floor(100 * 1.15)', () => {
-    const killer = { talents: { riqueza: 5 } };
+  it('nível máximo 10 (+30%): 100 → 130', () => {
+    const killer = { talents: { res_pilhador: 10 } };
     applyTalentBonuses(killer, TALENT_DEFS);
-    // 5 * 3 / 100 = 0.14999... (float) → floor(100 * 1.14999) = 114
-    const expected = Math.floor(100 * (1 + 5 * TALENT_DEFS.riqueza.perLevel / 100));
-    expect(calcKillGold({ baseGold: 100, talentGoldBonus: killer.talentGoldBonus })).toBe(expected);
+    expect(calcKillGold({ baseGold: 100, talentGoldBonus: killer.talentGoldBonus })).toBe(130);
   });
 
   it('ouro aumenta a cada nível', () => {
     const golds = [];
-    for (let level = 0; level <= 5; level++) {
-      const killer = { talents: { riqueza: level } };
+    for (let level = 0; level <= 10; level++) {
+      const killer = { talents: { res_pilhador: level } };
       applyTalentBonuses(killer, TALENT_DEFS);
       golds.push(calcKillGold({ baseGold: 100, talentGoldBonus: killer.talentGoldBonus || 0 }));
     }
@@ -191,45 +193,43 @@ describe('Talento de Ouro (Pilhador) — efeito real nos drops', () => {
   });
 
   it('stacking: talento ouro + dropBonus do navio', () => {
-    const killer = { talents: { riqueza: 3 } }; // +9% ouro
+    const killer = { talents: { res_pilhador: 3 } }; // +9% ouro
     applyTalentBonuses(killer, TALENT_DEFS);
     const gold = calcKillGold({
       baseGold:        100,
       dropBonus:       0.2,   // navio Royal Fortune (+20%)
       talentGoldBonus: killer.talentGoldBonus,
     });
-    // 100 * 1.2 * 1.09 = floor(130.8) = 130
+    // 100 × 1,2 × 1,09 = 130,8 → 130
     expect(gold).toBe(Math.floor(100 * 1.2 * 1.09));
   });
 });
 
 // ── TALENTO DE XP ─────────────────────────────────────────────────────────────
 
-describe('Talento de XP (Estudioso) — efeito real nos drops', () => {
+describe('Estudioso — efeito real nos drops', () => {
   it('sem talento: XP base intacto', () => {
     const killer = { talents: {} };
     applyTalentBonuses(killer, TALENT_DEFS);
     expect(calcKillXp({ xpPerKill: 12, talentXpBonus: killer.talentXpBonus || 0 })).toBe(12);
   });
 
-  it('talento XP nível 1 (+5%): 12 → 12 (floor)', () => {
-    const killer = { talents: { mestre: 1 } };
+  it('nível 1 (+4%): 12 → 12 (floor)', () => {
+    const killer = { talents: { res_estudioso: 1 } };
     applyTalentBonuses(killer, TALENT_DEFS);
-    // 12 * 1.05 = 12.6 → floor = 12
-    expect(calcKillXp({ xpPerKill: 12, talentXpBonus: killer.talentXpBonus })).toBe(Math.floor(12 * 1.05));
+    expect(calcKillXp({ xpPerKill: 12, talentXpBonus: killer.talentXpBonus })).toBe(Math.floor(12 * 1.04));
   });
 
-  it('talento XP nível 5 (+25%): 12 → 15', () => {
-    const killer = { talents: { mestre: 5 } };
+  it('nível 5 (+20%): 12 → 14', () => {
+    const killer = { talents: { res_estudioso: 5 } };
     applyTalentBonuses(killer, TALENT_DEFS);
-    // 12 * 1.25 = 15
-    expect(calcKillXp({ xpPerKill: 12, talentXpBonus: killer.talentXpBonus })).toBe(15);
+    // 12 × 1,20 = 14,4 → 14
+    expect(calcKillXp({ xpPerKill: 12, talentXpBonus: killer.talentXpBonus })).toBe(14);
   });
 
-  it('talento XP visível com xpPerKill maior (mapa 2+)', () => {
-    const killer = { talents: { mestre: 3 } };
+  it('nível máximo 10 (+40%) com xpPerKill maior (mapa 2+)', () => {
+    const killer = { talents: { res_estudioso: 10 } };
     applyTalentBonuses(killer, TALENT_DEFS);
-    // 50 * 1.15 = 57
-    expect(calcKillXp({ xpPerKill: 50, talentXpBonus: killer.talentXpBonus })).toBe(Math.floor(50 * 1.15));
+    expect(calcKillXp({ xpPerKill: 50, talentXpBonus: killer.talentXpBonus })).toBe(70);
   });
 });
