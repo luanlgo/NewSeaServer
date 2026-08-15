@@ -9,6 +9,7 @@ import {
   recalcMaxHp,
   migrateLegacyTalents,
   validateBuyTalent,
+  validateRefundTalent,
 } from '../talent-logic.js';
 import talents from '../../constants/talents.js';
 
@@ -88,26 +89,84 @@ describe('calcXpRequired', () => {
     expect(calcXpRequired(3, XP_BASE, XP_GROWTH)).toBe(665);
   });
 
-  // O teto não é mais balanceamento, é trava de overflow: 500 × 1,1^1199 ≈ 10^52
-  // vira lixo ao virar int64 no cliente. Até a 320ª compra a curva passa livre.
-  it('cresce livre bem além das primeiras centenas de compras', () => {
-    expect(calcXpRequired(100, XP_BASE, XP_GROWTH, talents.TALENT_XP_CAP)).toBe(6_890_306);
-    expect(calcXpRequired(200, XP_BASE, XP_GROWTH, talents.TALENT_XP_CAP)).toBeGreaterThan(9e10);
+  // ── A TAXA cai pela metade a cada faixa de 40 compras ─────────────────────
+  // A exponencial pura pedia 1 MILHÃO de XP na 80ª compra e 46 milhões na 120ª:
+  // com 1200 pontos compráveis, a árvore virava um muro por volta de 15% dela.
+  // A taxa decaindo mantém o custo SEMPRE subindo, mas em ritmo farmável.
+  it('a 1ª faixa (até 40) continua exatamente como era', () => {
+    expect(calcXpRequired(10, XP_BASE, XP_GROWTH)).toBe(1_296);
+    expect(calcXpRequired(20, XP_BASE, XP_GROWTH)).toBe(3_363);
+    expect(calcXpRequired(40, XP_BASE, XP_GROWTH)).toBe(22_629);
   });
 
-  it('trava no MAX_SAFE_INTEGER — sem isso a 1200ª compra estoura o int64', () => {
+  it('a taxa cai pela metade a cada 40 e PARA em 2,5%', () => {
+    const taxa = (n) => calcXpRequired(n + 1, XP_BASE, XP_GROWTH, talents.TALENT_XP_CAP)
+                      / calcXpRequired(n,     XP_BASE, XP_GROWTH, talents.TALENT_XP_CAP);
+    expect(taxa(10),  '1ª faixa: +10%').toBeCloseTo(1.10,   3);
+    expect(taxa(50),  '2ª faixa: +5%').toBeCloseTo(1.05,    3);
+    expect(taxa(90),  '3ª faixa: +2,5%').toBeCloseTo(1.025, 3);
+    // Daqui para a frente a taxa é a mesma para sempre — é o PISO.
+    expect(taxa(130), '4ª faixa: continua +2,5%').toBeCloseTo(1.025, 3);
+    expect(taxa(400), 'compra 400: continua +2,5%').toBeCloseTo(1.025, 3);
+    expect(taxa(900), 'compra 900: continua +2,5%').toBeCloseTo(1.025, 3);
+  });
+
+  // O bug que o piso conserta: sem ele a taxa continuava caindo (1,25%, 0,625%…)
+  // e a série geométrica CONVERGIA — o requisito travava em ~1,16 milhão por
+  // volta da compra 800 e o incremento virava literalmente zero, deixando o
+  // último terço da árvore sem gate de XP nenhum.
+  it('o incremento nunca chega a zero enquanto o valor cabe no int64', () => {
+    const req = (n) => calcXpRequired(n, XP_BASE, XP_GROWTH, talents.TALENT_XP_CAP);
+    // Acima da compra ~1083 o requisito satura no teto anti-overflow e o
+    // incremento vira 0 por construção — lá o gate já é inalcançável de qualquer
+    // forma. O que importa é que não haja platô ANTES disso.
+    for (let n = 0; n < 1000; n += 7) {
+      expect(req(n + 1) - req(n), `platô na compra ${n}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('a curva só encosta no teto anti-overflow muito além do jogável', () => {
+    // O teto não é balanceamento, é proteção de int64. Se ele passar a ser
+    // atingido cedo, o gate de XP some justamente onde deveria morder.
+    let satura = null;
+    for (let n = 0; n <= 1300; n++) {
+      if (calcXpRequired(n, XP_BASE, XP_GROWTH, talents.TALENT_XP_CAP) >= talents.TALENT_XP_CAP) {
+        satura = n;
+        break;
+      }
+    }
+    expect(satura, 'a curva satura dentro da faixa jogável').toBeGreaterThan(1000);
+  });
+
+  it('o muro sumiu: a 120ª compra sai de 46 milhões para centenas de milhares', () => {
+    const req120 = calcXpRequired(120, XP_BASE, XP_GROWTH, talents.TALENT_XP_CAP);
+    expect(req120).toBeLessThan(1_000_000);
+    // ...mas continua MUITO acima da primeira compra: barato não ficou.
+    expect(req120).toBeGreaterThan(100 * XP_BASE);
+  });
+
+  it('o custo nunca para de subir nem regride', () => {
+    let anterior = 0;
+    for (let n = 0; n <= 1200; n += 13) {
+      const req = calcXpRequired(n, XP_BASE, XP_GROWTH, talents.TALENT_XP_CAP);
+      expect(req, `compra ${n} ficou mais barata que a anterior`).toBeGreaterThanOrEqual(anterior);
+      anterior = req;
+    }
+  });
+
+  it('segue seguro como int64 até a última compra da árvore', () => {
     const req = calcXpRequired(1199, XP_BASE, XP_GROWTH, talents.TALENT_XP_CAP);
-    expect(req).toBe(Number.MAX_SAFE_INTEGER);
     expect(Number.isSafeInteger(req)).toBe(true);
+    expect(req).toBeLessThanOrEqual(talents.TALENT_XP_CAP);
   });
 });
 
 // ── getCostTier ───────────────────────────────────────────────────────────────
 
 describe('getCostTier', () => {
-  it('as 5 primeiras compras custam 500 ouro', () => {
-    expect(getCostTier(0, TALENT_COST_TIERS)).toMatchObject({ cost: 500, currency: 'gold' });
-    expect(getCostTier(4, TALENT_COST_TIERS)).toMatchObject({ cost: 500, currency: 'gold' });
+  it('as 5 primeiras compras custam 1.000 ouro', () => {
+    expect(getCostTier(0, TALENT_COST_TIERS)).toMatchObject({ cost: 1000, currency: 'gold' });
+    expect(getCostTier(4, TALENT_COST_TIERS)).toMatchObject({ cost: 1000, currency: 'gold' });
   });
 
   it('a moeda vira dobrão a partir da 200ª compra', () => {
@@ -143,7 +202,7 @@ describe('sumTalentStat e countTreeSpent', () => {
   it('soma só o stat pedido', () => {
     const p = { talents: { def_cascoferro: 2, def_madeiranobre: 3 } };
     expect(sumTalentStat(p, TALENT_DEFS, 'max_hp_flat')).toBe(500);    // 2 × 250
-    expect(sumTalentStat(p, TALENT_DEFS, 'max_hp_flat_2')).toBe(1200); // 3 × 400
+    expect(sumTalentStat(p, TALENT_DEFS, 'max_hp_flat_2')).toBe(6000); // 3 × 2000
   });
 
   it('conta pontos por árvore, ignorando as outras', () => {
@@ -225,7 +284,7 @@ describe('recalcMaxHp', () => {
       skills: {}, shipIslandUpgrades: {},
     };
     recalcMaxHp(player, SHIP_DEFS, TALENT_DEFS);
-    expect(player.maxHp).toBe(600 + 1000 + 800);
+    expect(player.maxHp).toBe(600 + 1000 + 4000);   // 4 × 250 + 2 × 2000
   });
 
   it('island upgrade HP nível 1 adiciona 5% do HP base do navio', () => {
@@ -260,6 +319,32 @@ describe('recalcMaxHp', () => {
     const player = { activeShip: 'navio_inexistente', talents: {}, skills: {}, shipIslandUpgrades: {} };
     recalcMaxHp(player, SHIP_DEFS, TALENT_DEFS);
     expect(player.maxHp).toBe(600);
+  });
+
+  // Os navios bônus não estão no SHIP_DEFS: o HP vem do próprio drop. Antes eles
+  // repetiam a fórmula à mão e ficaram para trás quando o Casco Reforçado passou
+  // a somar percentual — quem estava num navio bônus perdia os dois talentos
+  // percentuais de vida sem nenhum erro aparecer.
+  it('baseHpOverride usa o HP do navio bônus e ainda assim soma TODOS os talentos', () => {
+    const player = {
+      activeShip: 'fragata',
+      talents: { def_cascoferro: 4, def_reforcado: 5, def_coracaoabissal: 2 },
+      skills: {}, shipIslandUpgrades: {},
+    };
+    recalcMaxHp(player, SHIP_DEFS, TALENT_DEFS, 9000);
+
+    const flat = 4 * 250;                       // Casco de Ferro
+    const pct  = (5 * 2 + 2 * 3) / 100;         // Casco Reforçado + Coração do Abismo
+    expect(player.maxHp).toBe(Math.floor(9000 * (1 + pct)) + flat);
+  });
+
+  it('o override não muda em nada o caminho do navio regular', () => {
+    const talents = { def_cascoferro: 3, def_reforcado: 4 };
+    const a = { activeShip: 'galleon', talents, skills: {}, shipIslandUpgrades: {} };
+    const b = { activeShip: 'galleon', talents, skills: {}, shipIslandUpgrades: {} };
+    recalcMaxHp(a, SHIP_DEFS, TALENT_DEFS);
+    recalcMaxHp(b, SHIP_DEFS, TALENT_DEFS, SHIP_DEFS.galleon.hp);
+    expect(b.maxHp).toBe(a.maxHp);
   });
 });
 
@@ -309,7 +394,7 @@ describe('validateBuyTalent', () => {
   const basePlayer = () => ({
     talents: { totalSpent: 0 },
     mapXp:   500,
-    gold:    1000,
+    gold:    10000,
     dobroes: 0,
     talentPoints: 0,
   });
@@ -334,9 +419,9 @@ describe('validateBuyTalent', () => {
     expect(validateBuyTalent(player, 'atk_artilharia', constants)).toMatch(/XP insuficiente/i);
   });
 
-  it('erro: ouro insuficiente (totalSpent=0, tier=500 gold)', () => {
+  it('erro: ouro insuficiente (totalSpent=0, tier=1.000 gold)', () => {
     const player = basePlayer();
-    player.gold = 400;
+    player.gold = 900;
     expect(validateBuyTalent(player, 'atk_artilharia', constants)).toMatch(/Ouro insuficiente/i);
   });
 
@@ -373,5 +458,70 @@ describe('validateBuyTalent', () => {
     const player = { ...basePlayer(), mapXp: Number.MAX_SAFE_INTEGER, gold: 9e9, talentPoints: 99, talents: { def_cascoferro: 10, def_armadura: 10, def_calafate: 10, def_leme: 10, def_reforcado: 10, def_esquiva: 10, def_escudoguerra: 10, def_couraca: 10, def_cascoliso: 10, def_anteparo: 10, totalSpent: 100 } };
     expect(validateBuyTalent(player, 'atk_furiakraken', gated)).toMatch(/abrir este anel/i);
     expect(validateBuyTalent(player, 'def_fortaleza', gated)).toBeNull();
+  });
+});
+
+// ── validateRefundTalent ──────────────────────────────────────────────
+// Clique direito no nó devolve um nível. O caso que importa é o gate: tirar um
+// ponto pode derrubar a árvore abaixo do mínimo de um anel onde o jogador JÁ
+// investiu, criando um estado que o próprio servidor recusaria montar do zero.
+
+describe('validateRefundTalent', () => {
+  const gated = { talentDefs: TALENT_DEFS, ringGate: RING_GATE };
+
+  it('devolve um nível quando não há nada segurando', () => {
+    const player = { talents: { atk_artilharia: 3, totalSpent: 3 } };
+    expect(validateRefundTalent(player, 'atk_artilharia', gated)).toBeNull();
+  });
+
+  it('erro: talento sem ponto investido', () => {
+    const player = { talents: { atk_artilharia: 0, totalSpent: 0 } };
+    expect(validateRefundTalent(player, 'atk_artilharia', gated)).toMatch(/não tem ponto/i);
+  });
+
+  it('erro: talento inválido', () => {
+    expect(validateRefundTalent({ talents: {} }, 'nao_existe', gated)).toMatch(/inválido/i);
+  });
+
+  // 96 pontos em anéis internos + 4 no anel 5 = exatamente o gate de 100. É o
+  // estado mais apertado possível: tirar QUALQUER ponto derruba a árvore para 99.
+  const NO_LIMITE = {
+    def_cascoferro: 10, def_armadura: 10, def_calafate: 10, def_leme: 10,
+    def_reforcado: 10, def_esquiva: 10, def_escudoguerra: 10, def_couraca: 10,
+    def_cascoliso: 10, def_anteparo: 6,
+  };
+  const COM_ANEL_5 = { ...NO_LIMITE, def_fortaleza: 4, totalSpent: 100 };
+
+  it('erro: devolver de dentro fecharia o anel de um nó já investido', () => {
+    const erro = validateRefundTalent({ talents: { ...COM_ANEL_5 } }, 'def_cascoferro', gated);
+    expect(erro).toMatch(/Fortaleza Flutuante/);
+    expect(erro).toMatch(/sobrariam 99/);
+  });
+
+  // Sem esta permissão o jogador ficava preso: no limite exato do gate, nem os
+  // pontos do próprio anel externo poderiam sair.
+  it('o nó do anel externo sempre pode ser desmontado', () => {
+    expect(validateRefundTalent({ talents: { ...COM_ANEL_5 } }, 'def_fortaleza', gated)).toBeNull();
+  });
+
+  it('dois nós no anel externo não travam um ao outro', () => {
+    const player = { talents: { ...NO_LIMITE, def_fortaleza: 2, def_absorcao: 2, totalSpent: 100 } };
+    expect(validateRefundTalent(player, 'def_fortaleza', gated)).toBeNull();
+    expect(validateRefundTalent(player, 'def_absorcao', gated)).toBeNull();
+  });
+
+  it('esvaziado o anel externo, os internos liberam', () => {
+    const player = { talents: { ...NO_LIMITE, totalSpent: 96 } };
+    expect(validateRefundTalent(player, 'def_cascoferro', gated)).toBeNull();
+  });
+
+  it('uma árvore não trava a outra', () => {
+    const player = { talents: { ...COM_ANEL_5, atk_artilharia: 5, totalSpent: 105 } };
+    expect(validateRefundTalent(player, 'atk_artilharia', gated)).toBeNull();
+  });
+
+  it('sem ringGate a checagem de anel não roda', () => {
+    const player = { talents: { ...COM_ANEL_5 } };
+    expect(validateRefundTalent(player, 'def_cascoferro', { talentDefs: TALENT_DEFS })).toBeNull();
   });
 });

@@ -165,7 +165,7 @@ class NPCManager {
     const baseHp = npcDef.baseHp || MAX_HP;
     
     const mapSize = (mapDef && mapDef.size);
-    // spawnAt: ponto fixo de nascimento (ex.: kraken dentro da arena do mapa 11)
+    // spawnAt: ponto fixo de nascimento (ex.: arauto dentro da arena do mapa 11)
     // com dispersão opcional `radius`; sem spawnAt, nasce em qualquer lugar.
     let spawnX, spawnZ;
     if (npcDef.spawnAt) {
@@ -291,7 +291,7 @@ class NPCManager {
         type: 'entity_add',
         entity: this.snapshot([npc])[0]
       });
-    }, mapNpcDef.respawnDelay || 5000);   // respawnDelay do def (ex.: kraken 5min)
+    }, mapNpcDef.respawnDelay || 5000);   // respawnDelay do def (ex.: arauto 1h)
 
     this._respawnTimers.set(id, timer);
   }

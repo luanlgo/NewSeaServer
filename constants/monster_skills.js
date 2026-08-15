@@ -25,8 +25,14 @@
 // ── Modificadores opcionais ───────────────────────────────────────────────────
 //   ticks   { count, intervalMs, pct }  dano repetido (o pct SUBSTITUI damagePct)
 //   cc      { slowPct, slowMs, stunMs, pullTo, pushDist, rootMs }
-//   special 'soak' | 'bulwark' | 'obstacles' | 'drain' | 'charge'
+//   special 'soak' | 'bulwark' | 'obstacles' | 'drain' | 'charge' | 'lights'
+//           | 'prison' | 'swallow' | 'manaburn' | 'silence' | 'mirror' | ...
 //           casos que não cabem em forma+dano puro — ver handleMonsterSkill()
+//
+// ── targetMode: quem a skill mira ────────────────────────────────────────────
+// Ausente (o normal) = um ponto no mundo, e quem estiver na forma leva.
+// 'all_players_in_range' = trava a posição de CADA inimigo no alcance no cast e
+// resolve a forma uma vez sobre cada uma, até `maxTargets`. Ver os Pilares.
 //
 // ⭐ = o ataque forte do conjunto (telegraph longo, dano/leitura maiores).
 //     Marcado no dado como `star: true` — NÃO é só enfeite de comentário:
@@ -273,11 +279,13 @@ const MONSTER_SKILLS = {
     // saltava do angulo do telegraph para cima do jogador no primeiro tick e
     // colava nele para sempre — acerto garantido, sem jogada possivel.
     //
-    // 0,30 rad/s e medido: o feixe varre lateralmente `turnRate x distancia`
-    // un/s, e o barco navega ~45 un/s. Entao da para sair contornando enquanto
-    // `d < 45/0,30 = 150` un. Colado no bicho voce ganha do giro; no fim do
-    // alcance (190) ele te segura. A leitura vira "entre na guarda dele".
-    turnRate: 0.30,
+    // 0,60 rad/s (era 0,30): o feixe varre lateralmente `turnRate x distancia`
+    // un/s, e o barco navega ~45 un/s. Com 0,30 o ponto de empate ficava em 150
+    // un — quase todo o alcance (190) era zona de fuga fácil e o pescoço parecia
+    // travado, girando atrás do jogador sem nunca alcançar. Dobrado, o empate cai
+    // para 75 un: só quem entra na guarda dele ganha do giro, que é a leitura
+    // que a skill sempre prometeu.
+    turnRate: 0.60,
     // Mesmo remédio do Laço, pela mesma medida: o feixe de 75 un morria antes do
     // alcance do canhão, então da distância de combate os 20 tiques caíam na
     // água. E `width` subiu de 12 para 24 (a do bicho): num corredor de 12 un o
@@ -528,6 +536,304 @@ const MONSTER_SKILLS = {
     npc:   { rangeMin: 0, rangeMax: 320, radius: 320, finalRadius: 80, collapseRadius: 120, phaseCount: 4, damageMult: 5.0, castTime: 2600, cooldown: 28000, weight: 2,
              ticks: { count: 8, intervalMs: 500 } },
   },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 10. ABERRAÇÃO DO VAZIO — mob do mapa 10 (o corpo detalhado do "mímico").
+  //
+  // Late game: o conjunto inteiro pesa mais que o dos mapas iniciais, mas o que
+  // faz uma skill de mapa 10 doer NÃO é o número — é a JANELA. Aqui os castes
+  // são curtos e as áreas grandes, então o erro cobra caro mesmo com dano
+  // parecido. Todas as quatro são compostas só de forma + ticks + cc, que os
+  // DOIS motores (attack-manager do bicho e monster-skill-manager da relíquia)
+  // resolvem por igual — nada de `special` que só existe de um lado.
+  // ═══════════════════════════════════════════════════════════════════════════
+  alien_maw_engulf: {
+    relicId: 'r48', name: 'Bocarra Torácica', icon: '👄', rarity: 'épico',
+    vfx: 'alien_maw_engulf', source: 'alien', shape: 'circle', special: 'swallow',
+    desc: 'O peito se abre e ENGOLE quem estiver colado: preso e ferido por 2 s, depois cuspido atrás dele.',
+    // ── `swallow`: deslocamento + prisão, e não mais um stun ────────────────
+    // A cavidade torácica da criatura é o desenho todo — ela ABRE como uma flor
+    // de carne. Uma skill que só empurrasse seria desperdiçar isso.
+    //
+    // Mecanicamente é a primeira do jogo que TIRA a vítima do lugar e a segura
+    // grudada no lançador: durante `holdMs` ela não navega (usa o mesmo
+    // stunExpires que o resto do jogo já respeita) E a posição dela é reescrita
+    // a cada leva para acompanhar quem engoliu. No fim é CUSPIDA `spitDist`
+    // para trás — sair da bocarra não te devolve onde você entrou, e é isso que
+    // separa a leitura de um atordoamento comum.
+    //
+    // Só UMA vítima por uso, e nunca um boss (mesma convenção do resto: chefe
+    // só leva slow). O raio é curto de propósito: quem engole tem de se colar.
+    relic: { manaCost: 6, radius: 32, holdMs: 2000, spitDist: 55, castMs: 900,
+             ticks: { count: 5, intervalMs: 400, pct: 0.42 } },
+    npc:   { rangeMin: 0, rangeMax: 75, radius: 75, holdMs: 2000, spitDist: 95, damageMult: 1.5, castTime: 900, cooldown: 18000, weight: 7,
+             ticks: { count: 5, intervalMs: 400 } },
+  },
+  alien_tail_sweep: {
+    relicId: 'r49', name: 'Varredura da Cauda', icon: '🌀', rarity: 'raro',
+    vfx: 'alien_tail_sweep', source: 'alien', shape: 'ring',
+    desc: 'A cauda enrolada chicoteia para FORA. O miolo é seguro — cole no bicho em vez de fugir.',
+    // Dodge invertido: a leitura instintiva (correr) é a errada. `safeRadius`
+    // generoso porque colar num bicho de mapa 10 já é risco suficiente.
+    relic: { manaCost: 6, radius: 85, safeRadius: 26, damagePct: 1.35, castMs: 1100,
+             cc: { slowPct: 0.35, slowMs: 2000 } },
+    npc:   { rangeMin: 0, rangeMax: 200, radius: 200, safeRadius: 70, damageMult: 3.2, castTime: 1100, cooldown: 15000, weight: 7,
+             cc: { slowPct: 0.35, slowMs: 2000 } },
+  },
+  alien_eyeless_siphon: {
+    relicId: 'r50', name: 'Sorvo sem Olhos', icon: '🫧', rarity: 'épico',
+    vfx: 'alien_eyeless_siphon', source: 'alien', shape: 'circle', special: 'manaburn',
+    desc: 'A cabeça cega inspira: puxa para o centro e QUEIMA A MANA de quem estiver dentro.',
+    // ── `manaburn`: o primeiro golpe do jogo que ataca MANA ─────────────────
+    // A criatura não tem olhos — ela sente. O que ela procura não é o casco, é
+    // o que faz o casco brilhar.
+    //
+    // Num jogo em que TODA relíquia custa mana e a regeneração é de 0,5/s, tirar
+    // mana é uma pressão que nenhuma outra skill exerce: não te mata, te
+    // DESARMA. E é honesto — dá para sair da zona, e o que se perde volta com o
+    // tempo em vez de virar morte.
+    //
+    // `noManaDamagePct`: contra quem não tem mana (todo NPC) não haveria efeito
+    // nenhum, e a relíquia viraria lixo em PvE. Aí o sorvo queima carne no lugar
+    // — mesma fome, alvo diferente.
+    relic: { manaCost: 7, radius: 78, manaBurn: 4, noManaDamagePct: 0.32, castMs: 1300,
+             cc: { pullTo: 30, slowPct: 0.25, slowMs: 1400 },
+             ticks: { count: 6, intervalMs: 500, pct: 0.16 } },
+    npc:   { rangeMin: 0, rangeMax: 200, radius: 200, manaBurn: 6, noManaDamagePct: 0.32, damageMult: 0.8, castTime: 1300, cooldown: 19000, weight: 6,
+             cc: { pullTo: 80, slowPct: 0.25, slowMs: 1400 },
+             ticks: { count: 6, intervalMs: 500 } },
+  },
+  alien_void_lance: {
+    relicId: 'r51', name: 'Lança do Vazio', icon: '🕳️', rarity: 'lendário', star: true, // ⭐
+    vfx: 'alien_void_lance', source: 'alien', shape: 'line',
+    desc: 'Feixe canalizado que persegue a sua mira por 3 s. Entre na guarda dele ou saia do eixo.',
+    // Canalizada com cap de giro, mesma família do Jato do Pescoço — mas o
+    // pescoço do leviatã vira 0,60 rad/s e este vira 0,45: é mais longo e mais
+    // grosso, então precisa ser MAIS lento para continuar tendo saída. O ponto
+    // de empate com os ~45 un/s do barco cai em 100 un.
+    follow: true,
+    turnRate: 0.45,
+    rangeFromCannons: true,
+    relic: { manaCost: 8, length: 120, width: 30, castMs: 1400,
+             ticks: { count: 15, intervalMs: 200, pct: 0.20 } },
+    npc:   { rangeMin: 0, rangeMax: 240, length: 240, width: 34, damageMult: 0.75, castTime: 1400, cooldown: 24000, weight: 4,
+             ticks: { count: 15, intervalMs: 200 } },
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 11. SOBERANO DO VAZIO — BOSS do mapa 10 (o corpo detalhado do mímico-chefe).
+  //
+  // Cinco ataques: é o conjunto mais largo do jogo, e de propósito — um chefe de
+  // penúltimo mapa tem de ter repertório suficiente para você não decorar a
+  // ordem. Duas delas usam `atCaster` (área presa ao corpo dele), o que muda a
+  // pergunta de "onde vai cair?" para "onde ELE está indo?".
+  // ═══════════════════════════════════════════════════════════════════════════
+  alien_boss_face_choir: {
+    relicId: 'r52', name: 'Coro dos Rostos', icon: '😱', rarity: 'lendário',
+    vfx: 'alien_boss_face_choir', source: 'alien_boss', shape: 'circle', special: 'silence',
+    desc: 'Os rostos presos na carne gritam juntos: você fica SEM RELÍQUIAS por 2 s.',
+    // ── `silence`: o eixo que faltava ──────────────────────────────────────
+    // Os rostos humanos embutidos no corpo dele são o detalhe mais perturbador
+    // do modelo, e são gente que ele comeu. A skill é essa gente gritando.
+    //
+    // Silêncio é duro de propósito, e por isso é CURTO (2 s) e vem com o
+    // telegraph mais longo do conjunto (1,8 s): dá para sair. Você continua
+    // navegando e atirando de canhão — perde o botão, não o barco. Um silêncio
+    // longo num jogo construído sobre relíquias viraria tempo morto.
+    //
+    // `atCaster` porque o grito sai DELE: a zona segura é longe, não em volta.
+    atCaster: true,
+    relic: { manaCost: 8, radius: 70, silenceMs: 2000, damagePct: 0.90, castMs: 1800 },
+    npc:   { rangeMin: 0, rangeMax: 190, radius: 190, silenceMs: 2000, damageMult: 2.2, castTime: 1800, cooldown: 24000, weight: 5 },
+  },
+  alien_boss_cortex_mirror: {
+    relicId: 'r53', name: 'Espelho do Córtex', icon: '🪞', rarity: 'épico',
+    vfx: 'alien_boss_cortex_mirror', source: 'alien_boss', shape: 'circle', special: 'mirror',
+    desc: 'O cérebro exposto LÊ o último golpe que você usou — e devolve na sua cara.',
+    // ── `mirror`: o boss usa o seu próprio repertório ───────────────────────
+    // O cérebro azul exposto no meio do peito pede uma skill sobre PENSAR, não
+    // sobre bater. Esta é a única do jogo cujo efeito depende do que o alvo
+    // andou fazendo: ele repete a última relíquia de bestiário que você lançou.
+    //
+    // Vira uma pressão de decisão que nenhuma outra exerce — a sua melhor skill
+    // é também a que ele vai copiar. E se você ainda não usou nada de
+    // bestiário, ele cai no golpe de reserva (`fallbackSkill`) em vez de perder
+    // o turno, senão a skill puniria justamente quem chegou desarmado.
+    relic: { manaCost: 6, radius: 55, damagePct: 0.55, castMs: 1200,
+             fallbackSkill: 'alien_boss_face_choir' },
+    npc:   { rangeMin: 0, rangeMax: 210, radius: 210, damageMult: 1.2, castTime: 1200, cooldown: 22000, weight: 5,
+             fallbackSkill: 'alien_boss_face_choir' },
+  },
+  alien_boss_gut_drain: {
+    relicId: 'r54', name: 'Sorvedouro Visceral', icon: '🩸', rarity: 'épico',
+    vfx: 'alien_boss_gut_drain', source: 'alien_boss', shape: 'circle', special: 'drain',
+    desc: 'Puxa todo mundo para a bocarra e CURA o lançador com parte do que drenou.',
+    // `pullTo` fecha a distância e o `drain` devolve vida — o par é o que faz o
+    // chefe se recuperar quando o grupo dispersa. `drainHealPct` só é lido pelo
+    // motor da relíquia; no bicho a sucção sozinha já cumpre a leitura.
+    relic: { manaCost: 7, radius: 80, damagePct: 1.20, castMs: 1500, drainHealPct: 0.45,
+             cc: { pullTo: 26 } },
+    npc:   { rangeMin: 0, rangeMax: 220, radius: 220, damageMult: 3.0, castTime: 1500, cooldown: 21000, weight: 5,
+             drainHealPct: 0.45, cc: { pullTo: 70 } },
+  },
+  alien_boss_spine_volley: {
+    relicId: 'r55', name: 'Salva de Espinhos', icon: '🦴', rarity: 'raro',
+    vfx: 'alien_boss_spine_volley', source: 'alien_boss', shape: 'rays',
+    desc: 'Coroa de raios girando em volta dele. Ande no MESMO sentido do giro para ficar na brecha.',
+    // `rays` gira em volta de quem lançou (spinSpeed em rad/s) — o acerto
+    // acompanha o desenho pelo crownSpin(). Poucos raios, brechas largas: a
+    // skill é sobre andar junto com o giro, não sobre fugir dele.
+    relic: { manaCost: 6, length: 95, angle: 26, rayCount: 5, spinSpeed: 1.15, castMs: 1200,
+             ticks: { count: 14, intervalMs: 220, pct: 0.24 } },
+    npc:   { rangeMin: 0, rangeMax: 230, length: 230, angle: 26, rayCount: 5, spinSpeed: 1.15, damageMult: 0.85, castTime: 1200, cooldown: 20000, weight: 5,
+             ticks: { count: 14, intervalMs: 220 } },
+  },
+  alien_boss_void_collapse: {
+    relicId: 'r56', name: 'Colapso do Vazio', icon: '🌌', rarity: 'lendário', star: true, // ⭐
+    vfx: 'alien_boss_void_collapse', source: 'alien_boss', shape: 'ring',
+    desc: 'O núcleo colapsa em 5 anéis que fecham para dentro. O último lugar seguro é onde ele está.',
+    // Espelho da Marcha Fúnebre invertido: lá a arena aperta e ABRE no fim; aqui
+    // ela fecha até o corpo do chefe, então a corrida é PARA DENTRO — e o miolo
+    // seguro encolhe a cada leva. `safeRadius` pequeno de propósito: no fim só
+    // cabe quem já está colado nele.
+    relic: { manaCost: 10, radius: 130, safeRadius: 18, phaseCount: 5, damagePct: 1.80, castMs: 2400,
+             ticks: { count: 10, intervalMs: 420, pct: 0.26 } },
+    npc:   { rangeMin: 0, rangeMax: 340, radius: 340, safeRadius: 55, phaseCount: 5, damageMult: 5.5, castTime: 2400, cooldown: 30000, weight: 3,
+             ticks: { count: 10, intervalMs: 420 } },
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 12. ARAUTO DO ABISMO — mini-chefe da ARENA (mapa 11, zona vermelha PvP).
+  //
+  // É o único bicho do bestiário que luta num palco FECHADO (islandRadius 220,
+  // leashRange 220) e com outros JOGADORES em volta se matando. Isso muda o que
+  // faz sentido no conjunto: fugir para longe não é resposta, porque a arena
+  // acaba; e qualquer coisa que prenda ou junte gente vale o dobro, porque
+  // entrega a vítima para os outros players, não só para ele.
+  //
+  // Daí as três do usuário serem todas sobre POSIÇÃO e não sobre dano cru — o
+  // que te mata na arena é ficar parado no lugar errado com plateia.
+  // ═══════════════════════════════════════════════════════════════════════════
+  abyss_judgment_pillars: {
+    relicId: 'r57', name: 'Pilares do Juízo', icon: '🌩️', rarity: 'épico',
+    vfx: 'abyss_judgment_pillars', source: 'arauto', shape: 'circle',
+    // ── `targetMode`: a marcação nasce em CIMA de cada um, não num ponto ─────
+    // Todo o resto do bestiário mira UM lugar e pergunta "quem está ali?". Esta
+    // inverte: trava a posição de cada inimigo no alcance no instante do cast e
+    // deixa cair uma coluna sobre cada uma delas. Não existe posição segura no
+    // momento em que ela sai — existe a distância que dá para andar durante o
+    // telegraph. Por isso o `castTime` é longo e o raio de cada pilar é pequeno:
+    // a skill é um teste de reação, não de leitura de mapa.
+    //
+    // `maxTargets` é o teto de colunas simultâneas (o usuário pediu 8). Sem o
+    // teto, uma arena cheia viraria uma coluna por jogador e o servidor mandaria
+    // 20 telegraphs no mesmo frame.
+    targetMode: 'all_players_in_range',
+    desc: 'Uma coluna de luz cai do céu sobre CADA inimigo no alcance, até 8 de uma vez. Não tem para onde correr — tem quando.',
+    // `seekRadius` é o alcance de BUSCA da relíquia (o bicho usa `rangeMax`, que
+    // só existe do lado dele). Sem este número a versão do jogador cairia num
+    // default e procuraria alvo num raio que ninguém escolheu.
+    relic: { manaCost: 7, radius: 24, maxTargets: 4, seekRadius: 150, damagePct: 0.80, castMs: 1500 },
+    npc:   { rangeMin: 0, rangeMax: 320, radius: 42, maxTargets: 8, damageMult: 2.6, castTime: 1600, cooldown: 17000, weight: 8 },
+  },
+  abyss_hunter_lights: {
+    relicId: 'r58', name: 'Faróis de Carne', icon: '🕯️', rarity: 'épico',
+    vfx: 'abyss_hunter_lights', source: 'arauto', shape: 'circle', special: 'lights',
+    // ── `lights`: três projéteis TELEGUIADOS que imlodem ────────────────────
+    // Lança `lightCount` luzes, uma por alvo. Elas VIAJAM atrás de quem foi
+    // marcado — posição viva, não o ponto do lançamento — e implodem numa
+    // explosão de luz quando alcançam (`catchRadius`) ou quando o tempo acaba
+    // (`lifeMs`), onde quer que estejam.
+    //
+    // É a família da Orbe Caçadora, com a diferença que define as duas: a orbe é
+    // UMA, corrói a cada leva e existe para te empurrar; estas são TRÊS, não
+    // machucam enquanto voam e existem para dividir a atenção da sala. Numa
+    // arena de PvP isso é o mais valioso — três pessoas correndo em direções
+    // diferentes ao mesmo tempo desfaz qualquer formação.
+    //
+    // Velocidade menor que a do barco de propósito: dá para ganhar dos 5 s se
+    // você correr em linha reta desde o começo. O preço é atravessar a arena
+    // sem atirar, e é essa troca que a skill vende.
+    desc: 'Lança 3 luzes que perseguem alvos diferentes. Cada uma implode numa explosão de luz ao alcançar — ou depois de 5 s, onde estiver.',
+    relic: { manaCost: 6, lightCount: 3, lifeMs: 5000, lightSpeed: 40, catchRadius: 14,
+             seekRadius: 150, radius: 34, damagePct: 0.95, castMs: 1000,
+             cc: { slowPct: 0.25, slowMs: 1500 } },
+    npc:   { rangeMin: 0, rangeMax: 300, lightCount: 3, lifeMs: 5000, lightSpeed: 62, catchRadius: 18,
+             radius: 70, damageMult: 2.2, castTime: 1000, cooldown: 21000, weight: 6,
+             cc: { slowPct: 0.25, slowMs: 1500 } },
+  },
+  abyss_earth_prison: {
+    relicId: 'r59', name: 'Prisão de Terra', icon: '🧱', rarity: 'raro',
+    vfx: 'abyss_earth_prison', source: 'arauto', shape: 'circle', special: 'prison',
+    // ── `prison`: quatro paredes, sem brecha ────────────────────────────────
+    // Prima da Jaula de Patas (`obstacles`), com a diferença que muda tudo: a
+    // jaula é um anel de N pernas COM uma brecha sorteada, e existe para
+    // empurrar você para um lado. Esta são 4 muros retos formando uma caixa
+    // FECHADA em volta de um alvo — não tem saída para procurar.
+    //
+    // Bloqueio físico de verdade (wallManager, o mesmo do Muro de Pedra), então
+    // ela não atordoa: você navega dentro da cela, atira de dentro dela, e
+    // continua sendo alvo de todo mundo lá fora. Dano zero de propósito — o
+    // preço é o tempo e a plateia, e somar dano a isso seria punir duas vezes.
+    //
+    // Os 30 s são o pedido para o BICHO, e só sobrevivem porque a cela é grande
+    // o bastante para manobrar e o cooldown é o mais longo do conjunto. A
+    // relíquia leva 6 s: 30 s de prisão num jogador em PvP não é uma skill, é um
+    // castigo — e ninguém equiparia a segunda vez que levasse.
+    // ── Cast CURTO de propósito ─────────────────────────────────────────────
+    // 1,4 s davam tempo de sair da marcação navegando, e uma cela que se evita
+    // com o leme não é uma cela — era só um susto com cooldown de 45 s. Em
+    // 0,5 s ela PEGA, e é isso que a skill promete: a saída não é a proa, é
+    // gastar um recurso (Teleporte r9 atravessa; o que quebra bloqueio, idem).
+    //
+    // O que segura o poder disso não é a esquiva, é o cooldown mais longo do
+    // conjunto inteiro somado ao dano ZERO: você perde tempo, nunca o barco.
+    desc: 'Quatro paredes de rocha sobem em volta de um alvo e o trancam quase sem aviso. Bloqueio físico real — dano nenhum, só tempo.',
+    relic: { manaCost: 6, radius: 30, wallLength: 34, wallThickness: 5, holdMs: 6000, damagePct: 0, castMs: 500 },
+    npc:   { rangeMin: 0, rangeMax: 260, radius: 46, wallLength: 52, wallThickness: 8, damageMult: 0, castTime: 500, cooldown: 45000, weight: 4,
+             holdMs: 30000 },
+  },
+  abyss_lens_beam: {
+    relicId: 'r61', name: 'Lente do Abismo', icon: '🔆', rarity: 'épico',
+    vfx: 'abyss_lens_beam', source: 'arauto', shape: 'line',
+    // ── Três fases, e a primeira é a única em que dá para reagir ────────────
+    //   1. a LENTE se abre à frente do lançador e gira, carregando
+    //   2. o raio dispara pelo corredor — rápido, reto, sem re-mira
+    //   3. o fim do corredor irrompe (`eruptRadius`), e é lá que mais dói
+    //
+    // Não é canalizada (nada de `follow`): ela mira UMA vez, no fim do cast, e
+    // solta. É o oposto do Jato do Pescoço e da Lança do Vazio, que perseguem
+    // — aqui você não sai do eixo depois que saiu, você sai ANTES. Um chefe de
+    // arena precisa de pelo menos um golpe que se leia pela geometria e não
+    // pelo reflexo, senão o conjunto inteiro vira corrida.
+    //
+    // `eruptRadius` no fim faz o corredor ter um lugar PIOR que os outros: quem
+    // está na linha leva, quem está no ponto final leva e ainda apanha da
+    // irrupção. Dá ao jogador uma leitura de "para que lado eu saio" em vez de
+    // só "saio".
+    desc: 'A lente se abre, gira carregando e dispara um raio reto. O fim do corredor irrompe em lascas de luz.',
+    relic: { manaCost: 6, length: 130, width: 26, eruptRadius: 32, damagePct: 1.10, castMs: 1300, travelMs: 180 },
+    npc:   { rangeMin: 0, rangeMax: 280, length: 280, width: 46, eruptRadius: 60, damageMult: 2.9, castTime: 1400, cooldown: 15000, weight: 7,
+             travelMs: 200 },
+  },
+  abyss_herald_embrace: {
+    relicId: 'r60', name: 'Abraço do Arauto', icon: '🫂', rarity: 'lendário', star: true, // ⭐
+    vfx: 'abyss_herald_embrace', source: 'arauto', shape: 'circle',
+    // Os quatro braços são o que o modelo tem de mais próprio, e a leitura sai
+    // deles: a área nasce NELE (`atCaster`), os braços disparam para fora e o
+    // que era distância vira aglomeração. Puxa para o peito e PRENDE ali.
+    //
+    // Na arena isso não é só dano: quem foi arrastado aterrissa colado no chefe,
+    // parado, com os outros jogadores por perto — a skill entrega a vítima para
+    // a sala inteira. É o ⭐ do conjunto por isso, e não pelo número.
+    atCaster: true,
+    desc: 'Os quatro braços disparam, fisgam quem estiver por perto e ARRASTAM todo mundo para o peito dele — juntos, presos e no meio do estouro.',
+    relic: { manaCost: 8, radius: 75, damagePct: 1.30, castMs: 1600,
+             cc: { pullTo: 24, rootMs: 1400, slowPct: 0.30, slowMs: 2500 } },
+    npc:   { rangeMin: 0, rangeMax: 210, radius: 210, damageMult: 3.4, castTime: 1700, cooldown: 26000, weight: 4,
+             cc: { rootMs: 2200, slowPct: 0.30, slowMs: 3000 },
+             effects: [{ type: 'pull', pullDistance: 46 }] },
+  },
 };
 
 // ── Derivados ────────────────────────────────────────────────────────────────
@@ -572,6 +878,10 @@ for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
     dropIntervalMs: s.dropIntervalMs || null,
     dropWarnMs: s.dropWarnMs || null,
     turnRate: s.turnRate || null,
+    // Multi-alvo (Pilares do Juízo): a skill resolve uma vez POR alvo travado no
+    // cast, em vez de uma vez no ponto mirado. `maxTargets` vem de dentro do
+    // `relic`/`npc` porque o teto é diferente nos dois lados.
+    targetMode: s.targetMode || null,
     castTime: s.relic.castMs,
     ...s.relic,
   };
@@ -596,6 +906,7 @@ for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
     dropIntervalMs: s.dropIntervalMs || null,
     dropWarnMs: s.dropWarnMs || null,
     turnRate: s.turnRate || null,
+    targetMode: s.targetMode || null,      // ver a nota no MONSTER_RELIC_DEFS
     telegraph: { color: 0xff4400 },
     ...s.npc,
   };

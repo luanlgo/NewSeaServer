@@ -64,20 +64,24 @@ const TREE_ATAQUE = [
     name: 'Foco Arcano',            desc: '+2% de dano de relíquia por nível.' },
   { id: 'atk_olhoaguia',   icon: '👁', stat: 'crit_chance',           perLevel: 1,   unit: 'chance', wired: true,
     name: 'Olho de Águia',          desc: '+1% de chance de acerto crítico por nível.' },
-  { id: 'atk_perseguicao', icon: '🐆', stat: 'speed_in_combat_pct',   perLevel: 1.5, unit: 'pct', wired: true,
-    name: 'Perseguição',            desc: '+1,5% de velocidade em combate, por nível.' },
+  { id: 'atk_perseguicao', icon: '🐆', stat: 'speed_in_combat_pct',   perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Perseguição',            desc: '+0,5% de velocidade em combate, por nível.' },
 
   // ── anel 1 ──
-  { id: 'atk_golpecerteiro', icon: '💥', stat: 'crit_damage_pct',     perLevel: 5,   unit: 'pct', wired: true,
-    name: 'Golpe Certeiro',         desc: '+5% de dano crítico por nível.' },
+  // ── Dano crítico: 0,5%/nível nos DOIS nós ─────────────────────────────────
+  // Este e o Sangue Frio somavam +80% em cima de um golpe que já valia o dobro
+  // — o crítico virava a única coisa que importava na construção. Agora os dois
+  // juntos entregam +10% no talento cheio, que é tempero e não o prato.
+  { id: 'atk_golpecerteiro', icon: '💥', stat: 'crit_damage_pct',     perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Golpe Certeiro',         desc: '+0,5% de dano crítico por nível.' },
   { id: 'atk_bateria',       icon: '💣', stat: 'cannon_slots',        perLevel: 1,   unit: 'flat',   wired: true,
     name: 'Bateria Extra',          desc: '+1 slot de canhão por nível.' },
   { id: 'atk_perfurante',    icon: '🔩', stat: 'armor_pen_pct',       perLevel: 1.5, unit: 'pct', wired: true,
     name: 'Bala Perfurante',        desc: 'Ignora 1,5% da defesa do alvo por nível.' },
   { id: 'atk_cacafera',      icon: '🐙', stat: 'damage_vs_npc_pct',   perLevel: 2,   unit: 'pct', wired: true,
     name: 'Caçador de Feras',       desc: '+2% de dano contra criaturas por nível.' },
-  { id: 'atk_arrancada',     icon: '💨', stat: 'burst_speed_pct',     perLevel: 3,   unit: 'pct', wired: true,
-    name: 'Arrancada',              desc: '+3% de velocidade nos 3s após sair da imobilidade, por nível.' },
+  { id: 'atk_arrancada',     icon: '💨', stat: 'burst_speed_pct',     perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Arrancada',              desc: '+0,5% de velocidade nos 3s após sair da imobilidade, por nível.' },
 
   // ── anel 2 ──
   { id: 'atk_corsario',    icon: '🏴', stat: 'damage_vs_player_pct',  perLevel: 2,   unit: 'pct', wired: true,
@@ -115,8 +119,9 @@ const TREE_ATAQUE = [
   // acaba. Um enche rápido acertando, o outro paga alto por abate.
   { id: 'atk_frenesi',       icon: '😤', stat: 'frenzy_pct',          perLevel: 1,   unit: 'pct', wired: true,
     name: 'Frenesi de Batalha',     desc: 'Cada acerto dá +1% de dano por nível, acumulando até 5 vezes. Zera ao sair de combate.' },
-  { id: 'atk_sanguefrio',    icon: '🧊', stat: 'crit_damage_high_hp', perLevel: 3,   unit: 'pct', wired: true,
-    name: 'Sangue Frio',            desc: '+3% de dano crítico com a vida acima de 80%, por nível.' },
+  // Ver a nota no Golpe Certeiro: os dois nós de dano crítico somam +10%.
+  { id: 'atk_sanguefrio',    icon: '🧊', stat: 'crit_damage_high_hp', perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Sangue Frio',            desc: '+0,5% de dano crítico com a vida acima de 80%, por nível.' },
   { id: 'atk_ultimorecurso', icon: '🩸', stat: 'damage_low_hp_pct',   perLevel: 4,   unit: 'pct', wired: true,
     name: 'Último Recurso',         desc: '+4% de dano com a vida abaixo de 30%, por nível.' },
   { id: 'atk_miralonga',     icon: '🔭', stat: 'cannon_range_pct',    perLevel: 2,   unit: 'pct', wired: true,
@@ -143,14 +148,17 @@ const TREE_ATAQUE = [
     name: 'Sobrecarga Arcana',      desc: '+3% de dano de relíquia por nível, ao custo de +1% de mana por nível.' },
   { id: 'atk_carnificina',   icon: '☠', stat: 'killstreak_pct',      perLevel: 2,   unit: 'pct', wired: true,
     name: 'Carnificina',            desc: 'Cada abate dá +2% de dano por nível, acumulando até 3 vezes. Zera ao sair de combate.' },
-  { id: 'atk_ventania',      icon: '💠', stat: 'speed_on_kill_pct',   perLevel: 2,   unit: 'pct', wired: true,
-    name: 'Ventania',               desc: '+2% de velocidade por 5s após um abate, por nível.' },
-  { id: 'atk_impulsoarcano', icon: '✳', stat: 'speed_on_relic_pct',  perLevel: 2,   unit: 'pct', wired: true,
-    name: 'Impulso Arcano',         desc: '+2% de velocidade por 4s após usar uma relíquia, por nível.' },
+  { id: 'atk_ventania',      icon: '💠', stat: 'speed_on_kill_pct',   perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Ventania',               desc: '+0,5% de velocidade por 5s após um abate, por nível.' },
+  { id: 'atk_impulsoarcano', icon: '✳', stat: 'speed_on_relic_pct',  perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Impulso Arcano',         desc: '+0,5% de velocidade por 4s após usar uma relíquia, por nível.' },
   { id: 'atk_bordolivre',    icon: '🕊', stat: 'dash_cooldown_pct',   perLevel: 3,   unit: 'redpct',
     name: 'Bordo Livre',            desc: '−3% no tempo de recarga do impulso, por nível.' },
-  { id: 'atk_furiakraken',   icon: '🐉', stat: 'kraken_fury_pct',     perLevel: 5,   unit: 'pct', wired: true,
-    name: 'Fúria do Kraken',        desc: '+5% de dano por nível, mas −2% de redução de dano por nível.' },
+  // Era +5%/nível e virou +3%: a +50% ele dava 2,5× o Artilharia Pesada, o maior
+  // talento de dano incondicional da árvore. A penalidade acompanha pela razão
+  // fixa de 0,4 em talent-effects (3 × 0,4 = 1,2 ponto de redução por nível).
+  { id: 'atk_furiakraken',   icon: '🐉', stat: 'kraken_fury_pct',     perLevel: 3,   unit: 'pct', wired: true,
+    name: 'Fúria do Kraken',        desc: '+3% de dano por nível, mas −1,2% de redução de dano por nível.' },
 ];
 
 // ── DEFESA ────────────────────────────────────────────────────────────────────
@@ -204,14 +212,14 @@ const TREE_DEFESA = [
     name: 'Trégua',                 desc: '+200ms de invulnerabilidade após renascer, por nível.' },
   { id: 'def_vigia',         icon: '👀', stat: 'crit_taken_reduction', perLevel: 3,  unit: 'pct', wired: true,
     name: 'Vigia',                  desc: '+3% de redução do dano crítico recebido, por nível.' },
-  { id: 'def_fuga',          icon: '🏃', stat: 'speed_low_hp_pct',    perLevel: 3,   unit: 'pct', wired: true,
-    name: 'Fuga Estratégica',       desc: '+3% de velocidade com a vida abaixo de 30%, por nível.' },
+  { id: 'def_fuga',          icon: '🏃', stat: 'speed_low_hp_pct',    perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Fuga Estratégica',       desc: '+0,5% de velocidade com a vida abaixo de 30%, por nível.' },
   { id: 'def_ancoragem',     icon: '🪝', stat: 'stop_time_pct',       perLevel: 3,   unit: 'redpct', wired: true,
     name: 'Ancoragem Rápida',       desc: '−3% no tempo para parar o navio, por nível.' },
 
   // ── anel 4 ──
-  { id: 'def_madeiranobre', icon: '🌳', stat: 'max_hp_flat_2',        perLevel: 400, unit: 'flat', wired: true,
-    name: 'Madeira Nobre',          desc: '+400 de vida máxima por nível.' },
+  { id: 'def_madeiranobre', icon: '🌳', stat: 'max_hp_flat_2',        perLevel: 2000, unit: 'flat', wired: true,
+    name: 'Madeira Nobre',          desc: '+2000 de vida máxima por nível.' },
   { id: 'def_barreira',     icon: '🔵', stat: 'shield_on_relic_pct',  perLevel: 1,   unit: 'pct', wired: true,
     name: 'Barreira Arcana',        desc: 'Usar uma relíquia concede um escudo de 1% da vida máxima por nível.' },
   { id: 'def_moral',        icon: '🎖', stat: 'reduction_per_ally_pct', perLevel: 0.5, unit: 'pct', wired: true,
@@ -224,8 +232,8 @@ const TREE_DEFESA = [
     name: 'Teimosia',               desc: '1% de chance por nível de sobreviver com 1 de vida a um golpe fatal.' },
   { id: 'def_alvodificil',  icon: '🎯', stat: 'dodge_moving_chance',  perLevel: 1,   unit: 'chance', wired: true,
     name: 'Alvo Difícil',           desc: '+1% de chance de desvio enquanto está em movimento, por nível.' },
-  { id: 'def_marchare',     icon: '↩', stat: 'reverse_speed_pct',    perLevel: 4,   unit: 'pct', wired: true,
-    name: 'Marcha à Ré',            desc: '+4% de velocidade de ré por nível.' },
+  { id: 'def_marchare',     icon: '↩', stat: 'reverse_speed_pct',    perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Marcha à Ré',            desc: '+0,5% de velocidade de ré por nível.' },
 
   // ── anel 5 ──
   { id: 'def_fortaleza',      icon: '🏰', stat: 'damage_reduction_pct_2', perLevel: 1, unit: 'pct', wired: true,
@@ -261,8 +269,8 @@ const TREE_RECURSO = [
     name: 'Estudioso',              desc: '+4% de XP obtido por nível.' },
   { id: 'res_ganancioso', icon: '🟡', stat: 'dobrao_drop_pct',        perLevel: 3,   unit: 'pct',    wired: true,
     name: 'Corsário Ganancioso',    desc: '+3% de dobrões obtidos por nível.' },
-  { id: 'res_velas',      icon: '⛵', stat: 'speed_pct',              perLevel: 1.5, unit: 'pct', wired: true,
-    name: 'Velas Rápidas',          desc: '+1,5% de velocidade do navio por nível.' },
+  { id: 'res_velas',      icon: '⛵', stat: 'speed_pct',              perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Velas Rápidas',          desc: '+0,5% de velocidade do navio por nível.' },
 
   // ── anel 1 ──
   { id: 'res_manaflow',     icon: '🔷', stat: 'mana_regen_pct',       perLevel: 8,   unit: 'pct',    wired: true,
@@ -287,8 +295,8 @@ const TREE_RECURSO = [
     name: 'Cartógrafo',             desc: '+4% de fragmentos de mapa obtidos por nível.' },
   { id: 'res_alquimista', icon: '⚗', stat: 'ammo_drop_pct',          perLevel: 4,   unit: 'pct',
     name: 'Alquimista',             desc: '+4% de munição obtida como espólio, por nível.' },
-  { id: 'res_correnteza', icon: '🌊', stat: 'speed_out_combat_pct',   perLevel: 2,   unit: 'pct', wired: true,
-    name: 'Correnteza Favorável',   desc: '+2% de velocidade fora de combate, por nível.' },
+  { id: 'res_correnteza', icon: '🌊', stat: 'speed_out_combat_pct',   perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Correnteza Favorável',   desc: '+0,5% de velocidade fora de combate, por nível.' },
 
   // ── anel 3 ──
   { id: 'res_economia',     icon: '💧', stat: 'relic_mana_cost_pct',  perLevel: 1.5, unit: 'redpct', wired: true,
@@ -339,10 +347,10 @@ const TREE_RECURSO = [
     name: 'Porão Ampliado',         desc: '+2 espaços de porão por nível.' },
   { id: 'res_navegacao',      icon: '🧭', stat: 'map_travel_pct',     perLevel: 3,   unit: 'pct',
     name: 'Navegação Precisa',      desc: '+3% de velocidade ao cruzar bordas de mapa, por nível.' },
-  { id: 'res_cavalgar',       icon: '🏄', stat: 'wave_speed_pct',     perLevel: 2,   unit: 'pct',
-    name: 'Cavalgar as Ondas',      desc: '+2% de velocidade navegando a favor da corrente, por nível.' },
-  { id: 'res_esquadra',       icon: '⛴', stat: 'party_speed_pct',    perLevel: 1,   unit: 'pct', wired: true,
-    name: 'Vento de Esquadra',      desc: '+1% de velocidade para todo o grupo por perto, por nível.' },
+  { id: 'res_cavalgar',       icon: '🏄', stat: 'wave_speed_pct',     perLevel: 0.5, unit: 'pct',
+    name: 'Cavalgar as Ondas',      desc: '+0,5% de velocidade navegando a favor da corrente, por nível.' },
+  { id: 'res_esquadra',       icon: '⛴', stat: 'party_speed_pct',    perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Vento de Esquadra',      desc: '+0,5% de velocidade para todo o grupo por perto, por nível.' },
   { id: 'res_tesouroabissal', icon: '🏆', stat: 'abyssal_treasure_pct', perLevel: 2, unit: 'pct', wired: true,
     name: 'Tesouro do Abismo',      desc: '+2% em TODO ganho (ouro, dobrões e XP) por nível.' },
 ];
@@ -409,16 +417,19 @@ const LEGACY_TALENT_MAP = {
 // (120 talentos × 10), então a tabela antiga — que travava em 3.000 dobrões
 // após a 30ª compra — deixaria as ~1.170 compras seguintes com o mesmo preço.
 // Os degraus abaixo mantêm o começo barato e fazem o fim doer.
+// Todos os degraus foram multiplicados por 10 num ajuste de playtest: passados
+// os 200 pontos o talento saía por 500 dobrões, barato demais para um jogador
+// que já chegou lá. A forma da curva não mudou — só a escala.
 const TALENT_COST_TIERS = [
-  { upTo: 5,    cost: 500,     currency: 'gold'   },
-  { upTo: 20,   cost: 2000,    currency: 'gold'   },
-  { upTo: 50,   cost: 10000,   currency: 'gold'   },
-  { upTo: 100,  cost: 40000,   currency: 'gold'   },
-  { upTo: 200,  cost: 150000,  currency: 'gold'   },
-  { upTo: 350,  cost: 500,     currency: 'dobrao' },
-  { upTo: 550,  cost: 1000,    currency: 'dobrao' },
-  { upTo: 800,  cost: 2000,    currency: 'dobrao' },
-  { upTo: 9999, cost: 3500,    currency: 'dobrao' },
+  { upTo: 5,    cost: 1000,      currency: 'gold'   },
+  { upTo: 20,   cost: 5000,     currency: 'gold'   },
+  { upTo: 50,   cost: 20000,    currency: 'gold'   },
+  { upTo: 100,  cost: 50000,    currency: 'gold'   },
+  { upTo: 200,  cost: 100000,   currency: 'gold'   },
+  { upTo: 350,  cost: 5000,      currency: 'dobrao' },
+  { upTo: 550,  cost: 10000,     currency: 'dobrao' },
+  { upTo: 800,  cost: 20000,     currency: 'dobrao' },
+  { upTo: 9999, cost: 35000,     currency: 'dobrao' },
 ];
 
 // ── XP mínimo para a n-ésima compra (0-indexed) ──────────────────────────────

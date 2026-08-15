@@ -300,7 +300,7 @@ MAP_DEFS[3] = {
             field: 'as',
             attackSpeedBonus: -1000,
             price: 100000, currency: 'gold',
-            ironPlatesPrice: 50,
+            ironPlatesPrice: 500,
           },
           // ── Era "+30 de Alcance" (campo `rn`) ────────────────────────────
           // O alcance se sabotava: a dispersão do tiro cresce com a distância
@@ -312,19 +312,29 @@ MAP_DEFS[3] = {
           // No lugar, o crítico — que existia inteiro no motor e NUNCA
           // acontecia: `isCrit` só era sorteado dentro do bloco de homing, cuja
           // única fonte é `PIRATE_DEFS[].critChance`, e os dois piratas do jogo
-          // são healers com 0. `critMult` 2.0 (e não os 1.5 do homing) é o que
-          // faz a média (+20%) não empatar com o upgrade de Dano (+10%), que é
-          // comprado junto e não no lugar deste.
+          // são healers com 0.
+          //
+          // ── Por que ×1,5 e não ×2 ────────────────────────────────────────
+          // O dobro era demais para um golpe que acontece com 20% de chance de
+          // saída e sobe daí com os talentos de chance. Somado aos dois nós de
+          // dano crítico (que valiam +80% juntos), o crítico deixava de ser um
+          // pico e virava a construção inteira.
+          //
+          // O efeito colateral aceito: em ×1,5 a média deste upgrade (+10%)
+          // EMPATA com a do upgrade de Dano, que custa o mesmo. O desempate
+          // vem do investimento — chance de crítico e dano crítico têm nós na
+          // árvore, dano de canhão bruto tem menos. Quem constrói para crítico
+          // passa dos +10%; quem não constrói compra o Dano e está certo.
           {
             id: 'cannon_crit_upgrade',
             name: 'Pontaria Mortal',
-            description: '20% de crítico (×2)',
+            description: '20% de crítico (×1,5)',
             icon: '💢',
             field: 'cr',
             critChance: 0.20,
-            critMult: 2.0,
+            critMult: 1.5,
             price: 12000, currency: 'dobrao',
-            ironPlatesPrice: 150,
+            ironPlatesPrice: 1500,
           },
           {
             id: 'cannon_damage_upgrade',
@@ -334,7 +344,7 @@ MAP_DEFS[3] = {
             field: 'dm',
             damageBonus: 0.10,
             price: 10000, currency: 'dobrao',
-            ironPlatesPrice: 150,
+            ironPlatesPrice: 1500,
           },
         ],
       }
@@ -407,13 +417,6 @@ MAP_DEFS[4] = {
     yOffset:         92,
     rotOffset:       0,
     colliders: [
-      { shape: 'circle', x:  105, z:    0, r:  30 },
-      { shape: 'box',    x:   45, z: -100, hw:  75, hh: 65, rot: -0.52 },
-      { shape: 'box',    x:    5, z:  110, hw: 105, hh: 20, rot:  0    },
-      { shape: 'box',    x: -130, z:   75, hw:  25, hh: 10, rot:  0    },
-      { shape: 'box',    x:   20, z:  145, hw:  20, hh: 15, rot:  0    },
-      { shape: 'box',    x:  -35, z:  140, hw:  10, hh: 15, rot:  0    },
-      { shape: 'box',    x: -150, z:  -65, hw:  15, hh: 10, rot:  0    },
     ],
   },
   // Missões diárias movidas para constants/missions.js (Barco de Missões,
@@ -482,7 +485,7 @@ MAP_DEFS[6] = {
     // hardcoded. Os ataques de ATTACK_DEFS calculam cannonDmg × damageMult, então
     // com 0 TODOS bateriam por 1 (o piso do Math.max). 60 dá a escala atual:
     // pilares (2.5×) = 150, tide_split solo (8×) = 480, rachado em 4 = 120.
-    baseDamage:   60,
+    baseDamage:    12000,
     regenPerSec:   120,
     regenDelay:    20000,
     killsToSpawn:  0,
@@ -703,7 +706,7 @@ MAP_DEFS[10] = {
   pvpZone:     'yellow',
   xpRequired:  30000,
   xpToAdvance: null,
-  size:        MAP_SIZE * 2,
+  size:        MAP_SIZE * 4,
   sideMap:     [{sul: 3, left: 6, norte: 11}],
   goldStealRatio: 0.01,  // 8% do dano convertido em ouro roubado pelos NPCs
   banking: {
@@ -732,8 +735,8 @@ MAP_DEFS[10] = {
   },
   npc: {
     count:        20,
-    baseHp:       100000,
-    baseDamage:   40000,
+    baseHp:       140000,
+    baseDamage:   15000,
     fireInterval: 3000,
     names:        ['Mímico Guardião'],
     hullColor:    0x4a3010,
@@ -751,7 +754,10 @@ MAP_DEFS[10] = {
     rotOffset:    0,
     hitRadius:    10,
     relicDropChance: 0.15,
-    attacks: ['bite', 'charge_line', 'cross_blast', 'heavy_stomp', 'impale_line', 'mimic_tongue_lash'],
+    // Conjunto EXCLUSIVO do bestiário, como nos mapas 1/3/4: a pool de drop de
+    // relíquia sai daqui (_bestiaryPool lê npc.attacks), então misturar os
+    // ataques genéricos antigos diluiria o conjunto do bicho sem dropar nada.
+    attacks: ['alien_maw_engulf', 'alien_tail_sweep', 'alien_eyeless_siphon', 'alien_void_lance'],
     ammoTiers: [
       { minKills: 0,   ammo: 'bala_ferro' },
       { minKills: 200, ammo: 'bala_gelo'  },
@@ -760,11 +766,11 @@ MAP_DEFS[10] = {
 
   boss: {
     name:        'Grande Mímico do Tesouro',
-    baseHp:      500000,
-    baseDamage:  3000,
+    baseHp:      700000,
+    baseDamage:  18000,
     regenPerSec:   500,
     regenDelay:    20000,
-    killsToSpawn:  20,
+    killsToSpawn:  100,
     dobraoMin:     5000,
     dobraoMax:     10000,
     hullColor:     0x3a2008,
@@ -774,7 +780,11 @@ MAP_DEFS[10] = {
     yOffset:     0,
     rotOffset:   0,
     hitRadius:   16,
-    attacks: ['bite', 'cross_blast', 'charge_line', 'arcane_nova', 'heavy_stomp', 'impale_line', 'mimic_tongue_lash', 'tide_split', 'gloom_shroud'],
+    // Cinco — o repertório mais largo do jogo, para um chefe de penúltimo mapa
+    // não ter ordem decorável. A ⭐ (Colapso do Vazio) só entra no sorteio dele
+    // durante a Lua de Sangue, como todas as outras ⭐.
+    attacks: ['alien_boss_face_choir', 'alien_boss_cortex_mirror', 'alien_boss_gut_drain',
+              'alien_boss_spine_volley', 'alien_boss_void_collapse'],
     // Auras ficam FORA de `attacks`: não são escolhidas pelo sorteio ponderado,
     // tickam sozinhas enquanto o boss vive (attack-manager.tickAuras).
     auras: ['ghost_dread_aura'],
@@ -927,7 +937,7 @@ MAP_DEFS[11] = {
     ],
   },
 
-  // Arena central — palco do kraken. colliders vazio = sem colisão física
+  // Arena central — palco do arauto. colliders vazio = sem colisão física
   // (navios entram livremente); demarque as paredes reais com o editor tecla 2.
   arena: {
     center:       { x: 0, z: 0 },
@@ -1021,11 +1031,11 @@ MAP_DEFS[11] = {
   },
 
   npc: {
-    count:        1,               // apenas o kraken filho, dentro da arena
+    count:        1,               // apenas o arauto, dentro da arena
     baseHp:       3000000,
-    baseDamage:   50000,
+    baseDamage:   20000,
     fireInterval: 3000,
-    names:        'Kraken Filho',
+    names:        'Arauto do Abismo',
     hullColor:    0x1a0a2a,
     sailColor:    0x662288,
     flagColor:    0x441166,
@@ -1035,8 +1045,8 @@ MAP_DEFS[11] = {
     dobraoChance: 1,
     dobraoMin:    10000,
     dobraoMax:    25000,
-    model:        '/models/monster/kraken_filho.glb',
-    scale: 15,
+    model:        '/models/monster/arauto_abismo.glb',
+    scale: 34,
     yOffset: 0,
     rotOffset: 0,
     hitRadius: 14,
@@ -1044,7 +1054,19 @@ MAP_DEFS[11] = {
     spawnAt:      { x: 0, z: 0, radius: 60 },  // nasce dentro da arena
     leashRange:   220,             // não sai da arena ao perseguir
     respawnDelay: 3600000,          // mini-boss: 1 h para renascer
-    attacks: ['tentacle_slam', 'tentacle_sweep', 'ink_blast', 'deep_surge', 'impale_line', 'whirlwind', 'tide_split', 'gloom_shroud'],
+    // Kit do Arauto do Abismo — seis, e nenhuma herdada do kraken que ele
+    // substituiu: as quatro do bestiário (monster_skills.js, source 'arauto')
+    // mais as duas que copiam relíquia de jogador (attacks.js).
+    //
+    // Ordem de leitura pretendida numa luta: os Pilares abrem espalhando todo
+    // mundo, os Faróis marcam e cobram movimento, a Prisão isola um, o Meteoro
+    // castiga quem se juntou de novo, a Névoa compra fôlego quando a vida cai e
+    // o Abraço ⭐ (só na lua de sangue) desfaz o espalhamento de uma vez.
+    attacks: [
+      'abyss_judgment_pillars', 'abyss_hunter_lights', 'abyss_earth_prison',
+      'abyss_lens_beam',
+      'abyss_meteor_call', 'abyss_spectral_veil', 'abyss_herald_embrace',
+    ],
   },
   boss: null,
 

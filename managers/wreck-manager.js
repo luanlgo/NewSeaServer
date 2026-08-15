@@ -1,7 +1,7 @@
 // managers/wreck-manager.js — Ruínas saqueáveis da Zona Vermelha (PvP)
 //
 // Quando um jogador morre num mapa com pvpZone 'red' (qualquer causa: PvP,
-// kraken, aura, DoT), ele perde WRECK_GOLD_PCT do ouro na hora e uma ruína
+// arauto, aura, DoT), ele perde WRECK_GOLD_PCT do ouro na hora e uma ruína
 // (naufrágio) nasce no ponto da morte com esse ouro dentro. Qualquer jogador
 // pode saquear com F (msg loot_wreck) dentro de LOOT_RANGE durante o TTL;
 // depois disso o ouro se perde e a ruína some.

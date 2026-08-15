@@ -126,8 +126,8 @@ describe('crítico', () => {
   });
 
   it('sangue frio só com a vida acima de 80%', () => {
-    const p = mk({ atk_sanguefrio: 10 });                     // +30%
-    expect(fx.critMult(p, 1.5, 0.90)).toBeCloseTo(1.80, 6);
+    const p = mk({ atk_sanguefrio: 10 });                     // +5%
+    expect(fx.critMult(p, 1.5, 0.90)).toBeCloseTo(1.55, 6);
     expect(fx.critMult(p, 1.5, 0.70)).toBeCloseTo(1.50, 6);
   });
 });
@@ -163,10 +163,31 @@ describe('dano recebido', () => {
   });
 
   it('fúria do kraken troca redução por dano', () => {
-    const p = mk({ atk_furiakraken: 10 });                    // +50% dano, −20% DR
-    expect(fx.outgoingDamageMult(p, {})).toBeCloseTo(1.50, 6);
-    expect(fx.damageReduction(p, {})).toBeCloseTo(-0.20, 6);
-    expect(fx.applyDamageReduction(p, 100, {})).toBe(120);
+    const p = mk({ atk_furiakraken: 10 });                    // +30% dano, −12% DR
+    expect(fx.outgoingDamageMult(p, {})).toBeCloseTo(1.30, 6);
+    expect(fx.damageReduction(p, {})).toBeCloseTo(-0.12, 6);
+    expect(fx.applyDamageReduction(p, 100, {})).toBe(112);
+  });
+
+  // A penalidade do Kraken sai DEPOIS do teto de redução. Cobrando antes ela
+  // sumia para quem mais tinha como pagá-la: um build de anel 5 em Defesa passa
+  // dos 85% de teto com folga, e os 12 pontos cabiam inteiros nessa folga — o
+  // tanque levava o dano extra de graça, o oposto da troca prometida.
+  it('a penalidade do kraken não é engolida pelo teto de redução', () => {
+    const DEFESA = {
+      def_armadura: 10, def_fortaleza: 10, def_coracaoabissal: 10,
+      def_escudoguerra: 10, def_ancoraviva: 10, def_lobodomar: 10, def_sentinela: 10,
+    };
+    const ctx  = { fromNPC: true, isStill: true, inParty: false };
+    const meta = { _sentinelStacks: fx.SENTINEL_MAX_STACKS };
+
+    const tanque = mk(DEFESA, meta);
+    const comKraken = mk({ ...DEFESA, atk_furiakraken: 10 }, meta);
+
+    // O tanque puro bate no teto...
+    expect(fx.damageReduction(tanque, ctx)).toBeCloseTo(fx.MAX_DR, 6);
+    // ...e mesmo assim o Kraken cobra os 12 pontos inteiros.
+    expect(fx.damageReduction(comKraken, ctx)).toBeCloseTo(fx.MAX_DR - 0.12, 6);
   });
 
   it('carapaça de kraken tira dano plano DEPOIS da redução', () => {
@@ -260,24 +281,28 @@ describe('relíquias', () => {
 // ── Movimento ────────────────────────────────────────────────────────────────
 
 describe('movimento', () => {
+  // Níveis DIFERENTES de propósito. Todo talento de velocidade dá 0,5%/nível
+  // desde o balanceamento de 2026-08-15, então com os dois no nível 10 os dois
+  // ramos dariam o mesmo número e o teste passaria sem conseguir dizer QUAL
+  // deles aplicou — que é exatamente a única coisa que ele existe para provar.
   it('perseguição e correnteza são excludentes', () => {
-    const p = mk({ atk_perseguicao: 10, res_correnteza: 10 }, BUSY);
-    expect(fx.speedMult(p, { now: NOW })).toBeCloseTo(1.15, 6);
+    const p = mk({ atk_perseguicao: 10, res_correnteza: 6 }, BUSY);
+    expect(fx.speedMult(p, { now: NOW })).toBeCloseTo(1.05, 6);   // 10 × 0,5%
     p.lastCombatTime = NOW - fx.OUT_OF_COMBAT_MS - 1;
-    expect(fx.speedMult(p, { now: NOW })).toBeCloseTo(1.20, 6);
+    expect(fx.speedMult(p, { now: NOW })).toBeCloseTo(1.03, 6);   // 6 × 0,5%
   });
 
   it('arrancada dura 3s a partir do início do movimento', () => {
-    const p = mk({ atk_arrancada: 10 }, IDLE);                // +30%
+    const p = mk({ atk_arrancada: 10 }, IDLE);                // +5%
     fx.onMoveStart(p, NOW);
-    expect(fx.speedMult(p, { now: NOW + 2999 })).toBeCloseTo(1.30, 6);
+    expect(fx.speedMult(p, { now: NOW + 2999 })).toBeCloseTo(1.05, 6);
     expect(fx.speedMult(p, { now: NOW + 3001 })).toBeCloseTo(1.00, 6);
   });
 
   it('ventania dura 5s depois do abate', () => {
-    const p = mk({ atk_ventania: 10 }, IDLE);                 // +20%
+    const p = mk({ atk_ventania: 10 }, IDLE);                 // +5%
     fx.onKill(p, NOW);
-    expect(fx.speedMult(p, { now: NOW + 4999 })).toBeCloseTo(1.20, 6);
+    expect(fx.speedMult(p, { now: NOW + 4999 })).toBeCloseTo(1.05, 6);
     expect(fx.speedMult(p, { now: NOW + 5001 })).toBeCloseTo(1.00, 6);
   });
 

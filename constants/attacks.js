@@ -487,6 +487,64 @@ const ATTACK_DEFS = {
   },
 
   // ════════════════════════════════════════════════════════════════════════════
+  // 🕯️ ARAUTO DO ABISMO (mapa 11) — as duas do conjunto dele que REAPROVEITAM
+  // efeito já existente, e por isso moram aqui em vez de em monster_skills.js:
+  // não viram relíquia nova (a r8 e a r2 já são exatamente elas na mão do
+  // jogador), então criar r61/r62 seria duplicar item por motivo nenhum.
+  // As outras quatro do arauto são inéditas e estão no bestiário.
+  //
+  // Nota para a próxima leva: reaproveitar VFX entre BICHOS diferentes já leu
+  // como "as skills antigas voltaram" (ver o comentário no MONSTER_SCENES do
+  // cliente). Aqui é aceitável porque o que se repete é a skill do JOGADOR, que
+  // o arauto está copiando — a leitura pretendida é "ele usa as suas armas".
+  // ════════════════════════════════════════════════════════════════════════════
+
+  // Meteoro (r8) na mão do chefe. `rangeMin: 0` — o meteor_drop original exige
+  // 180 un de distância, e numa arena de raio 220 isso o tornaria inútil assim
+  // que alguém colasse nele, que é justamente quando ele precisa afastar.
+  abyss_meteor_call: {
+    id: 'abyss_meteor_call',
+    name: 'Chamado de Fogo',
+    rangeMin: 0,
+    rangeMax: 300,
+    castTime: 1700,
+    cooldown: 13000,
+    damageMult: 2.8,
+    shape: 'circle', radius: 90,
+    weight: 7,
+    vfx: 'meteor',
+    telegraph: { color: 0xffaa33 },
+  },
+
+  // Névoa Espectral (r2) na mão do chefe: por 5 s NADA o machuca. Ver o
+  // `special: 'phase'` no attack-manager e os guards de `phaseUntil` no
+  // projectile-manager e no monster-skill-manager.
+  //
+  // `damageMult: 0` e cooldown longo: a skill não tira vida nenhuma, ela COMPRA
+  // TEMPO. O que a torna justa é ser anunciada como qualquer outra — dá para
+  // ver a névoa subindo e parar de gastar salva nela.
+  abyss_spectral_veil: {
+    id: 'abyss_spectral_veil',
+    name: 'Névoa Espectral',
+    rangeMin: 0,
+    rangeMax: 400,
+    castTime: 1200,
+    cooldown: 32000,
+    damageMult: 0,
+    shape: 'circle', radius: 0,
+    special: 'phase',
+    holdMs: 5000,
+    weight: 3,
+    // SEM campo `vfx` de propósito. O visual dela é o `relic_effect` com
+    // `effect: 'invincible'` que o `special: 'phase'` dispara — a MESMA bolha
+    // que a r2 desenha, e o cliente já sabe pô-la em cima de qualquer entidade.
+    // Apontar `vfx: 'shield'` aqui pareceria ligado e não estaria: o caminho do
+    // bestiário só acha cena que esteja no MONSTER_SCENES, e config morta com
+    // cara de viva é o que este arquivo passa o tempo todo avisando para evitar.
+    telegraph: { color: 0x9fd8ff },
+  },
+
+  // ════════════════════════════════════════════════════════════════════════════
   // 💀 INDESVIÁVEIS — atinge todos os jogadores em range ou é aura passiva
   // ════════════════════════════════════════════════════════════════════════════
 

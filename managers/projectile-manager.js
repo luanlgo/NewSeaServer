@@ -2,6 +2,7 @@
 const { projUid, dist2D, broadcast, sendTo } = require('../utils/helpers');
 const { calcProjectileDamage, calcKillGold, calcKillXp } = require('../utils/combat-calc');
 const fx = require('../utils/talent-effects');
+const status = require('../utils/talent-status');
 const db = require('./db-manager');
 const {
   PROJECTILE_SPEED, PROJECTILE_LIFETIME, HIT_RADIUS,
@@ -213,7 +214,13 @@ class ProjectileManager {
       if (chance > 0) {
         const hpFrac = shooter.maxHp ? shooter.hp / shooter.maxHp : 1;
         proj.isCrit = Math.random() < chance;
-        if (proj.isCrit) proj.critMult = fx.critMult(shooter, shooter.cannonCritMult || 2.0, hpFrac);
+        if (proj.isCrit) {
+          proj.critMult = fx.critMult(shooter, shooter.cannonCritMult || 1.5, hpFrac);
+          // Critico e Sangue Frio so viram icone no tiro que saiu critico.
+          status.noteHit(shooter, 'crit_chance');
+          status.noteHit(shooter, 'crit_damage_pct');
+          if (hpFrac > 0.80) status.noteHit(shooter, 'crit_damage_high_hp');
+        }
         fx.noteCritRoll(shooter, proj.isCrit);
       }
     }
@@ -378,6 +385,7 @@ class ProjectileManager {
       if (!proj.piercing && Math.random() < fx.pierceChance(shooter)) {
         proj.piercing   = true;
         proj.hitTargets = new Set();
+        status.noteHit(shooter, 'pierce_chance');
       }
       spawnedProjs.push({
         id:       proj.id,
@@ -430,6 +438,7 @@ class ProjectileManager {
 
       // ── Tiro Duplo: uma segunda bordada, sem munição e sem recarga ────────
       if (Math.random() < fx.doubleShotChance(shooter)) {
+        status.noteHit(shooter, 'double_shot_chance');
         this.spawnSalvo(shooter, targetX, targetZ, true);
       }
     }
@@ -451,6 +460,7 @@ class ProjectileManager {
     if (shooter && !shooter.dead) {
       const heal = fx.lifestealAmount(shooter, dmg);
       if (heal > 0 && shooter.hp < shooter.maxHp) {
+        status.noteHit(shooter, 'lifesteal_pct', now);
         shooter.hp = Math.min(shooter.maxHp, shooter.hp + heal);
         this._broadcastToMap(shooter.mapLevel || 1, {
           type: 'heal', targetId: shooter.id, amount: heal,
@@ -467,6 +477,7 @@ class ProjectileManager {
     // regen: 1% de um golpe de 40 é 0,4 e sem acumulador nunca viraria mana).
     const mana = fx.damageToMana(target, dmg);
     if (mana > 0 && target.maxMana) {
+      status.noteHit(target, 'damage_to_mana_pct', now);
       target._absorbAcc = (target._absorbAcc || 0) + mana;
       if (target._absorbAcc >= 1) {
         const add = Math.floor(target._absorbAcc);
@@ -481,6 +492,7 @@ class ProjectileManager {
     if (thorns > 0 && proj.ownerId && proj.ownerId !== target.id) {
       const atk = this.players.get(proj.ownerId) || (this.npcs && this.npcs.get(proj.ownerId));
       if (atk && !atk.dead) {
+        status.noteHit(target, 'thorns_pct', now);
         atk.hp = Math.max(0, atk.hp - thorns);
         this._broadcastToMap(target.mapLevel || 1, {
           type: 'thorns_reflect', targetId: target.id,
@@ -493,6 +505,7 @@ class ProjectileManager {
     if (target.hp <= 0) {
       const save = fx.deathSaveChance(target);
       if (save > 0 && Math.random() < save) {
+        status.noteHit(target, 'death_save_chance', now);
         target.hp = 1;
         this._broadcastToMap(target.mapLevel || 1, { type: 'death_save', targetId: target.id, hp: 1 });
       }
@@ -501,6 +514,7 @@ class ProjectileManager {
     // Segundo Fôlego — cura ao cruzar 25%, no máximo 1× por minuto.
     const wind = fx.secondWindHeal(target, now);
     if (wind > 0) {
+      status.noteHit(target, 'second_wind_pct', now);
       target.hp = Math.min(target.maxHp, target.hp + wind);
       this._broadcastToMap(target.mapLevel || 1, {
         type: 'heal', targetId: target.id, amount: wind,
@@ -567,6 +581,11 @@ class ProjectileManager {
     const skillDef   = (targetIsPlayer && target.skillDefense) ? (1 - target.skillDefense) : 1.0;
     const now        = Date.now();
 
+    // Coletores da barra de status: as funções abaixo anotam neles cada talento
+    // que realmente contribuiu neste golpe (ver utils/talent-status.js).
+    const procAtk = [];
+    const procDef = [];
+
     // ── Talentos do ATIRADOR ────────────────────────────────────────────────
     // Um multiplicador só, montado com o contexto do golpe: contra quem, a que
     // distância, com que vida dos dois lados, e com os acúmulos em pé.
@@ -582,7 +601,7 @@ class ProjectileManager {
       attackerHpFrac: shooter2.maxHp ? shooter2.hp / shooter2.maxHp : 1,
       isFullSalvo:    !!proj.isFullSalvo,
       isSpecialAmmo:  !!proj.ammoType && proj.ammoType !== 'bala_ferro',
-    }) : 1.0;
+    }, procAtk) : 1.0;
 
     // ── Talentos do ALVO ────────────────────────────────────────────────────
     // A Bala Perfurante do atirador come parte da redução; o resto (crítico,
@@ -598,7 +617,7 @@ class ProjectileManager {
       inParty:    allyCount > 0,
       allyCount,
       pen:        shooter2 ? fx.armorPen(shooter2) : 0,
-    })) : 1.0;
+    }, procDef)) : 1.0;
     // Island upgrades: defense (-5% per level) and damage (+10% per level)
     const islandDef  = (targetIsPlayer && target.shipIslandUpgrades?.defense)
       ? (1 - Math.min(target.shipIslandUpgrades.defense * 0.05, 0.80))
@@ -608,13 +627,23 @@ class ProjectileManager {
       : 1.0;
     // Cannon damage adds to ammo base (cannon.damage was defined but unused before)
     const baseDmg    = ammo.damage + (proj.cannonDmg || 0);
-    const dmg        = calcProjectileDamage({ baseDmg, critMult, damageMult, skillDmg, skillDef, talentDmg, talentDef, islandDef, islandDmg });
+    // Carapaça de Kraken: redução plana, aplicada depois dos multiplicadores.
+    const talentFlatDef = targetIsPlayer ? (target.tal?.flat_reduction || 0) : 0;
+    const dmg        = calcProjectileDamage({ baseDmg, critMult, damageMult, skillDmg, skillDef, talentDmg, talentDef, islandDef, islandDmg, talentFlatDef });
+
+    // A Bala Perfurante entra no multiplicador do ALVO (come a redução dele),
+    // mas quem a comprou foi o atirador — então é status dele.
+    if (shooter2 && fx.armorPen(shooter2) > 0) status.noteHit(shooter2, 'armor_pen_pct');
+    if (shooter2) status.noteProcs(shooter2, procAtk, now);
+    if (targetIsPlayer) status.noteProcs(target, procDef, now);
 
     // ── Manobra Evasiva / Alvo Difícil: o tiro passa raspando ───────────────
     // Antes de qualquer mitigação — desviar é não ser atingido, não levar menos.
     if (targetIsPlayer) {
       const dodge = fx.dodgeChance(target, !!target.speed);
       if (dodge > 0 && Math.random() < dodge) {
+        // Desvio é evento discreto: só vira ícone quando REALMENTE salvou.
+        status.noteHit(target, 'dodge_chance', now);
         this._broadcastToMap(target.mapLevel || 1, { type: 'dodge', targetId: target.id });
         return;
       }
@@ -623,6 +652,17 @@ class ProjectileManager {
     // ── Relic: invincibility (r2) ────────────────────────────────────────────
     if (!isNPC && target.relicInvincibleExpires && now < target.relicInvincibleExpires) {
       // Avisa o mapa que o escudo absorveu o golpe — a bolha pulsa em branco
+      this._broadcastToMap(target.mapLevel || 1, { type: 'shield_block', targetId: target.id });
+      return;
+    }
+
+    // ── Névoa Espectral do BICHO (`special: 'phase'`) ────────────────────────
+    // O mesmo efeito da r2, só que do outro lado do canhão: o arauto se desfaz
+    // e por `holdMs` o tiro o atravessa. Sem `!isNPC` de propósito — pela mesma
+    // razão que a Carapaça logo abaixo perdeu o dela: o buff é do monstro, e um
+    // guard de "só jogador" faria o efeito sumir justamente no caminho que
+    // importa, que é você atirando nele.
+    if (target.phaseUntil && now < target.phaseUntil) {
       this._broadcastToMap(target.mapLevel || 1, { type: 'shield_block', targetId: target.id });
       return;
     }
@@ -643,7 +683,10 @@ class ProjectileManager {
     // As placas eriçadas são o kit de tanque do leviatã-tartaruga: reduzem o
     // dano e refletem uma fração em quem bateu. O reflect só vale contra
     // atirador conhecido (proj.ownerId) e nunca se auto-aplica.
-    if (!isNPC && target.relicBulwarkExpires && now < target.relicBulwarkExpires) {
+    // Sem o `!isNPC` que havia aqui: a carapaça é do BICHO tanto quanto do
+    // jogador (o leviatã-tartaruga a usa), e o guard fazia o buff dele ser
+    // ignorado justamente no caminho que importa — o seu tiro contra ele.
+    if (target.relicBulwarkExpires && now < target.relicBulwarkExpires) {
       const mitigated = Math.round(finalDmg * (target.relicBulwarkReduction || 0.4));
       finalDmg = Math.max(0, finalDmg - mitigated);
       const reflect = Math.round(mitigated * (target.relicBulwarkReflect || 0.3));
@@ -837,20 +880,23 @@ class ProjectileManager {
         }
       }
 
+      // Todo bônus de espólio passa por lootMult: ele já soma Pilhador/Estudioso,
+      // Sabedoria Antiga (só em chefe) e Tesouro do Abismo numa conta só.
+      //
+      // Antes isto era um empilhado de multiplicações aqui, e os chefes de mapa
+      // e o boss mundial usavam OUTRA conta nos managers deles — o mesmo talento
+      // rendia diferente conforme quem matasse o chefe. Percentuais da mesma
+      // família somam; multiplicá-los inflava o total (2,52× em vez de 2,10×).
       finalGold = calcKillGold({
         baseGold,
-        dropBonus:      killer.dropBonus     || 0,
-        talentGoldBonus: killer.talentGoldBonus || 0,
+        dropBonus:       killer.dropBonus || 0,
+        talentGoldBonus: fx.lootMult(killer, 'gold') - 1,
       });
       const xpPerKill = npcMapDef.npc?.xpPerKill || 12;
-      xpGained = calcKillXp({ xpPerKill, talentXpBonus: killer.talentXpBonus || 0 });
-
-      // Sabedoria Antiga paga só em cima de chefe; o Tesouro do Abismo entra em
-      // tudo. lootMult já soma o XP geral no ramo de chefe, então o bônus base
-      // sai de calcKillXp e aqui vai só a diferença.
-      if (npc.isBoss) xpGained = Math.round(xpGained * (1 + (killer.tal?.xp_boss_pct || 0) / 100));
-      finalGold = Math.round(finalGold * (1 + (killer.tal?.abyssal_treasure_pct || 0) / 100));
-      xpGained  = Math.round(xpGained  * (1 + (killer.tal?.abyssal_treasure_pct || 0) / 100));
+      xpGained = calcKillXp({
+        xpPerKill,
+        talentXpBonus: fx.lootMult(killer, npc.isBoss ? 'xp_boss' : 'xp') - 1,
+      });
 
       // Dificuldade multiplica as recompensas (metade do fator de HP/dano)
       finalGold = Math.round(finalGold * rewardMult);

@@ -84,9 +84,12 @@ describe('o dado do upgrade', () => {
     expect(UPG).toBeDefined();
     expect(UPG.field).toBe('cr');
     expect(UPG.critChance).toBe(0.20);
-    // ×2 e não 1.5: com 20% de chance, 1.5 daria +10% de média — EXATAMENTE o
-    // upgrade de Dano, que é comprado JUNTO com este e não no lugar dele.
-    expect(UPG.critMult).toBe(2.0);
+    // ×1,5 desde 2026-08-15: o dobro era demais para um golpe que sai em 20%
+    // dos tiros e sobe daí com os talentos de chance. A média deste upgrade
+    // passou a EMPATAR com a do upgrade de Dano — o desempate é o investimento
+    // em árvore (chance e dano de crítico têm nós, dano bruto tem menos). Ver a
+    // nota no `cannon_crit_upgrade` em constants/maps.js.
+    expect(UPG.critMult).toBe(1.5);
     const ids = MAP_DEFS[3].market.items[0].cannonUpgrades.map(u => u.id);
     expect(ids).not.toContain('cannon_range_upgrade');
   });

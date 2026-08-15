@@ -193,6 +193,7 @@ const {
   countTreeSpent:       _countTreeSpent,
   migrateLegacyTalents: _migrateLegacyTalents,
   validateBuyTalent:    _validateBuyTalent,
+  validateRefundTalent: _validateRefundTalent,
 } = require('./utils/talent-logic');
 const { calcMaxCannons: _calcMaxCannons, trimCannons: _trimCannons } = require('./utils/combat-calc');
 const worldState = require('./utils/world-state');
@@ -789,7 +790,7 @@ function recalcCannons(player) {
     player.cannonDamage      = 0;
     player.cannonCooldown    = 0;
     player.cannonCritChance  = 0;
-    player.cannonCritMult    = 2.0;
+    player.cannonCritMult    = 1.5;
     return;
   }
 
@@ -831,7 +832,7 @@ function recalcCannons(player) {
         if (ud.damageBonus)      effectiveDamage   = Math.round(effectiveDamage * (1 + ud.damageBonus));
         if (ud.critChance && ud.critChance > bestCrit) {
           bestCrit     = ud.critChance;
-          bestCritMult = ud.critMult || 2.0;
+          bestCritMult = ud.critMult || 1.5;
         }
       }
       equippedC6Count++;
@@ -850,7 +851,10 @@ function recalcCannons(player) {
   player.cannonDamage      = Math.round(totalDmg / player.cannons.length);
   player.cannonCooldown    = 0;
   player.cannonCritChance  = Math.min(bestCrit, 0.5);
-  player.cannonCritMult    = bestCritMult || 2.0;
+  // Base do crítico: ×1,5, não o dobro. Ver a nota no `cannon_crit_upgrade`
+  // (constants/maps.js) — é lá que mora o número de verdade; estes `|| 1.5` são
+  // só o fallback de quem não comprou o upgrade.
+  player.cannonCritMult    = bestCritMult || 1.5;
   debugServer(`[server]   -> result: cannonRange=${player.cannonRange}, cooldownMax=${player.cannonCooldownMax}, lifesteal=${player.cannonLifesteal}`);
 }
 
@@ -972,11 +976,51 @@ function applySkillMultipliers(player) {
 function applyTalentBonuses(player) { _applyTalentBonuses(player, TALENT_DEFS); }
 function recalcMaxHp(player)        { _recalcMaxHp(player, SHIP_DEFS, TALENT_DEFS); }
 
-// HP plano vindo dos talentos (Casco de Ferro + Madeira Nobre). Os navios bônus
-// recalculam o maxHp por fora do recalcMaxHp e precisam da mesma parcela.
+// HP plano vindo dos talentos (Casco de Ferro + Madeira Nobre).
 function talentFlatHp(player) {
   return _sumTalentStat(player, TALENT_DEFS, 'max_hp_flat')
        + _sumTalentStat(player, TALENT_DEFS, 'max_hp_flat_2');
+}
+
+/**
+ * Recalcula TUDO que deriva de talentos: os bônus agregados, a vida máxima, os
+ * slots de canhão e a mana máxima.
+ *
+ * Existe porque esta conta estava copiada em cinco lugares — login, restauração
+ * e ativação de navio bônus, compra de talento, reset e troca de navio — cada um
+ * com uma parcela diferente faltando. Bastava um deles esquecer um pedaço para o
+ * jogador perder o efeito sem nenhum erro aparecer: trocar de navio zerava o
+ * Reservatório Arcano, os navios bônus ignoravam o Casco Reforçado, e comprar um
+ * talento de vida percentual não mexia na vida até o próximo login.
+ *
+ * Qualquer talento novo que mexa em stat derivado entra AQUI, e todos os
+ * caminhos passam a respeitá-lo de graça.
+ *
+ * @param {object}  player
+ * @param {object}  [opts]
+ * @param {boolean} [opts.fillHp]   enche a vida (ativação de navio novo)
+ * @param {boolean} [opts.fillMana] enche a mana (login)
+ */
+function refreshTalentDerived(player, opts = {}) {
+  applyTalentBonuses(player);
+
+  const bonus = player.activeBonusShipStats;
+  if (bonus) {
+    // Navio bônus: mesma fórmula, mas sobre o HP dele em vez do SHIP_DEFS.
+    _recalcMaxHp(player, SHIP_DEFS, TALENT_DEFS, bonus.maxHp || bonus.hp || 1000);
+    player.maxCannons = (bonus.cannon || 5) + (player.talentCannonBonus || 0);
+  } else {
+    recalcMaxHp(player);
+    const ship = SHIP_DEFS[player.activeShip] || SHIP_DEFS.fragata;
+    player.maxCannons = _calcMaxCannons(ship, player.talentCannonBonus || 0, MAX_CANNON_SLOTS);
+  }
+
+  // Reservatório Arcano soma mana máxima em cima do que o navio dá.
+  const reliqC = SHIP_RELIQC[player.activeShip] || {};
+  player.maxMana = (reliqC.maxMana ?? 8) + fx.maxManaBonus(player);
+
+  player.hp   = opts.fillHp   ? player.maxHp   : Math.min(player.hp   || 0, player.maxHp);
+  player.mana = opts.fillMana ? player.maxMana : Math.min(player.mana || 0, player.maxMana);
 }
 
 // ── Missões Diárias ──────────────────────────────────────────────────────────
@@ -1728,7 +1772,11 @@ setInterval(() => {
       dot.dur -= dot.tick;
       dot.next = now + dot.tick;
       const effect = dot.effect || 'fire';
-      dotBatch.push({ targetId: e.id, targetIsNPC: isNPC, dmg: dot.dmg, effect, x: e.x, z: e.z, mapLevel: e.mapLevel || 1 });
+      // `hp`/`maxHp` vão junto para a barra de vida acompanhar o tique na hora,
+      // em vez de esperar o próximo `state` (100 ms) — o DoT é a única fonte de
+      // dano que não passa por um evento com HP.
+      dotBatch.push({ targetId: e.id, targetIsNPC: isNPC, dmg: dot.dmg, effect,
+                      hp: e.hp, maxHp: e.maxHp, x: e.x, z: e.z, mapLevel: e.mapLevel || 1 });
       // DOT kill — handle death if HP reached 0
       if (e.hp <= 0 && !e.dead) {
         e.dead = true;
@@ -3042,6 +3090,13 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        // ── TALENT: devolver UM nível (clique direito no nó) ─────────────────
+        case 'refund_talent': {
+          if (!player) break;
+          handleRefundTalent(player, msg);
+          break;
+        }
+
         // ── TALENT: resetar todos os talentos e devolver pontos ─────────────
         case 'reset_talents': {
           if (!player) break;
@@ -3332,22 +3387,18 @@ async function handleLogin(ws, msg) {
     player.z = 0;
   }
   player.mapFragments  = saved.mapFragments  || 0;
-  // Aplica bônus de talentos e recalcula maxHp (skill vida + talento HP)
-  applyTalentBonuses(player);
-  recalcMaxHp(player);
-  player.hp            = Math.min(player.maxHp, saved.hp != null ? saved.hp : player.maxHp);
-  player.maxCannons    = _calcMaxCannons(savedShip, player.talentCannonBonus || 0, MAX_CANNON_SLOTS);
-  console.log("maxCannons", player.maxCannons, savedShip.maxCannons, player.talentCannonBonus);
+  // Bônus de talento + vida, canhões e mana derivados deles. `hp` entra como o
+  // valor salvo e sai clampado no maxHp que acabou de ser calculado.
+  player.hp = saved.hp != null ? saved.hp : Infinity;
+  refreshTalentDerived(player, { fillMana: true });
   // Relics
   player.inventory.relics = saved.inventory.relics || [];
   const shipReliqC = SHIP_RELIQC[savedShipId] || {};
   // `filter(Boolean)` aqui COMPACTAVA o deck no login: quem guardou só o slot do
   // E acordava com ela no Q. O vazio tem de sobreviver ao save/load.
   player.relicDeck = _normalizeDeck(saved.equipped.relics, shipReliqC.maxHelic ?? 8);
-  // Reservatório Arcano soma mana máxima em cima do que o navio dá.
-  player.maxMana   = (shipReliqC.maxMana ?? 8) + fx.maxManaBonus(player);
+  // maxMana e mana já vieram de refreshTalentDerived, com o Reservatório Arcano.
   player.maxRelics = shipReliqC.maxHelic ?? 4;
-  player.mana = player.maxMana;
   player.relicGoldShieldActive = false;
   player.relicInvincibleExpires = 0;
   player.relicSpeedExpires = 0;
@@ -3397,12 +3448,13 @@ async function handleLogin(ws, msg) {
     player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0 });
   }
 
-  // Pré-carrega maxCannons do navio bônus ANTES do trim — evita cortar canhões
+  // Pré-carrega os stats do navio bônus ANTES do trim — o limite de canhões
+  // tem de ser o do bônus, senão o trim corta o que o jogador tinha equipado.
   player.activeBonusShipStats = saved.activeBonusShipStats || null;
   if (player.activeBonusShipStats) {
     const ship = player.activeBonusShipStats;
-    player.maxCannons = (ship.cannon || 5) + (player.talentCannonBonus || 0);
     player.activeShip = ship.modelKey || ship.id || player.activeShip;
+    refreshTalentDerived(player);
   }
 
   // Restore equipped cannons from DB (what was equipped last session)
@@ -3425,13 +3477,8 @@ async function handleLogin(ws, msg) {
   // (applySkillMultipliers chama recalcMaxHp internamente — sobrescreveria o maxHp do bônus)
   if (player.activeBonusShipStats) {
     const ship = player.activeBonusShipStats;
-    const baseHp     = ship.maxHp || ship.hp || 1000;
-    const skillHpPct = player.skills?.vida ? (player.skills.vida.level - 1) / 100 : 0;
-    const talentFlat = talentFlatHp(player);
-    const hpLevel    = player.shipIslandUpgrades?.hp ?? 0;
-    const islandHp   = Math.round(baseHp * hpLevel * 0.05);
-    player.maxHp = Math.floor(baseHp * (1 + skillHpPct)) + talentFlat + islandHp;
-    player.hp    = Math.min(saved.hp != null ? saved.hp : player.maxHp, player.maxHp);
+    player.hp = saved.hp != null ? saved.hp : Infinity;   // refresh clampa no maxHp
+    refreshTalentDerived(player);
     console.log(`[BONUS SHIP] Restaurado: "${ship.name}" → maxHp=${player.maxHp}, maxCannons=${player.maxCannons}`);
   }
 
@@ -4571,6 +4618,19 @@ function sendBonusDungeonComplete(player, mapLevel, mapDef) {
     player.bonusShips.push(shipDrop);
   }
 
+  // ── A masmorra é CONSUMIDA ao ser vencida ──────────────────────────────────
+  // Só a MORTE gastava o desbloqueio (ver request_respawn). Quem completava
+  // ficava com `bonusMapsUnlocked` intacto e podia reentrar à vontade: as peças
+  // eram cobradas uma vez e a recompensa saía em laço, sem limite. Vencer tem
+  // de queimar a entrada exatamente como morrer queima — a diferença entre as
+  // duas está no prêmio, não no bilhete.
+  //
+  // Ao contrário da morte, as peças EXCEDENTES ficam: quem venceu não perde o
+  // que já estava farmando para a próxima entrada.
+  if (dungeonId) {
+    player.bonusMapsUnlocked = (player.bonusMapsUnlocked || []).filter(id => id !== dungeonId);
+  }
+
   db.save(player, true).catch(e => console.error('Save error (bonus complete):', e));
 
   sendTo(ws, {
@@ -4583,6 +4643,10 @@ function sendBonusDungeonComplete(player, mapLevel, mapDef) {
     goldDust:        player.goldDust      || 0,
     gunpowder:       player.gunpowder     || 0,
     rareShips:       player.bonusShips    || [],
+    // A Mesa de Exploração precisa saber na hora que a entrada foi gasta —
+    // senão o botão "Entrar" continua verde até o próximo login.
+    bonusMapsUnlocked: player.bonusMapsUnlocked || [],
+    mapPieces:         player.mapPieces         || {},
     rewards: {
       dobroes:    dobraoAmt,
       gold:       goldAmt,
@@ -4667,17 +4731,12 @@ function handleActivateBonusShip(player, msg, ws) {
 
   if (!ship) { sendTo(ws, { type: 'error', message: 'Navio bônus não encontrado.' }); return; }
 
-  // Aplica stats do navio bônus com todos os bônus de talento / skill / ilha
-  const baseHp     = ship.maxHp || ship.hp || 1000;
-  const skillHpPct = player.skills?.vida ? (player.skills.vida.level - 1) / 100 : 0;
-  const talentFlat = talentFlatHp(player);
-  const hpLevel    = player.shipIslandUpgrades?.hp ?? 0;
-  const islandHp   = Math.round(baseHp * hpLevel * 0.05);
-  player.maxHp      = Math.floor(baseHp * (1 + skillHpPct)) + talentFlat + islandHp;
-  player.hp         = player.maxHp;
-  player.maxCannons = (ship.cannon || 5) + (player.talentCannonBonus || 0);
+  // Aplica stats do navio bônus com todos os bônus de talento / skill / ilha.
+  // A ordem importa: activeBonusShipStats precisa estar em pé ANTES, porque é
+  // ele que faz refreshTalentDerived calcular sobre o HP do bônus.
   player.activeShip = ship.modelKey || ship.id || player.activeShip;
   player.activeBonusShipStats = ship; // persiste para restaurar no próximo login
+  refreshTalentDerived(player, { fillHp: true });
   refreshHealerSlots(player);
 
   // Aplica propriedades visuais do tipo base do navio
@@ -4900,6 +4959,29 @@ function relicCanHitPlayer(caster, target) {
   return getPvpZone(target.mapLevel || 1) !== 'green';
 }
 
+// ── Recarga de relíquia ──────────────────────────────────────────────────────
+// Até aqui a única trava do uso era a mana, e ela não segura nada: dava para
+// encadear teleporte atrás de teleporte e curar várias vezes dentro da mesma
+// troca de tiros. O número vem da RARIDADE (RELIC_COOLDOWN_MS, gravado em
+// relicDef.cooldownMs por constants/relics.js), e o talento Ritual encurta —
+// este é o primeiro sistema a consumir fx.relicCooldownMult().
+//
+// A chave é o relicId, NÃO o instanceId: chaveado por instância, equipar duas
+// cópias da mesma relíquia no deck dava dois usos alternados e a trava valia
+// metade. Duas Âncoras Sagradas continuam sendo uma cura a cada 5 s.
+//
+// `player._relicCds` é transitório de propósito (mesma família de _relicCrit /
+// _relicAim): não vai ao DB, então relogar zera as recargas — irrelevante
+// perto do custo de sair e voltar do jogo.
+function relicCooldownMs(player, relicDef) {
+  const base = relicDef.cooldownMs || 0;
+  return base > 0 ? Math.round(base * fx.relicCooldownMult(player)) : 0;
+}
+
+function relicCdRemaining(player, relicId) {
+  return Math.max(0, ((player._relicCds || {})[relicId] || 0) - Date.now());
+}
+
 // Alcance máximo de mira das relíquias "miradas" (runas) = alcance do canhão do
 // jogador. Assim, trocar/melhorar canhões estende também o alcance das skills.
 function relicCastRange(player) {
@@ -4973,12 +5055,46 @@ function handleUseRelic(player, msg) {
     return;
   }
 
+  // Coro dos Rostos: silenciado não usa relíquia. Vem antes de tudo — nem
+  // recarga nem mana são consumidas por uma tentativa que não vai sair.
+  if (player._silencedUntil && Date.now() < player._silencedUntil) {
+    sendTo(player.ws, {
+      type: 'relic_silenced', instanceId: instanceId2,
+      remainingMs: player._silencedUntil - Date.now(),
+    });
+    return;
+  }
+
+  // Recarga: uma relíquia por vez, no ritmo da raridade dela. Vem ANTES da mana
+  // para que uma tentativa em recarga nunca gaste nada — e o cliente já trava o
+  // slot sozinho, então chegar aqui é sinal de deriva de relógio ou de macro.
+  const cdLeft = relicCdRemaining(player, relicInstance.relicId);
+  if (cdLeft > 0) {
+    sendTo(player.ws, {
+      type: 'relic_cooldown', instanceId: instanceId2,
+      relicId: relicInstance.relicId, remainingMs: cdLeft,
+    });
+    return;
+  }
+
   // Mana check for non-toggle relics
   if (player.mana < manaCost) {
     sendTo(player.ws, { type: 'relic_no_mana', mana: player.mana, maxMana: player.maxMana, needed: manaCost });
     return;
   }
   player.mana = Math.max(0, player.mana - manaCost);
+  // Memória do último golpe de bestiário: é o que o Espelho do Córtex do boss
+  // copia. Só relíquia de monstro entra — as r1..r13 não têm versão de bicho,
+  // e o espelho precisa de algo que o ATTACK_DEFS saiba lançar.
+  if (relicDef.effect === 'monster_skill' && relicDef.skill) {
+    player._lastRelicSkill = relicDef.skill;
+  }
+  // A recarga começa AQUI: a relíquia foi paga e vai sair.
+  const relicCdMs = relicCooldownMs(player, relicDef);
+  if (relicCdMs > 0) {
+    if (!player._relicCds) player._relicCds = {};
+    player._relicCds[relicInstance.relicId] = now2 + relicCdMs;
+  }
   // Sorteia o crítico UMA vez para este uso. Fica em player._relicCrit e é lido
   // por relicCritMult()/relicDamageFor() ao montar o efeito logo abaixo.
   player._relicCrit = rollRelicCrit(player);
@@ -5009,7 +5125,9 @@ function handleUseRelic(player, msg) {
   }
 
   // Apply effect
-  let effectPayload = { type: 'relic_used', instanceId: instanceId2, effect: relicDef.effect, mana: player.mana, maxMana: player.maxMana, crit: player._relicCrit };
+  // `relicId` + `cooldownMs`: o HUD chaveia a recarga pelo relicId (igual ao
+  // servidor) e precisa do tempo JÁ com o desconto do talento aplicado.
+  let effectPayload = { type: 'relic_used', instanceId: instanceId2, relicId: relicInstance.relicId, effect: relicDef.effect, mana: player.mana, maxMana: player.maxMana, crit: player._relicCrit, cooldownMs: relicCdMs };
 
   if (relicDef.effect === 'heal_ship') {
     // Cura escala com o HP máximo (healPct) em vez de valor fixo — sempre
@@ -5903,17 +6021,11 @@ function handleBuyTalent(player, msg) {
   // Aplica o nível
   player.talents[talentId] = curLevel + 1;
   player.talents.totalSpent = totalSpent + 1;
-  applyTalentBonuses(player);
 
-  // Efeitos imediatos de certos talentos
-  if (tDef.stat === 'max_hp_flat' || tDef.stat === 'max_hp_flat_2') {
-    recalcMaxHp(player);
-    player.hp = Math.min(player.hp, player.maxHp);
-  }
-  if (tDef.stat === 'cannon_slots') {
-    const activeSh = SHIP_DEFS[player.activeShip] || SHIP_DEFS.fragata;
-    player.maxCannons = _calcMaxCannons(activeSh, player.talentCannonBonus || 0, MAX_CANNON_SLOTS);
-  }
+  // Sem lista de "quais stats merecem recálculo": a compra vale na hora, seja
+  // qual for o talento. A lista antiga só cobria vida plana e slot de canhão,
+  // então Casco Reforçado e Reservatório Arcano não faziam nada até relogar.
+  refreshTalentDerived(player);
 
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(player.ws, {
@@ -5925,6 +6037,51 @@ function handleBuyTalent(player, msg) {
     maxHp:        player.maxHp,
     hp:           player.hp,
     maxCannons:   player.maxCannons,
+    maxMana:      player.maxMana,
+    mana:         player.mana,
+  });
+}
+
+/**
+ * Devolve UM nível de um talento (clique direito no nó do painel).
+ *
+ * O ponto volta como `talentPoints` livre, igual ao reset — a moeda gasta na
+ * compra NÃO é devolvida. Sem isso, comprar e devolver em sequência seria uma
+ * torneira: o custo sobe por `totalSpent`, que também cai na devolução, então
+ * daria para farmar a diferença entre os degraus da tabela de preço.
+ */
+function handleRefundTalent(player, msg) {
+  const { talentId } = msg;
+  const tDef = TALENT_DEFS[talentId];
+  if (!tDef || !player.talents) return;
+
+  const erro = _validateRefundTalent(player, talentId, {
+    talentDefs: TALENT_DEFS,
+    ringGate:   RING_GATE,
+  });
+  if (erro) { sendTo(player.ws, { type: 'error', message: erro }); return; }
+
+  player.talents[talentId]  = (player.talents[talentId] || 0) - 1;
+  player.talents.totalSpent = Math.max(0, (player.talents.totalSpent || 0) - 1);
+  player.talentPoints       = (player.talentPoints || 0) + 1;
+
+  refreshTalentDerived(player);
+  // Devolver Bateria Extra encolhe o limite de canhões — corta o excedente.
+  const trim = _trimCannons(player.cannons, player.maxCannons);
+  if (trim.removed > 0) { player.cannons = trim.cannons; recalcCannons(player); }
+
+  db.save(player, true).catch(e => console.error('Save error:', e));
+  sendTo(player.ws, {
+    type:         'talent_update',
+    talents:      player.talents,
+    talentPoints: player.talentPoints,
+    gold:         player.gold,
+    dobroes:      player.dobroes,
+    maxHp:        player.maxHp,
+    hp:           player.hp,
+    maxCannons:   player.maxCannons,
+    maxMana:      player.maxMana,
+    mana:         player.mana,
   });
 }
 
@@ -5936,11 +6093,7 @@ function handleResetTalents(player) {
   for (const key of Object.keys(TALENT_DEFS)) player.talents[key] = 0;
   player.talents.totalSpent = 0;
   player.talentPoints = (player.talentPoints || 0) + total;
-  applyTalentBonuses(player);
-  recalcMaxHp(player);
-  player.hp = Math.min(player.hp, player.maxHp);
-  const activeSh2 = SHIP_DEFS[player.activeShip] || SHIP_DEFS.fragata;
-  player.maxCannons = _calcMaxCannons(activeSh2, player.talentCannonBonus || 0, MAX_CANNON_SLOTS);
+  refreshTalentDerived(player);
   const trimResult2 = _trimCannons(player.cannons, player.maxCannons);
   if (trimResult2.removed > 0) { player.cannons = trimResult2.cannons; recalcCannons(player); }
   db.save(player, true).catch(e => console.error('Save error:', e));
@@ -5953,6 +6106,8 @@ function handleResetTalents(player) {
     maxHp:        player.maxHp,
     hp:           player.hp,
     maxCannons:   player.maxCannons,
+    maxMana:      player.maxMana,
+    mana:         player.mana,
     resetMsg:     `Resetado! +${total} ponto${total !== 1 ? 's' : ''} de talento para usar livremente.`,
   });
 }
@@ -5964,22 +6119,20 @@ function handleEquipNavio(player, msg, ws) {
   if (!player.inventory.ships.includes(msg.shipId)) return;
   player.activeShip           = msg.shipId;
   player.activeBonusShipStats = null; // limpa navio bônus ao equipar navio regular
-  recalcMaxHp(player);
-  player.hp            = Math.min(player.hp, player.maxHp);
   player.damageMult    = ship.damageMult ?? 1.0;
   player.dropBonus     = ship.dropBonus || 0;
   player.shipSpeedMult = ship.speedMult || 1.0;
-  player.maxCannons    = _calcMaxCannons(ship, player.talentCannonBonus || 0, MAX_CANNON_SLOTS);
+  // Vida, canhões e mana do navio novo JÁ com os talentos — a linha de mana que
+  // existia aqui não somava o Reservatório Arcano, então trocar de navio comia
+  // a mana extra até o próximo login.
+  refreshTalentDerived(player);
   // Trim equipped cannons if over new limit
   const trimResult3 = _trimCannons(player.cannons, player.maxCannons);
   if (trimResult3.removed > 0) { player.cannons = trimResult3.cannons; recalcCannons(player); }
   // Idem para os curandeiros: elite tem 10 vagas, navio normal 5.
   refreshHealerSlots(player);
-  // Update mana/relic slots for new ship
   const newShipReliqC = SHIP_RELIQC[msg.shipId] || {};
-  player.maxMana   = newShipReliqC.maxMana   ?? 8;
-  player.maxRelics = newShipReliqC.maxHelic  ?? 4;
-  player.mana = Math.min(player.mana, player.maxMana);
+  player.maxRelics = newShipReliqC.maxHelic ?? 4;
   player.relicDeck = _normalizeDeck(player.relicDeck, player.maxRelics);
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(ws, {
