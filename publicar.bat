@@ -48,7 +48,11 @@ if errorlevel 1 (
 )
 echo  Publicando v!NEW_VER!...
 
-set BUILD_DIR=C:\Work\NewSeaGodot\builds\windows
+:: Builds moram FORA do repositorio do jogo. Ficavam em NewSeaGodot\builds e o
+:: git as via: um APK de 652 MB entrou num commit e o GitHub recusou o push
+:: (limite de 100 MB por arquivo). Se mudar aqui, mude tambem o BUILD_ROOT do
+:: export.bat e do export_mobile.bat, em C:\Work\NewSeaGodot.
+set BUILD_DIR=C:\Work\builds\NewSea\windows
 set CONFIG_FILE=C:\Work\NewSeaGodot\scripts\config.gd
 set "URL_PROD=ws://164.163.9.91:3001"
 set "URL_DEV=ws://localhost:3001"
