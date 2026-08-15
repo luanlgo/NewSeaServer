@@ -53,9 +53,6 @@ echo  Publicando v!NEW_VER!...
 :: (limite de 100 MB por arquivo). Se mudar aqui, mude tambem o BUILD_ROOT do
 :: export.bat e do export_mobile.bat, em C:\Work\NewSeaGodot.
 set BUILD_DIR=C:\Work\builds\NewSea\windows
-set CONFIG_FILE=C:\Work\NewSeaGodot\scripts\config.gd
-set "URL_PROD=ws://164.163.9.91:3001"
-set "URL_DEV=ws://localhost:3001"
 
 echo.
 set /p DO_EXPORT="  Exportar o jogo agora? (s/n): "
@@ -63,11 +60,12 @@ if /i not "!DO_EXPORT!"=="s" goto skip_export
 
 set GODOT_EXE=C:\Users\luang\Downloads\Godot_v4.6.1-stable_win64.exe\Godot_v4.6.1-stable_win64_console.exe
 
-:: Injeta a URL de PRODUCAO no config.gd antes de exportar. O export.bat
-:: restaura o config para localhost ao terminar, entao sem isto o build
-:: gerado aqui sairia apontando para dev local.
-echo  Definindo host para Producao (!URL_PROD!)...
-powershell -ExecutionPolicy Bypass -Command "$q=[char]34; (Get-Content '!CONFIG_FILE!') -replace '^const SERVER_URL :=.*', ('const SERVER_URL := ' + $q + '!URL_PROD!' + $q) | Set-Content '!CONFIG_FILE!'"
+:: Este script NAO mexe mais no config.gd. Ele injetava a URL de producao aqui
+:: e restaurava localhost depois, mas o regex procurava `const SERVER_URL :=`,
+:: linha que deixou de existir quando o config virou tres constantes — o
+:: replace parou de casar em silencio e as builds publicadas sairam apontando
+:: para localhost. Agora quem decide e o `_resolve_url()` do config.gd:
+:: editor -^> local, build exportada -^> producao.
 
 echo  Exportando com Godot headless...
 :: <nul pelo mesmo motivo do ssh -n: o _console.exe do Godot le stdin e leva o
@@ -76,10 +74,6 @@ echo  Exportando com Godot headless...
 :: abaixo, que fecharia a janela antes de voce ler o erro.
 "!GODOT_EXE!" --headless --path "C:\Work\NewSeaGodot" --export-release "Windows Desktop" "!BUILD_DIR!\SeaOfCode.exe" <nul
 set EXPORT_CODE=!errorlevel!
-
-:: Restaura o config para dev local (mesmo se o export falhar).
-echo  Restaurando host para dev local (!URL_DEV!)...
-powershell -ExecutionPolicy Bypass -Command "$q=[char]34; (Get-Content '!CONFIG_FILE!') -replace '^const SERVER_URL :=.*', ('const SERVER_URL := ' + $q + '!URL_DEV!' + $q) | Set-Content '!CONFIG_FILE!'"
 
 if not "!EXPORT_CODE!"=="0" (
   echo [ERRO] Falha ao exportar.
