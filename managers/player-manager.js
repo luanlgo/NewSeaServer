@@ -3,6 +3,7 @@ const { uid, rand, clamp, sendTo } = require('../utils/helpers');
 const { pushOutOfIslands, pushOutOfWalls } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, MAX_CANNON_SLOTS, CANNON_DEFS, PIRATE_DEFS, MAP_DEFS } = require('../constants');
 const fx = require('../utils/talent-effects');
+const status = require('../utils/talent-status');
 
 // Giro base por tique (o valor que existia solto como 0.3 dentro do update).
 const TURN_RATE = 0.3;
@@ -15,6 +16,10 @@ const TURN_DRAG = 0.45;
 // aceleração (res_impulso) e de frenagem (def_ancoragem) ainda têm o que mexer.
 const ACCEL_PER_SEC = 6.0;
 const BRAKE_PER_SEC = 8.0;
+// De quanto em quanto tempo a barra de status é REAVALIADA. O envio só acontece
+// se o conjunto mudou, então isto é o atraso máximo até um ícone aparecer —
+// 200ms é imperceptível e evita reavaliar 7 funções de talento a 20 Hz.
+const STATUS_INTERVAL_MS = 200;
 
 class PlayerManager {
   constructor() {
@@ -202,6 +207,37 @@ class PlayerManager {
   }
 
   /**
+   * Barra de status: manda ao jogador a lista de talentos valendo agora.
+   *
+   * Só sai do servidor quando o CONJUNTO muda — a contagem regressiva o cliente
+   * faz sozinho. Sem isso seriam 20 mensagens por segundo por jogador só para
+   * dizer que o mesmo Frenesi continua em 3 pilhas.
+   */
+  _tickTalentStatus(player, now) {
+    if (!player.ws || !player.tal) return;
+    if (now - (player._talStatusAt || 0) < STATUS_INTERVAL_MS) return;
+    player._talStatusAt = now;
+
+    const allies = player._allyCount || 0;
+    const list = status.activeStatuses(player, {
+      isStill:   !player.speed,
+      isMoving:  !!player.speed,
+      inParty:   allies > 0,
+      allyCount: allies,
+      // O jogo ainda não tem penalidade de clima nem correnteza, então Vento
+      // Próprio e Cavalgar as Ondas nunca acendem — acendem sozinhos no dia em
+      // que esses sistemas existirem.
+      badWeather:  false,
+      withCurrent: false,
+    }, now);
+
+    const sig = status.signature(list, now);
+    if (sig === player._talStatusSig) return;
+    player._talStatusSig = sig;
+    sendTo(player.ws, { type: 'talent_status', list });
+  }
+
+  /**
    * Vento de Esquadra (res_esquadra): quem tem o talento doa velocidade ao
    * grupo por perto. Calculado uma vez por tique e guardado em cada jogador,
    * porque o loop de movimento roda por jogador e não pode varrer o grupo
@@ -215,6 +251,8 @@ class PlayerManager {
       let bonus = 0;
       for (const m of membros) bonus += fx.partySpeedAura(m);
       p._partySpeedBonus = bonus;
+      // Moral de Ferro e Lobo do Mar leem daqui em vez de varrer o grupo de novo.
+      p._allyCount = membros.length;
     }
   }
 
@@ -339,6 +377,7 @@ class PlayerManager {
 
       // Acúmulos e janelas dos talentos de combate.
       fx.tickCombatState(player, now);
+      this._tickTalentStatus(player, now);
 
       player.damageMultiplier = 1.0;
 

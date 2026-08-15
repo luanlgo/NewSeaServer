@@ -2,6 +2,7 @@
 const { uid, rand } = require('../utils/helpers');
 const { MAP_DEFS, FRAGMENT_DROP_BOSS, HIT_RADIUS, difficultyRewardMult } = require('../constants');
 const db = require('./db-manager');
+const fx = require('../utils/talent-effects');
 
 function rollRarity(rarities) {
   const total = rarities.reduce((s, r) => s + r.chance, 0);
@@ -170,7 +171,10 @@ class BossManager {
     // desbloqueio de mapa. Espelha a lógica de kill de NPC no server.js.
     const grantMapXp = (pl, baseXp) => {
       if (baseXp <= 0) return;
-      const gain = Math.round(baseXp * (1 + (pl.talentXpBonus || 0)));
+      // lootMult('xp_boss') junta Estudioso + Sabedoria Antiga + Tesouro do
+      // Abismo. O `talentXpBonus` que estava aqui só tinha o Estudioso, então
+      // o talento de XP DE CHEFE não valia justamente na morte de um chefe.
+      const gain = Math.round(baseXp * fx.lootMult(pl, 'xp_boss'));
       pl.mapXp = (pl.mapXp || 0) + gain;
       const xpNeeded = (MAP_DEFS[pl.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
       if (xpNeeded && pl.mapXp >= xpNeeded && MAP_DEFS[(pl.mapLevel || 1) + 1]) {

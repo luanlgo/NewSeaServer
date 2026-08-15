@@ -2,6 +2,7 @@
 const { uid, rand, broadcast, sendTo } = require('../utils/helpers');
 const { WORLD_BOSS_DEF, MAP_DEFS, difficultyMult, difficultyRewardMult } = require('../constants');
 const db = require('./db-manager');
+const fx = require('../utils/talent-effects');
 
 class WorldBossManager {
   constructor(wss, players, npcManagers) {
@@ -246,7 +247,9 @@ class WorldBossManager {
       // XP de mapa proporcional ao dano, com o talento de XP do jogador
       const xpShare = totalXp > 0 ? Math.max(1, Math.round(totalXp * share)) : 0;
       if (xpShare > 0) {
-        player.mapXp = (player.mapXp || 0) + Math.round(xpShare * (1 + (player.talentXpBonus || 0)));
+        // Mesma correção do boss-manager: o boss mundial é chefe, então o XP
+        // passa por lootMult('xp_boss') e não só pelo bônus geral de XP.
+        player.mapXp = (player.mapXp || 0) + Math.round(xpShare * fx.lootMult(player, 'xp_boss'));
         const xpNeeded = (MAP_DEFS[player.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
         if (xpNeeded && player.mapXp >= xpNeeded && MAP_DEFS[(player.mapLevel || 1) + 1]) {
           if (!player._mapUnlockNotified) {

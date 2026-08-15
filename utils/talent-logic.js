@@ -6,11 +6,44 @@
 
 /**
  * XP mínimo para a n-ésima compra de talento (0-indexed).
- * Fórmula: min(floor(xpBase * xpGrowth^totalSpent), xpCap)
- * O teto evita que a exponencial exploda nos últimos pontos (1.3^40 ≈ 14,4M).
+ *
+ * A TAXA de crescimento cai pela metade a cada `band` compras, mas só até o
+ * PISO: 1ª faixa +10% por compra, 2ª +5%, e da 3ª em diante fica em +2,5% para
+ * sempre.
+ *
+ * O piso é o ponto todo. Sem ele a taxa continuava caindo (1,25%, 0,625%…) e a
+ * série geométrica CONVERGIA: o requisito parava de crescer em ~1,16 milhão por
+ * volta da compra 800 e o incremento virava zero — as últimas ~400 compras da
+ * árvore não tinham gate de XP nenhum. Com a taxa travada em 2,5%, o custo
+ * compõe para sempre e nunca fica de graça.
+ *
+ * O outro extremo também já foi testado e é pior: com a exponencial pura de
+ * +10% a 40ª compra pedia 22 mil, a 80ª 1 MILHÃO e a 120ª 46 milhões — a árvore
+ * virava um muro em 15% dela.
+ *
+ * A conta é feita por FAIXA, não nível a nível: `totalSpent` pode ser grande e
+ * um laço por compra seria desperdício em algo chamado a cada abertura de UI.
  */
-function calcXpRequired(totalSpent, xpBase, xpGrowth, xpCap = Infinity) {
-  return Math.min(Math.floor(xpBase * Math.pow(xpGrowth, totalSpent)), xpCap);
+function calcXpRequired(totalSpent, xpBase, xpGrowth, xpCap = Infinity, band = TALENT_BAND) {
+  const n = Math.max(0, Math.floor(totalSpent));
+  const taxaBase = Math.max(0, xpGrowth - 1);
+  let req = xpBase;
+  let restante = n;
+  let faixa = 0;
+  while (restante > 0) {
+    const k = Math.min(restante, band);
+    // Depois do piso a taxa é constante, então o resto todo cabe numa potência
+    // só — sem isto o laço giraria 30 vezes à toa para totalSpent grande.
+    const expoente = Math.min(faixa, TALENT_XP_DECAY_FLOOR);
+    if (expoente === TALENT_XP_DECAY_FLOOR) {
+      req *= Math.pow(1 + taxaBase / Math.pow(2, expoente), restante);
+      break;
+    }
+    req *= Math.pow(1 + taxaBase / Math.pow(2, expoente), k);
+    restante -= k;
+    faixa++;
+  }
+  return Math.min(Math.floor(req), xpCap);
 }
 
 /**
@@ -22,6 +55,65 @@ function getCostTier(totalSpent, costTiers) {
     if (totalSpent < tier.upTo) return tier;
   }
   return costTiers[costTiers.length - 1];
+}
+
+// ── Retorno decrescente do talento ───────────────────────────────────────────
+// A cada TALENT_BAND níveis DO MESMO TALENTO, o nível seguinte rende metade:
+// 1–40 integral, 41–80 pela metade, 81–120 um quarto, e assim por diante.
+//
+// Por que por NÍVEL DO NÓ e não pelo total investido na árvore — tentei o total
+// primeiro e está errado: com o rendimento médio caindo conforme se investe, o
+// stat vira `nominal × eficiência`, e como os talentos têm `perLevel` diferentes
+// entre si, comprar um talento barato quando o nominal já é grande DIMINUI o
+// resultado. Medido: 1200 pontos rendiam menos que 800. Um ponto gasto não pode
+// piorar o barco, então a curva não pode ser um orçamento compartilhado — ela
+// tem de morar dentro de cada talento, onde nada interfere em nada.
+//
+// A soma geométrica converge em 2×BAND: um nó vale, no limite, 80 níveis
+// "cheios". É o teto suave que substitui o número que crescia sem fim.
+//
+// ⚠️ Com TALENT_MAX = 10 esta curva NUNCA entra em ação — nenhum nó chega perto
+// de 40. Ela só passa a valer se o teto por nó subir (ou sair). É esse o número
+// a mexer, e é o mesmo que decide se "1% por nível" tem limite ou não.
+const TALENT_BAND = 40;
+
+// Índice da faixa em que o decaimento da TAXA DE XP para de cair (só o XP — o
+// retorno do talento acima continua decaindo sem piso).
+//
+// 0 → faixa 1 (compras 1–40)   taxa cheia,  +10% por compra
+// 1 → faixa 2 (compras 41–80)  metade,      +5%
+// 2 → faixa 3 (81 em diante)   um quarto,   +2,5% PARA SEMPRE
+//
+// Sem o piso a série converge e o requisito de XP PARA de crescer por volta da
+// compra 800 — o fim da árvore ficava sem gate. Este é o número a mexer se a
+// progressão tardia parecer curta ou longa demais.
+const TALENT_XP_DECAY_FLOOR = 2;
+
+/**
+ * Níveis EFETIVOS de UM talento no nível `level`: a 1ª faixa vale integral, a
+ * 2ª metade, a 3ª um quarto, e assim por diante.
+ *
+ * É monotônica por construção — subir de nível sempre soma algo positivo — e
+ * depende só do próprio nó, então um talento nunca mexe no valor de outro.
+ */
+function effectiveTalentLevels(level, band = TALENT_BAND) {
+  let restante = Math.max(0, Math.floor(level));
+  let mult = 1;
+  let efetivo = 0;
+  while (restante > 0 && mult > 1e-9) {
+    const n = Math.min(restante, band);
+    efetivo  += n * mult;
+    restante -= n;
+    mult     /= 2;
+  }
+  return efetivo;
+}
+
+/** Rendimento médio do nível deste talento (1.0 dentro da 1ª faixa). */
+function talentEfficiency(level, band = TALENT_BAND) {
+  const n = Math.max(0, Math.floor(level));
+  if (n <= 0) return 1;
+  return effectiveTalentLevels(n, band) / n;
 }
 
 /**
@@ -40,7 +132,7 @@ function aggregateTalentStats(player, talentDefs) {
   for (const [id, def] of Object.entries(talentDefs)) {
     const lvl = levels[id] || 0;
     if (!lvl) continue;
-    tal[def.stat] = (tal[def.stat] || 0) + lvl * def.perLevel;
+    tal[def.stat] = (tal[def.stat] || 0) + effectiveTalentLevels(lvl) * def.perLevel;
   }
   return tal;
 }
@@ -51,7 +143,7 @@ function sumTalentStat(player, talentDefs, statKey) {
   let total = 0;
   for (const [id, def] of Object.entries(talentDefs)) {
     if (def.stat !== statKey) continue;
-    total += (levels[id] || 0) * def.perLevel;
+    total += effectiveTalentLevels(levels[id] || 0) * def.perLevel;
   }
   return total;
 }
@@ -85,9 +177,16 @@ function applyTalentBonuses(player, talentDefs) {
 
 /**
  * Recalcula player.maxHp levando em conta navio, skill vida, talento HP e upgrades da ilha.
+ *
+ * `baseHpOverride` existe para os navios BÔNUS, cujo HP não vem do SHIP_DEFS.
+ * Antes eles repetiam esta conta à mão em dois lugares e as cópias ficaram para
+ * trás quando o Casco Reforçado passou a somar percentual: quem estava num
+ * navio bônus perdia os dois talentos percentuais de vida sem aviso.
  */
-function recalcMaxHp(player, shipDefs, talentDefs) {
-  const shipDef    = shipDefs[player.activeShip] || shipDefs.fragata;
+function recalcMaxHp(player, shipDefs, talentDefs, baseHpOverride = null) {
+  const shipDef    = baseHpOverride != null
+    ? { hp: baseHpOverride }
+    : (shipDefs[player.activeShip] || shipDefs.fragata);
   const skillHpPct = player.skills?.vida ? (player.skills.vida.level - 1) / 100 : 0;
   const talentFlat = sumTalentStat(player, talentDefs, 'max_hp_flat')
                    + sumTalentStat(player, talentDefs, 'max_hp_flat_2');
@@ -135,6 +234,43 @@ function migrateLegacyTalents(player, legacyMap) {
  * Retorna uma string de erro, ou null se a compra é válida.
  * Não faz nenhum I/O — apenas lê o estado do player e retorna.
  */
+/**
+ * Valida a DEVOLUÇÃO de um ponto (clique direito no nó).
+ * Retorna string de erro, ou null se pode devolver.
+ *
+ * O caso interessante é o gate: tirar um ponto pode derrubar a árvore abaixo do
+ * mínimo de um anel externo onde o jogador JÁ investiu. Deixar passar criaria um
+ * estado que o próprio servidor recusaria montar do zero — um nó de anel 5 ativo
+ * numa árvore com 99 pontos. Então bloqueia e diz qual nó está segurando.
+ */
+function validateRefundTalent(player, talentId, { talentDefs, ringGate = null }) {
+  const tDef = talentDefs[talentId];
+  if (!tDef) return 'Talento inválido.';
+
+  const levels = player.talents || {};
+  if ((levels[talentId] || 0) <= 0) return `${tDef.name} não tem ponto para devolver.`;
+
+  if (!ringGate) return null;
+
+  const depois = countTreeSpent(player, talentDefs, tDef.tree) - 1;
+  for (const [id, def] of Object.entries(talentDefs)) {
+    if (def.tree !== tDef.tree || def.ring === 0) continue;
+    if ((levels[id] || 0) <= 0) continue;
+    const gate = ringGate[def.ring] || 0;
+    if (depois >= gate) continue;
+
+    // O anel de `def` fecharia. Tudo bem se quem está saindo é dali para FORA —
+    // é assim que se desmonta um ramo, de fora para dentro, e cada passo é
+    // progresso. Bloquear também esse caso travaria o jogador de vez: parado no
+    // limite exato do gate, nenhum ponto da árvore poderia mais sair, nem os do
+    // próprio anel externo.
+    if (tDef.ring >= def.ring) continue;
+
+    return `Tire ${def.name} primeiro: precisa de ${gate} pontos em ${tDef.tree} e sobrariam ${depois}.`;
+  }
+  return null;
+}
+
 function validateBuyTalent(player, talentId, { talentDefs, costTiers, xpBase, xpGrowth, xpCap = Infinity, ringGate = null }) {
   const tDef = talentDefs[talentId];
   if (!tDef) return 'Talento inválido.';
@@ -195,4 +331,11 @@ module.exports = {
   recalcMaxHp,
   migrateLegacyTalents,
   validateBuyTalent,
+  validateRefundTalent,
+  // Curva de retorno decrescente — exportada para o teste e para o gerador do
+  // cliente, que precisa mostrar exatamente o número que o servidor aplica.
+  TALENT_BAND,
+  TALENT_XP_DECAY_FLOOR,
+  effectiveTalentLevels,
+  talentEfficiency,
 };

@@ -19,7 +19,10 @@ const RELIC_DEFS = {
   //   damagePct: fração da salva por acerto (aura = por tick)
   //   healPct:   fração do HP máximo curado
   // Os campos damage/healAmount ficam como fallback caso o pct seja removido.
-  r1:  { name: 'Âncora Sagrada',    icon: '⚓',  rarity: 'comum',    effect: 'heal_ship',   manaCost: 5, toggle: false, healAmount: 2000, healPct: 0.30,
+  // healPct 0,10 (era 0,30): com o CD de 5 s da raridade comum, 30% do HP máximo
+  // por uso significava vida infinita em qualquer luta longa — a cura pagava
+  // mais que qualquer relíquia de dano e tirava a pressão de todo o PvE.
+  r1:  { name: 'Âncora Sagrada',    icon: '⚓',  rarity: 'comum',    effect: 'heal_ship',   manaCost: 5, toggle: false, healAmount: 2000, healPct: 0.10,
          petUsable: true, petTarget: 'dono',    petRange: 'curto' },
   r2:  { name: 'Névoa Espectral',   icon: '🌫️',  rarity: 'épico',    effect: 'invincible',  manaCost: 6, toggle: false, duration: 5000,
          petUsable: true, petTarget: 'dono',    petRange: 'curto' },
@@ -69,4 +72,31 @@ const RELIC_RARITIES = {
   lendário: { label: 'Lendário', color: '#ff9900', dropWeight: 0.01 },
 };
 
-module.exports = { RELIC_DEFS, RELIC_RARITIES };
+// ── RELIC_COOLDOWN_MS — recarga por RARIDADE ─────────────────────────────────
+// Até aqui a única trava do uso de relíquia era a mana, e a regeneração (0,5/s)
+// não segurava nada: dava para encadear teleporte atrás de teleporte e curar
+// várias vezes seguidas dentro de uma mesma troca de tiros. A recarga é por
+// raridade (não por relíquia) para que rebalancear uma skill nunca esqueça o
+// número dela — e porque raridade já é o eixo de poder do sistema.
+//
+// A relíquia mais RARA recarrega mais devagar: ela compensa com efeito, e é o
+// que impede que um lendário vire o botão que se aperta o tempo todo.
+//
+// Não vale para as `toggle` (Escudo de Ouro): desligar não pode ficar preso num
+// contador — o custo delas é o ouro que drenam enquanto ligadas.
+const RELIC_COOLDOWN_MS = {
+  comum:    5000,
+  incomum:  7000,
+  raro:    10000,
+  'épico': 12000,
+  lendário: 15000,
+};
+
+// Grava o número na própria relíquia: o cliente lê pelo RelicStats (gerado por
+// tools/gen_relic_stats.js) e o servidor por relicCooldownMs() — uma fonte só.
+for (const def of Object.values(RELIC_DEFS)) {
+  if (def.toggle) continue;
+  def.cooldownMs = RELIC_COOLDOWN_MS[def.rarity] ?? 5000;
+}
+
+module.exports = { RELIC_DEFS, RELIC_RARITIES, RELIC_COOLDOWN_MS };

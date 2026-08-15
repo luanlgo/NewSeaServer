@@ -78,6 +78,23 @@ function _clamp(v, lo, hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/**
+ * Igual a `_p`, mas anota no coletor que ESTE talento realmente contribuiu.
+ *
+ * A barra de status da HUD precisa saber quais talentos estão valendo agora, e
+ * a condição de cada um já mora aqui dentro (`if (ctx.targetIsBoss) …`). Reler
+ * essas condições num segundo módulo criaria duas cópias que divergem no
+ * primeiro rebalanceamento — então quem sabe a resposta é quem já a calcula.
+ *
+ * `procs` é opcional: sem ele nada é coletado e o custo é uma comparação.
+ * Ver utils/talent-status.js, o único consumidor.
+ */
+function _pc(player, key, procs) {
+  const v = _p(player, key);
+  if (v !== 0 && procs) procs.push(key);
+  return v;
+}
+
 /** Está em combate agora? */
 function inCombat(player, now = Date.now()) {
   return (now - ((player && player.lastCombatTime) || 0)) < OUT_OF_COMBAT_MS;
@@ -105,29 +122,29 @@ function inCombat(player, now = Date.now()) {
  * @param {boolean} [ctx.isAoe]          dano em área de relíquia
  * @returns {number} multiplicador (1.0 = sem bônus)
  */
-function outgoingDamageMult(attacker, ctx = {}) {
+function outgoingDamageMult(attacker, ctx = {}, procs = null) {
   if (!attacker || !attacker.tal) return 1.0;
 
   let add = _p(attacker, 'damage_pct') + _p(attacker, 'damage_final_pct');
 
-  if (ctx.targetIsNPC)    add += _p(attacker, 'damage_vs_npc_pct');
-  if (ctx.targetIsPlayer) add += _p(attacker, 'damage_vs_player_pct');
-  if (ctx.targetIsBoss)   add += _p(attacker, 'damage_vs_boss_pct');
-  if (ctx.targetHasCC)    add += _p(attacker, 'damage_vs_cc_pct');
-  if (ctx.isFirstHit)     add += _p(attacker, 'opener_pct');
-  if (ctx.isFullSalvo)    add += _p(attacker, 'salvo_damage_pct');
-  if (ctx.isSpecialAmmo)  add += _p(attacker, 'ammo_damage_pct');
-  if (ctx.isRam)          add += _p(attacker, 'ram_damage_pct');
-  if (ctx.isAoe)          add += _p(attacker, 'aoe_damage_pct');
+  if (ctx.targetIsNPC)    add += _pc(attacker, 'damage_vs_npc_pct', procs);
+  if (ctx.targetIsPlayer) add += _pc(attacker, 'damage_vs_player_pct', procs);
+  if (ctx.targetIsBoss)   add += _pc(attacker, 'damage_vs_boss_pct', procs);
+  if (ctx.targetHasCC)    add += _pc(attacker, 'damage_vs_cc_pct', procs);
+  if (ctx.isFirstHit)     add += _pc(attacker, 'opener_pct', procs);
+  if (ctx.isFullSalvo)    add += _pc(attacker, 'salvo_damage_pct', procs);
+  if (ctx.isSpecialAmmo)  add += _pc(attacker, 'ammo_damage_pct', procs);
+  if (ctx.isRam)          add += _pc(attacker, 'ram_damage_pct', procs);
+  if (ctx.isAoe)          add += _pc(attacker, 'aoe_damage_pct', procs);
 
   if (typeof ctx.targetHpFrac === 'number' && ctx.targetHpFrac <= 0.30) {
-    add += _p(attacker, 'execute_pct');
+    add += _pc(attacker, 'execute_pct', procs);
   }
   if (typeof ctx.attackerHpFrac === 'number' && ctx.attackerHpFrac <= 0.30) {
-    add += _p(attacker, 'damage_low_hp_pct');
+    add += _pc(attacker, 'damage_low_hp_pct', procs);
   }
   if (typeof ctx.dist === 'number' && ctx.dist <= 100) {
-    add += _p(attacker, 'damage_close_pct');
+    add += _pc(attacker, 'damage_close_pct', procs);
   }
 
   // Fúria do Kraken: só a metade boa entra aqui (a penalidade de redução mora
@@ -156,10 +173,10 @@ function critChance(attacker, base = 0) {
 }
 
 /** Multiplicador do crítico (base do canhão + talentos). */
-function critMult(attacker, base = 1.5, attackerHpFrac = 1) {
+function critMult(attacker, base = 1.5, attackerHpFrac = 1, procs = null) {
   if (!attacker || !attacker.tal) return base;
-  let add = _p(attacker, 'crit_damage_pct');
-  if (attackerHpFrac > 0.80) add += _p(attacker, 'crit_damage_high_hp');
+  let add = _pc(attacker, 'crit_damage_pct', procs);
+  if (attackerHpFrac > 0.80) add += _pc(attacker, 'crit_damage_high_hp', procs);
   return base + add;
 }
 
@@ -211,21 +228,21 @@ function burnDot(attacker, dmg) {
  * @param {boolean} [ctx.inParty]
  * @param {number}  [ctx.pen]        perfuração do atacante (0..1)
  */
-function damageReduction(target, ctx = {}) {
+function damageReduction(target, ctx = {}, procs = null) {
   if (!target || !target.tal) return 0;
 
   let dr = _p(target, 'damage_reduction_pct') + _p(target, 'damage_reduction_pct_2');
 
-  if (ctx.fromNPC)    dr += _p(target, 'reduction_vs_npc_pct');
-  if (ctx.fromPlayer) dr += _p(target, 'reduction_vs_player_pct');
-  if (ctx.isAoe)      dr += _p(target, 'reduction_aoe_pct');
-  if (ctx.isRelic)    dr += _p(target, 'reduction_relic_pct');
-  if (ctx.isCrit)     dr += _p(target, 'crit_taken_reduction');
-  if (ctx.isDot)      dr += _p(target, 'dot_reduction_pct');
-  if (ctx.isStill)    dr += _p(target, 'reduction_still_pct');
+  if (ctx.fromNPC)    dr += _pc(target, 'reduction_vs_npc_pct', procs);
+  if (ctx.fromPlayer) dr += _pc(target, 'reduction_vs_player_pct', procs);
+  if (ctx.isAoe)      dr += _pc(target, 'reduction_aoe_pct', procs);
+  if (ctx.isRelic)    dr += _pc(target, 'reduction_relic_pct', procs);
+  if (ctx.isCrit)     dr += _pc(target, 'crit_taken_reduction', procs);
+  if (ctx.isDot)      dr += _pc(target, 'dot_reduction_pct', procs);
+  if (ctx.isStill)    dr += _pc(target, 'reduction_still_pct', procs);
 
-  if (ctx.inParty) dr += _p(target, 'reduction_per_ally_pct') * (ctx.allyCount || 0);
-  else             dr += _p(target, 'reduction_solo_pct');
+  if (ctx.inParty) dr += _pc(target, 'reduction_per_ally_pct', procs) * (ctx.allyCount || 0);
+  else             dr += _pc(target, 'reduction_solo_pct', procs);
 
   // Coração do Abismo: a metade de redução é 1/3 do total declarado (+3% vida
   // por nível, +1% de redução).
@@ -234,10 +251,17 @@ function damageReduction(target, ctx = {}) {
   // Sentinela: cada golpe recebido nos últimos 5s soma uma pilha.
   dr += _p(target, 'reduction_after_hit_pct') * (target._sentinelStacks || 0);
 
-  // Fúria do Kraken cobra 2% de redução por nível (0,4 do total declarado).
-  dr -= _p(target, 'kraken_fury_pct') * 0.4;
-
   dr = _clamp(dr, -2.0, MAX_DR);
+
+  // Fúria do Kraken cobra 1,2 ponto de redução por nível (0,4 do total
+  // declarado, que é +3% de dano) — DEPOIS do teto, de propósito.
+  //
+  // Cobrando antes, a penalidade sumia para quem mais tinha como pagá-la: um
+  // build de anel 5 em Defesa soma ~140% de redução crua, o teto corta em 85%, e
+  // os 20 pontos do Kraken cabiam inteiros nos 55 de folga. O resultado era +50%
+  // de dano de graça exatamente para o tanque — o oposto da troca que o texto
+  // promete. Depois do teto, os 20 pontos sempre doem.
+  dr = Math.max(-2.0, dr - _p(target, 'kraken_fury_pct') * 0.4);
   if (ctx.pen > 0 && dr > 0) dr *= (1 - _clamp(ctx.pen, 0, 0.95));
   return dr;
 }
@@ -254,10 +278,10 @@ function applyDamageReduction(target, dmg, ctx = {}) {
 }
 
 /** Chance de desviar totalmente de um tiro (def_esquiva + def_alvodificil + vento). */
-function dodgeChance(target, isMoving = false) {
+function dodgeChance(target, isMoving = false, procs = null) {
   if (!target || !target.tal) return 0;
   let c = _p(target, 'dodge_chance');
-  if (isMoving) c += _p(target, 'dodge_moving_chance');
+  if (isMoving) c += _pc(target, 'dodge_moving_chance', procs);
   // Espírito do Vento: +1% de esquiva por nível = metade do total declarado.
   c += _p(target, 'wind_spirit_pct') / 2;
   return _clamp(c, 0, MAX_DODGE);
@@ -316,12 +340,12 @@ function healingReceivedMult(player) {
  * def_calafate é flat; def_bombeamento só abaixo de 40%; def_reparo só fora
  * de combate — e os dois últimos são percentuais da vida máxima.
  */
-function hpRegenPerSec(player, now = Date.now()) {
+function hpRegenPerSec(player, now = Date.now(), procs = null) {
   if (!player || !player.tal || !player.maxHp) return 0;
   let regen = _f(player, 'hp_regen_flat');
   const frac = player.hp / player.maxHp;
-  if (frac < 0.40) regen += player.maxHp * _p(player, 'hp_regen_low_pct');
-  if (!inCombat(player, now)) regen += player.maxHp * _p(player, 'repair_out_combat_pct');
+  if (frac < 0.40) regen += player.maxHp * _pc(player, 'hp_regen_low_pct', procs);
+  if (!inCombat(player, now)) regen += player.maxHp * _pc(player, 'repair_out_combat_pct', procs);
   return regen;
 }
 
@@ -333,9 +357,9 @@ function maxManaBonus(player) {
 }
 
 /** Multiplicador da regeneração de mana, com o bônus de fora de combate. */
-function manaRegenMult(player, now = Date.now()) {
+function manaRegenMult(player, now = Date.now(), procs = null) {
   let m = 1 + _p(player, 'mana_regen_pct');
-  if (!inCombat(player, now)) m += _p(player, 'mana_out_combat_pct');
+  if (!inCombat(player, now)) m += _pc(player, 'mana_out_combat_pct', procs);
   return m;
 }
 
@@ -409,19 +433,19 @@ function cannonRangeMult(player) {
  * @param {boolean} [ctx.withCurrent]   navegando a favor da corrente
  * @param {number}  [ctx.partyBonus]    bônus vindo de aliados (já em fração)
  */
-function speedMult(player, ctx = {}) {
+function speedMult(player, ctx = {}, procs = null) {
   if (!player || !player.tal) return 1.0;
   const now = ctx.now || Date.now();
   let add = _p(player, 'speed_pct');
 
-  add += inCombat(player, now) ? _p(player, 'speed_in_combat_pct')
-                               : _p(player, 'speed_out_combat_pct');
+  add += inCombat(player, now) ? _pc(player, 'speed_in_combat_pct', procs)
+                               : _pc(player, 'speed_out_combat_pct', procs);
 
-  if (player.maxHp && player.hp / player.maxHp <= 0.30) add += _p(player, 'speed_low_hp_pct');
-  if (now - (player._moveStartedAt || 0) < BURST_MS)    add += _p(player, 'burst_speed_pct');
-  if (now - (player._lastKillAt   || 0) < KILL_SPEED_MS) add += _p(player, 'speed_on_kill_pct');
-  if (now - (player._lastRelicAt  || 0) < RELIC_SPEED_MS) add += _p(player, 'speed_on_relic_pct');
-  if (ctx.withCurrent) add += _p(player, 'wave_speed_pct');
+  if (player.maxHp && player.hp / player.maxHp <= 0.30) add += _pc(player, 'speed_low_hp_pct', procs);
+  if (now - (player._moveStartedAt || 0) < BURST_MS)    add += _pc(player, 'burst_speed_pct', procs);
+  if (now - (player._lastKillAt   || 0) < KILL_SPEED_MS) add += _pc(player, 'speed_on_kill_pct', procs);
+  if (now - (player._lastRelicAt  || 0) < RELIC_SPEED_MS) add += _pc(player, 'speed_on_relic_pct', procs);
+  if (ctx.withCurrent) add += _pc(player, 'wave_speed_pct', procs);
 
   // Espírito do Vento: a metade de velocidade é o total declarado (+2%/nível).
   add += _p(player, 'wind_spirit_pct');
@@ -663,6 +687,7 @@ module.exports = {
   // constantes úteis para quem consome
   OUT_OF_COMBAT_MS, MAX_DR, MAX_DODGE, FRENZY_MAX_STACKS, KILLSTREAK_MAX,
   SENTINEL_MAX_STACKS, SECOND_WIND_CD_MS,
+  BURST_MS, KILL_SPEED_MS, RELIC_SPEED_MS, SENTINEL_MS,
   inCombat,
   // dano causado
   outgoingDamageMult, armorPen, critChance, critMult, noteCritRoll,

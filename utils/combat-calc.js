@@ -17,6 +17,7 @@
  *   talentDef    — 1 - talentDefenseBonus do alvo
  *   islandDef    — 1 - defenseBonus do upgrade de ilha do alvo
  *   islandDmg    — 1 + damageMult do upgrade de ilha do atirador
+ *   talentFlatDef — redução PLANA do alvo (def_carapaca), subtraída no fim
  *
  * @returns {number} dano final, mínimo 1
  */
@@ -30,8 +31,12 @@ function calcProjectileDamage({
   talentDef  = 1.0,
   islandDef  = 1.0,
   islandDmg  = 1.0,
+  talentFlatDef = 0,
 }) {
-  return Math.max(1, Math.round(baseDmg * critMult * damageMult * skillDmg * skillDef * talentDmg * talentDef * islandDef * islandDmg));
+  // A redução PLANA (def_carapaca) sai por último, depois de todos os
+  // multiplicadores — é "−2 de dano por acerto", não "−2 antes de dobrar".
+  const bruto = baseDmg * critMult * damageMult * skillDmg * skillDef * talentDmg * talentDef * islandDef * islandDmg;
+  return Math.max(1, Math.round(bruto - talentFlatDef));
 }
 
 /**

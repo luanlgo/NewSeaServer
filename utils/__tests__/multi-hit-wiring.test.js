@@ -63,6 +63,10 @@ const hitDoJogador = (eventos) =>
 // cobertura abaixo sabe disso.
 const CHUVA = ['turtle_boss_wreck_field'];
 
+// O conjunto do mapa 10 não tem nenhuma `multi`: no redesenho as duas que eram
+// (chuva de bile e salva de olhos) deram lugar ao sorvo de mana e ao espelho,
+// ambas `circle`. Se alguma voltar a ser `multi`, o teste de cobertura acima
+// avisa — é para isso que ele existe.
 const SKILLS_MULTI = [
   'crab_boss_mortar', 'crab_boss_tentacles', 'wyrm_pustule_burst',
   'charnel_death_mark', 'charnel_brood_hatch',

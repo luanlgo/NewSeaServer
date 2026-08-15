@@ -211,3 +211,82 @@ describe('Muralha de Maré', () => {
     expect(dano(eventos).some(h => h.id === 'longe')).toBe(true);
   });
 });
+
+/**
+ * O número de dano tem de sair NO RITMO do golpe.
+ *
+ * As canalizadas somavam as levas num array e mandavam UM `monster_skill_strike`
+ * depois da última: no Jato do Pescoço isso é 3,5 s depois do clique, e durante
+ * a canalização inteira a tela ficava muda — a queixa de "o jato não mostra o
+ * dano". O mesmo golpe na mão do BICHO sempre relatou leva a leva
+ * (`npc_attack_hit`); as duas faces agora falam no mesmo compasso.
+ */
+describe('Canalizadas relatam o dano leva a leva', () => {
+  const golpes = (eventos) => eventos.filter(e => e.type === 'monster_skill_strike');
+
+  it('Jato do Pescoço: um anúncio por leva, não um no fim', () => {
+    const alvo = fazerNpc('alvo', 0, 100);
+    const { msm, eventos } = fazerMotor([alvo]);
+    msm.cast(fazerJogador(0, 0), RELIC_DEFS.r30, 0, 100, {});
+    vi.runAllTimers();
+
+    const levas = RELIC_DEFS.r30.ticks.count;
+    expect(golpes(eventos).length).toBe(levas);
+    expect(dano(eventos).filter(h => h.id === 'alvo')).toHaveLength(levas);
+  });
+
+  it('o 1º número aparece na 1ª leva, não depois da última', () => {
+    const alvo = fazerNpc('alvo', 0, 100);
+    const { msm, eventos } = fazerMotor([alvo]);
+    const def = RELIC_DEFS.r30;
+    msm.cast(fazerJogador(0, 0), def, 0, 100, {});
+
+    vi.advanceTimersByTime(def.castMs + 10);
+    expect(golpes(eventos).length, 'nada relatado na 1ª leva').toBe(1);
+  });
+
+  it('nenhum acerto é contado duas vezes (o anúncio final saiu)', () => {
+    const alvo = fazerNpc('alvo', 0, 100);
+    const { msm, eventos } = fazerMotor([alvo]);
+    msm.cast(fazerJogador(0, 0), RELIC_DEFS.r30, 0, 100, {});
+    vi.runAllTimers();
+    // Cada leva relata só a PRÓPRIA (`hits: batch`); somar tudo tem de dar o
+    // número de levas, não levas² como daria acumulando no array compartilhado.
+    expect(dano(eventos)).toHaveLength(RELIC_DEFS.r30.ticks.count);
+  });
+
+  it('só a 1ª leva bate na água (senão 20 ondas por canalização)', () => {
+    const { msm, eventos } = fazerMotor([fazerNpc('alvo', 0, 100)]);
+    msm.cast(fazerJogador(0, 0), RELIC_DEFS.r30, 0, 100, {});
+    vi.runAllTimers();
+    expect(golpes(eventos).filter(e => (e.tick || 0) === 0)).toHaveLength(1);
+  });
+
+  it('golpe de leva única segue com UM anúncio só', () => {
+    const alvo = fazerNpc('alvo', 0, 40);
+    const { msm, eventos } = fazerMotor([alvo]);
+    msm.cast(fazerJogador(0, 0), RELIC_DEFS.r14, 0, 40, {});   // Pinça, sem ticks
+    vi.runAllTimers();
+    expect(golpes(eventos)).toHaveLength(1);
+    expect(dano(eventos).some(h => h.id === 'alvo')).toBe(true);
+  });
+});
+
+describe('Recarga por raridade', () => {
+  it('toda relíquia usável tem recarga, e a toggle não tem', () => {
+    for (const [id, def] of Object.entries(RELIC_DEFS)) {
+      if (def.toggle) expect(def.cooldownMs, id).toBeUndefined();
+      else            expect(def.cooldownMs, id).toBeGreaterThan(0);
+    }
+  });
+
+  it('mais raro recarrega mais devagar', () => {
+    const porRaridade = (r) => Object.values(RELIC_DEFS)
+      .find(d => d.rarity === r && !d.toggle).cooldownMs;
+    expect(porRaridade('comum')).toBe(5000);
+    expect(porRaridade('incomum')).toBe(7000);
+    expect(porRaridade('raro')).toBe(10000);
+    expect(porRaridade('épico')).toBe(12000);
+    expect(porRaridade('lendário')).toBe(15000);
+  });
+});

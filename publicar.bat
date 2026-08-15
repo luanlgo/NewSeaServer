@@ -30,6 +30,22 @@ echo  Versao atual : !CURRENT_VER!
 echo  Nova versao  : !NEW_VER!  (Enter para confirmar, ou digite outra ex: 0.3.0)
 set /p CUSTOM_VER="  > "
 if not "!CUSTOM_VER!"=="" set NEW_VER=!CUSTOM_VER!
+
+:: Valida a versao ANTES de exportar. O export leva minutos e ate hoje um
+:: erro aqui so aparecia no fim, quando o publish.js recusava -- jogando a
+:: build inteira fora. A pegadinha classica: o prompt acima vem ANTES do
+:: "Exportar agora? (s/n)", entao quem responde "s" adiantado deixa a versao
+:: valendo "s".
+:: Sem espaco antes do pipe: "echo !X! | findstr" mandaria "!X! " com espaco
+:: no fim e a ancora $ nunca casaria.
+echo !NEW_VER!|findstr /r /c:"^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
+if errorlevel 1 (
+  echo.
+  echo  [ERRO] Versao invalida: "!NEW_VER!"
+  echo         Precisa ser x.y.z ^(ex: 0.1.21^). Nada foi exportado.
+  echo.
+  pause & exit /b 1
+)
 echo  Publicando v!NEW_VER!...
 
 set BUILD_DIR=C:\Work\NewSeaGodot\builds\windows

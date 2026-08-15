@@ -63,9 +63,14 @@ const RANGE_TOLERANCE = 40; // tolerância na validação server-side (posição
 
 // Stats por raridade — épico/lendário "ganham mais status"
 const RARITY_DMG_MULT   = { 0: 0.6, 1: 0.8, 2: 1.0, 3: 1.2 };
-// CD das relíquias do pet POR RARIDADE (qualquer relíquia): comum 20s, raro 18s,
-// épico 15s, lendário 10s — reduzido pelo nível do pet
-const RARITY_CD_MS      = { 0: 20000, 1: 18000, 2: 15000, 3: 10000 };
+// CD das relíquias do pet POR RARIDADE (qualquer relíquia): comum 60s, raro 54s,
+// épico 45s, lendário 30s — reduzido pelo nível do pet.
+//
+// TRIPLICADO (era 20/18/15/10 s): no ritmo antigo o pet disparava a relíquia
+// praticamente a cada engajamento — a defensiva revivia o dono a toda troca de
+// tiros e a ofensiva virava uma segunda salva grátis. O pet deve ser um ÁS na
+// manga, não uma rotação; com o CD longo, quando ele solta a skill importa.
+const RARITY_CD_MS      = { 0: 60000, 1: 54000, 2: 45000, 3: 30000 };
 const RELIC_SLOTS_BY_RARITY = { 0: 1, 1: 1, 2: 2, 3: 2 };   // comum/raro=1, épico/lendário=2
 const LEVEL_DMG_BONUS   = 0.05;  // +5% dano de relíquia por nível
 const LEVEL_CD_BONUS    = 0.02;  // -2% CD por nível (piso 50%)
@@ -428,7 +433,7 @@ class PetManager {
 
       } else if (rdef.effect === 'heal_ship' && hpAfter <= maxHp * TRIGGER_HEAL) {
         const cdMs = this._startCd(player, petId, instanceId, rdef);
-        const healValue = Math.round(maxHp * (rdef.healPct || 0.30));
+        const healValue = Math.round(maxHp * (rdef.healPct || 0.10));
         player.hp = Math.min(maxHp, player.hp + healValue);
         this._emitDefense(player, petId, instanceId, rdef, cdMs, { healed: healValue });
         return dmg;

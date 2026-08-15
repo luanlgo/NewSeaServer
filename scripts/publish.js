@@ -32,7 +32,11 @@ if (!version || !buildDir) {
 }
 
 if (!/^\d+\.\d+\.\d+$/.test(version)) {
-  console.error('Versão deve estar no formato x.y.z (ex: 0.2.0)');
+  // Mostra o que CHEGOU: sem isso a mensagem obriga a adivinhar, e o valor
+  // errado normalmente vem do prompt do publicar.bat (um "s" digitado achando
+  // que já era a pergunta do export vira a "versão").
+  console.error(`Versão inválida: "${version}"`);
+  console.error('Precisa ser x.y.z — ex: 0.2.0');
   process.exit(1);
 }
 
