@@ -164,9 +164,11 @@ describe('calcXpRequired', () => {
 // ── getCostTier ───────────────────────────────────────────────────────────────
 
 describe('getCostTier', () => {
-  it('as 5 primeiras compras custam 1.000 ouro', () => {
-    expect(getCostTier(0, TALENT_COST_TIERS)).toMatchObject({ cost: 1000, currency: 'gold' });
-    expect(getCostTier(4, TALENT_COST_TIERS)).toMatchObject({ cost: 1000, currency: 'gold' });
+  it('as 10 primeiras compras custam 500 ouro', () => {
+    expect(getCostTier(0, TALENT_COST_TIERS)).toMatchObject({ cost: 500, currency: 'gold' });
+    expect(getCostTier(9, TALENT_COST_TIERS)).toMatchObject({ cost: 500, currency: 'gold' });
+    // O degrau vira na 10ª: `upTo` é limite superior EXCLUSIVO.
+    expect(getCostTier(10, TALENT_COST_TIERS)).toMatchObject({ cost: 1000, currency: 'gold' });
   });
 
   it('a moeda vira dobrão a partir da 200ª compra', () => {
@@ -419,9 +421,9 @@ describe('validateBuyTalent', () => {
     expect(validateBuyTalent(player, 'atk_artilharia', constants)).toMatch(/XP insuficiente/i);
   });
 
-  it('erro: ouro insuficiente (totalSpent=0, tier=1.000 gold)', () => {
+  it('erro: ouro insuficiente (totalSpent=0, tier=500 gold)', () => {
     const player = basePlayer();
-    player.gold = 900;
+    player.gold = 400;
     expect(validateBuyTalent(player, 'atk_artilharia', constants)).toMatch(/Ouro insuficiente/i);
   });
 

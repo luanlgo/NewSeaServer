@@ -421,9 +421,10 @@ const LEGACY_TALENT_MAP = {
 // os 200 pontos o talento saía por 500 dobrões, barato demais para um jogador
 // que já chegou lá. A forma da curva não mudou — só a escala.
 const TALENT_COST_TIERS = [
-  { upTo: 5,    cost: 1000,      currency: 'gold'   },
-  { upTo: 20,   cost: 5000,     currency: 'gold'   },
-  { upTo: 50,   cost: 20000,    currency: 'gold'   },
+  { upTo: 10,    cost: 500,      currency: 'gold'   },
+  { upTo: 20,    cost: 1000,      currency: 'gold'   },
+  { upTo: 40,   cost: 5000,     currency: 'gold'   },
+  { upTo: 60,   cost: 20000,    currency: 'gold'   },
   { upTo: 100,  cost: 50000,    currency: 'gold'   },
   { upTo: 200,  cost: 100000,   currency: 'gold'   },
   { upTo: 350,  cost: 5000,      currency: 'dobrao' },
