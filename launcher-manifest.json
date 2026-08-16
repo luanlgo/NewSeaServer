@@ -1,8 +1,10 @@
 {
-    "version":  "0.1.22",
-    "date":  "2026-08-15",
+    "version":  "0.1.23",
+    "date":  "2026-08-16",
     "changelog":  [
-                      "[v0.1.22] - 2026-08-15",
+                      "[v0.1.23] - 2026-08-15",
+                      "fix(publicar): parar de injetar a URL no config.gd do jogo",
+                      "release: v0.1.22",
                       "build: apontar BUILD_DIR para as builds fora do repositorio",
                       "feat(arauto,talentos): mini-chefe do mapa 11 e rebalanceamento",
                       "feat(bestiario,pets,talentos): levas anteriores ainda sem commit",
@@ -10,16 +12,14 @@
                       "feat(reliquias,bichos): sucção da Corneta e skills de monstro",
                       "feat(talentos): liga 87 dos 120 stats e tira o teto de XP",
                       "feat(navios,velas): curandeiros por navio e vela mais lenta",
-                      "release: v0.1.20",
-                      "fix(rede): handler aoi_resync + turnRate do feixe do Leviata",
-                      "release: v0.1.19"
+                      "release: v0.1.20"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.22/SeaOfCode.exe",
-                      "sha256":  "78c0392e1db23efb8e04b31916c307c15052bc3ce7cf1797d0a728a305cec2b0",
-                      "size":  737543640
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.23/SeaOfCode.exe",
+                      "sha256":  "e95bb4705eb305e09ad90cc4151df0ab6a14c016604889845771af94ed2a0317",
+                      "size":  737543704
                   }
               ]
 }
