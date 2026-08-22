@@ -20,7 +20,7 @@ describe('STATUS_STATS', () => {
     expect(stats).toHaveLength(52);
     const kinds = {};
     for (const k of Object.values(st.STATUS_STATS)) kinds[k] = (kinds[k] || 0) + 1;
-    expect(kinds).toEqual({ stack: 4, window: 3, cooldown: 1, cond: 14, hit: 30 });
+    expect(kinds).toEqual({ stack: 4, window: 3, cooldown: 1, cond: 13, hit: 31 });
   });
 
   it('todo stat da tabela pertence a um talento que existe', () => {

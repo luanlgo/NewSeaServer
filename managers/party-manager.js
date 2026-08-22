@@ -4,6 +4,28 @@ const { uid, sendTo } = require('../utils/helpers');
 const PARTY_MAX      = 4;
 const INVITE_TIMEOUT = 30_000; // ms — convite expira em 30s
 
+// ─── Recompensa de grupo ─────────────────────────────────────────────────────
+// O grupo já DIVIDIU ouro e XP por cabeça, e isso fazia caçar junto render menos
+// que caçar sozinho: quatro jogadores levavam 25% cada um do que levariam
+// separados. Ninguém agrupava, que era exatamente o contrário do que o sistema
+// existia para provocar.
+//
+// Agora cada membro na zona leva o valor CHEIO, e ainda com um bônus por cabeça:
+// caçar em quatro paga 1,3× o solo para cada um. É uma decisão de design
+// deliberada (Luang, 2026-08-17) e ela MULTIPLICA a economia — um grupo cheio
+// gera 5,2× o ouro que um jogador sozinho geraria no mesmo tempo. Se a inflação
+// pesar, o botão é este: baixar PARTY_BONUS_PER_MATE ou voltar a dividir.
+//
+// O dobrão continua SÓ do matador: é a moeda dura, e multiplicá-la por quatro é
+// coisa de outra ordem. Fragmento já ia cheio para todo mundo desde sempre.
+const PARTY_BONUS_PER_MATE = 0.10;
+
+/** Multiplicador de recompensa de quem caça acompanhado. `mates` = companheiros
+ *  na MESMA zona, sem contar o próprio jogador (0 = sozinho → 1,0). */
+function partyRewardMult(mates) {
+  return 1 + PARTY_BONUS_PER_MATE * Math.max(0, mates);
+}
+
 /** uid() retorna inteiro; cliente pode enviar string — normaliza sempre para Number */
 function _norm(id) { return Number(id); }
 
@@ -217,3 +239,6 @@ class PartyManager {
 }
 
 module.exports = PartyManager;
+module.exports.PARTY_MAX             = PARTY_MAX;
+module.exports.PARTY_BONUS_PER_MATE  = PARTY_BONUS_PER_MATE;
+module.exports.partyRewardMult       = partyRewardMult;

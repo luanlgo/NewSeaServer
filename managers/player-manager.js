@@ -1,7 +1,8 @@
 // managers/player-manager.js
 const { uid, rand, clamp, sendTo } = require('../utils/helpers');
 const { pushOutOfIslands, pushOutOfWalls } = require('../utils/collision');
-const { MAX_HP, SHIP_SPEED, MAX_CANNON_SLOTS, CANNON_DEFS, PIRATE_DEFS, MAP_DEFS } = require('../constants');
+const { isInvincible } = require('../utils/invincibility');
+const { MAX_HP, SHIP_SPEED, CANNON_DEFS, MAP_DEFS } = require('../constants');
 const fx = require('../utils/talent-effects');
 const status = require('../utils/talent-status');
 
@@ -160,13 +161,6 @@ class PlayerManager {
     player._stats = null;
     // NÃO zerar arrays de inventário — corrompe saves em andamento
     // O GC libera a memória quando o objeto sai de todos os Maps
-  }
-
-  // Marcar jogador como visto (útil para detectar inatividade)
-  markSeen(player) {
-    if (player) {
-      player.lastSeen = Date.now();
-    }
   }
 
   // Verificar jogadores inativos
@@ -424,9 +418,9 @@ class PlayerManager {
   }
 
   _processStatusEffects(player, now) {
-    // Dot (Damage over Time) — invencível (Névoa do jogador ou do pet) pausa o tick
-    if (player.dot && now >= player.dot.next
-        && !(player.relicInvincibleExpires && now < player.relicInvincibleExpires)) {
+    // Dot (Damage over Time) — invencível (Névoa do jogador ou do pet) pausa o
+    // tick, mas NÃO gasta a carga do escudo: ver utils/invincibility.js.
+    if (player.dot && now >= player.dot.next && !isInvincible(player, now)) {
       player.hp = Math.max(0, player.hp - player.dot.dmg);
       player.dot.dur -= player.dot.tick;
       
@@ -482,32 +476,9 @@ class PlayerManager {
     }
   }
 
-  recalcCannonStats(p) {
-    // Miras Longas estica o alcance do canhão — e, por tabela, o das runas
-    // miradas, que usam cannonRange como base em relicCastRange().
-    const rangeMult = fx.cannonRangeMult(p);
-    if (!p || !p.cannons || !p.cannons.length) {
-      p.cannonRange = 80 * rangeMult;
-      p.cannonCooldownMax = 5000;
-      p.cannonLifesteal = 0;
-      p.cannonCooldown = 0;
-    } else {
-      let range = 0, sumCd = 0, bestLifesteal = 0;
-      for (const cid of p.cannons) {
-        const def = CANNON_DEFS[cid];
-        if (def) {
-          range = Math.max(range, def.range);
-          sumCd += def.cooldown;
-          bestLifesteal = Math.max(bestLifesteal, def.lifesteal || 0);
-        }
-      }
-      p.cannonRange = range * rangeMult;
-      p.cannonCooldownMax = Math.round(sumCd / p.cannons.length);
-      // show highest lifesteal available; actual healing occurs per shot
-      p.cannonLifesteal = Math.min(bestLifesteal, 0.5);
-      p.cannonCooldown = 0;
-    }
-  }
+  // A conta de alcance/recarga/roubo de vida dos canhões mora em
+  // `recalcCannons()` no server.js, que é quem todos os dez pontos de troca de
+  // canhão chamam. Existia aqui uma segunda cópia que ninguém usava.
 
   getSalvoCount(cannons) {
     if (!cannons || !cannons.length) return 1;

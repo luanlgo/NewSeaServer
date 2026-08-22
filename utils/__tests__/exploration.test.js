@@ -23,7 +23,7 @@ const EXPLORATION_REWARDS = [
   { type: 'ammo',     id: 'bala_fogo',       qty: 10,  weight: 16 },
   { type: 'ammo',     id: 'bala_luz',        qty: 10,  weight: 10 },
   { type: 'ammo',     id: 'bala_sangue',     qty: 10,  weight: 6  },
-  { type: 'ammo',     id: 'bala_sangue',     qty: 500, weight: 1  },
+  { type: 'ammo',     id: 'bala_fogo',       qty: 500, weight: 1  },
   { type: 'resource', id: 'ironPlates',      qty: 5,   weight: 12 },
   { type: 'resource', id: 'goldDust',        qty: 3,   weight: 8  },
   { type: 'resource', id: 'gunpowder',       qty: 8,   weight: 11 },
@@ -186,12 +186,12 @@ describe('recompensas de munição', () => {
     expect(p.inventory.ammo['bala_perfurante']).toBe(30);
   });
 
-  it('bala_sangue jackpot (qty 500) é corretamente adicionada', () => {
+  it('bala_fogo jackpot (qty 500) é corretamente adicionada', () => {
     const p = makePlayer(1, 0);
-    withReward(5, () => { // bala_sangue jackpot
+    withReward(5, () => { // bala_fogo jackpot
       const r = exploreMap(p, 1);
-      expect(r.ammoResults['bala_sangue']).toBe(500);
-      expect(p.inventory.ammo['bala_sangue']).toBe(500);
+      expect(r.ammoResults['bala_fogo']).toBe(500);
+      expect(p.inventory.ammo['bala_fogo']).toBe(500);
     });
   });
 
@@ -268,15 +268,18 @@ describe('seleção ponderada dos rewards', () => {
   });
 
   it('distribuição aproxima os pesos em amostra grande', () => {
-    // 2 000 explorações: bala_perfurante (w=22) deve ser ~2× mais frequente que bala_fogo (w=16)
+    // 2 000 explorações: bala_perfurante (w=22) deve ser ~2× mais frequente que bala_luz (w=10)
+    // A comparação é com a LUZ, não com o fogo: o fogo aparece em DUAS entradas
+    // (10 comuns + o jackpot de 500), e somar quantidade misturaria "quantas
+    // vezes saiu" com "quanto veio de cada vez".
     // Não mockamos — deixa o Math.random rodar de verdade
     const p = makePlayer(2000, 0);
     const r = exploreMap(p, 2000);
     const perfurante = r.ammoResults['bala_perfurante'] ?? 0;
-    const fogo       = r.ammoResults['bala_fogo']       ?? 0;
-    // Margem de 50%: qualquer proporção entre 0.9 e 3.5 é aceitável dado ruído estatístico
-    if (fogo > 0) {
-      const ratio = perfurante / fogo;
+    const luz        = r.ammoResults['bala_luz']        ?? 0;
+    // Margem larga: qualquer proporção entre 0.5 e 4.0 é aceitável dado ruído estatístico
+    if (luz > 0) {
+      const ratio = perfurante / luz;
       expect(ratio).toBeGreaterThan(0.5);
       expect(ratio).toBeLessThan(4.0);
     }

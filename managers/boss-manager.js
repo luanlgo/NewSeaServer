@@ -3,6 +3,15 @@ const { uid, rand } = require('../utils/helpers');
 const { MAP_DEFS, FRAGMENT_DROP_BOSS, HIT_RADIUS, difficultyRewardMult } = require('../constants');
 const db = require('./db-manager');
 const fx = require('../utils/talent-effects');
+const { partyRewardMult } = require('./party-manager');
+
+/** Este jogador bateu no chefe? Quem bateu recebe pelo próprio dano e não deve
+ *  levar também a parte de companheiro (ver a nota da recompensa de grupo). */
+function dmgMapHas(boss, playerId) {
+  const m = boss._damageMap;
+  if (!m) return false;
+  return m.has(playerId) || m.has(Number(playerId)) || m.has(String(playerId));
+}
 
 function rollRarity(rarities) {
   const total = rarities.reduce((s, r) => s + r.chance, 0);
@@ -170,12 +179,16 @@ class BossManager {
     // Concede XP a um jogador aplicando o talento de XP + notificação de
     // desbloqueio de mapa. Espelha a lógica de kill de NPC no server.js.
     const grantMapXp = (pl, baseXp) => {
+      // Zera ANTES do guard: sem isto, um chefe que não rende XP faria o extrato
+      // repetir o ganho do chefe anterior, que ficou pendurado no jogador.
+      pl._bossXpGain = 0;
       if (baseXp <= 0) return;
       // lootMult('xp_boss') junta Estudioso + Sabedoria Antiga + Tesouro do
       // Abismo. O `talentXpBonus` que estava aqui só tinha o Estudioso, então
       // o talento de XP DE CHEFE não valia justamente na morte de um chefe.
       const gain = Math.round(baseXp * fx.lootMult(pl, 'xp_boss'));
       pl.mapXp = (pl.mapXp || 0) + gain;
+      pl._bossXpGain = gain;   // o extrato lá embaixo precisa do valor JÁ com o talento
       const xpNeeded = (MAP_DEFS[pl.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
       if (xpNeeded && pl.mapXp >= xpNeeded && MAP_DEFS[(pl.mapLevel || 1) + 1]) {
         if (!pl._mapUnlockNotified) {
@@ -188,41 +201,65 @@ class BossManager {
     };
     const xpNeededFor = (pl) => (MAP_DEFS[pl.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
 
-    // ── Divisão de recompensas de grupo ──────────────────────────────────────
+    // ── Recompensa de grupo ──────────────────────────────────────────────────
+    // O chefe já reparte por DANO: este método roda uma vez por agressor, cada
+    // um com o seu `share`. Em cima disso o grupo ainda dividia de novo, e
+    // caçar chefe acompanhado saía duas vezes pior — o mesmo castigo que os
+    // abates comuns tinham e que agora acabou.
+    //
+    // Aqui a regra não pode ser "todo mundo leva a parte cheia de todo mundo":
+    // num grupo de quatro em que os quatro bateram, cada um receberia a própria
+    // parte MAIS a dos outros três, e o chefe pagaria quatro vezes o que vale.
+    // Então: quem bateu leva a SUA parte com o bônus por companheiro, e quem
+    // estava no grupo sem bater (o curandeiro da vez) leva uma parte, uma vez
+    // só — o `_partyPaid` no próprio chefe é quem garante o "uma vez só", já
+    // que este método é chamado em laço sobre o mapa de dano.
     const partyMembers = this.partyManager
       ? this.partyManager.getPartyMembersInZone(playerId, this.zoneLevel, this.players)
       : [];
+    const partyMult = partyRewardMult(partyMembers.length);
+    if (partyMult > 1.0) {
+      drops    = Math.max(1, Math.round(drops    * partyMult));
+      fragDrop = Math.max(0, Math.round(fragDrop * partyMult));
+      xpShare  = Math.max(0, Math.round(xpShare  * partyMult));
+    }
 
-    if (partyMembers.length > 0) {
-      const totalSplit = partyMembers.length + 1;
-      const memberDrops = Math.max(1, Math.floor(drops    / totalSplit));
-      const memberFrags = Math.max(0, Math.floor(fragDrop / totalSplit));
-      const memberXp    = Math.max(0, Math.floor(xpShare  / totalSplit));
+    if (!boss._partyPaid) boss._partyPaid = new Set();
+    boss._partyPaid.add(playerId);
+    const semParte = partyMembers.filter(m => !boss._partyPaid.has(m.id) && !dmgMapHas(boss, m.id));
 
-      for (const m of partyMembers) {
+    if (semParte.length > 0) {
+      const memberDrops = drops;
+      const memberFrags = fragDrop;
+      const memberXp    = xpShare;
+
+      for (const m of semParte) {
+        boss._partyPaid.add(m.id);
         m.dobroes      = (m.dobroes      || 0) + memberDrops;
         m.mapFragments = (m.mapFragments || 0) + memberFrags;
         grantMapXp(m, memberXp);
+        this.journal?.ledger(m, 'boss',
+          { dobroes: memberDrops, xp: m._bossXpGain || 0 }, { target: boss.name });
         db.save(m, true).catch(e => console.error('Save error:', e));
         this._sendTo(m.ws, {
           type:     'currency_update',
           gold:     m.gold,
           dobroes:  m.dobroes,
-          reward:   { type: 'dobrao', amount: memberDrops, share: Math.round(share * 100 / totalSplit) },
+          reward:   { type: 'dobrao', amount: memberDrops, share: Math.round(share * 100) },
           mapFragments: m.mapFragments,
           mapXp:        m.mapXp,
           mapLevel:     m.mapLevel || 1,
           mapXpNeeded:  xpNeededFor(m),
         });
       }
-      drops    = memberDrops;
-      fragDrop = memberFrags;
-      xpShare  = memberXp;
     }
 
     player.dobroes = (player.dobroes || 0) + drops;
     player.mapFragments = (player.mapFragments || 0) + fragDrop;
     grantMapXp(player, xpShare);
+    // Chefe é evento raro e com nome — vai direto para o extrato, sem agregar.
+    this.journal?.ledger(player, 'boss',
+      { dobroes: drops, xp: player._bossXpGain || 0 }, { target: boss.name });
 
     db.save(player, true).catch(e => console.error('Save error:', e));
     console.log(`[boss-debug] rewarding player ${playerId}: damage=${damage} totalDmg=${totalDamage} xp=${xpShare} wsReady=${!!player.ws && player.ws.readyState === 1}`);

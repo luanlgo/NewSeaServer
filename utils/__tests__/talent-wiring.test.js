@@ -77,7 +77,7 @@ const SONDAS = {
                        sobe: p => fx.outgoingDamageMult(p, {}) },
   atk_sanguefrio:    { sobe: p => fx.critMult(p, 1.5, 0.95) },
   atk_ultimorecurso: { sobe: p => fx.outgoingDamageMult(p, { attackerHpFrac: 0.20 }) },
-  atk_miralonga:     { sobe: p => fx.cannonRangeMult(p) },
+  atk_miralonga:     { sobe: p => fx.slowOnHit(p) },
   atk_abordagem:     { sobe: p => fx.outgoingDamageMult(p, { dist: 50 }) },
   atk_bombardeio:    { sobe: p => fx.outgoingDamageMult(p, { targetHasCC: true }) },
   atk_deriva:        { sobe: p => fx.turnRateMult(p, true) },
@@ -123,9 +123,12 @@ const SONDAS = {
   def_alvodificil:   { sobe: p => fx.dodgeChance(p, true) },
   def_marchare:      { sobe: p => fx.reverseSpeedMult(p) },
   def_fortaleza:     { sobe: p => fx.damageReduction(p, {}) },
-  def_absorcao:      { sobe: p => fx.damageToMana(p, 1000) },
+  def_absorcao:      { sobe: p => fx.manaOnHit(p) },
   def_sanguessuga:   { sobe: p => fx.lifestealAmount(p, 1000) },
-  def_carapaca:      { desce: p => fx.applyDamageReduction(p, 1000, {}) },
+  // O corte agora é fração da vida MÁXIMA: sem um casco grande na sonda,
+  // 0,1% de 100 de vida arredonda para o mesmo dano e o teste não veria nada.
+  def_carapaca:      { extra: { hp: 100000, maxHp: 100000 },
+                       desce: p => fx.applyDamageReduction(p, 50000, {}) },
   def_sentinela:     { extra: { _sentinelStacks: fx.SENTINEL_MAX_STACKS },
                        sobe: p => fx.damageReduction(p, {}) },
   def_sombra:        { desce: p => fx.stealthRangeMult(p) },
@@ -153,6 +156,20 @@ const SONDAS = {
   res_colheita:      { sobe: p => fx.manaOnKill(p) },
   res_esquadra:      { sobe: p => fx.partySpeedAura(p) },
   res_tesouroabissal:{ sobe: p => fx.lootMult(p, 'gold') },
+
+  // ── Tripulação de piratas e espólio de abordagem ───────────────────────────
+  // O saque do espólio soma dois nós (Saqueador + a metade de saque do
+  // Almirante), e a força de abordagem soma outros dois (Mestre de Abordagem +
+  // a outra metade do Almirante) — por isso o Almirante tem duas sondas.
+  res_saqueador:     { sobe: p => fx.spoilLootPct(p) },
+  res_alistamento:   { sobe: p => fx.pirateCapacityBonus(p, 20) },
+  res_abordagem:     { sobe: p => fx.pirateBattlePowerPct(p) },
+  res_disciplina:    { sobe: p => fx.pirateCasualtyReductionPct(p) },
+  res_destilaria:    { desce: p => fx.runUpkeepMult(p) },
+  res_muralha:       { sobe: p => fx.pirateDefensePct(p) },
+  res_recrutador:    { desce: p => fx.piratePriceMult(p) },
+  res_capitania:     { sobe: p => fx.pirateCapacityBonus(p, 20) },
+  res_almirante:     { sobe: p => fx.pirateBattlePowerPct(p), sobe2: p => fx.spoilLootPct(p) },
 };
 
 /** Vida máxima passando pela mesma função que o servidor usa. */
@@ -208,8 +225,8 @@ describe('cobertura das sondas', () => {
   it('o número de ligados bate com o que o painel promete', () => {
     // Se este número mudar sem querer, alguém ligou ou desligou um talento sem
     // reparar — e o painel passa a mentir na etiqueta "efeito não aplicado".
-    expect(LIGADOS.length).toBe(87);
-    expect(Object.values(TALENT_DEFS).filter(d => !d.wired).length).toBe(33);
+    expect(LIGADOS.length).toBe(96);
+    expect(Object.values(TALENT_DEFS).filter(d => !d.wired).length).toBe(24);
   });
 });
 

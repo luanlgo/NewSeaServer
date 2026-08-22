@@ -1,5 +1,59 @@
 // constants/ships.js — Navios, slots de relíquia e upgrades de ilha
 
+// Importado com outro nome DE PROPÓSITO: este arquivo tem um `BONUS_NPC_DEFS`
+// próprio (os navios piratas NPC, mais abaixo) e os dois nomes colidem.
+const { BONUS_NPC_DEFS: _DUNGEON_NPC_DEFS } = require('./bonus_dungeons');
+
+// ── Navios Bônus (ganhos nas masmorras 7/8/9 — NÃO se compram) ────────────────
+// Entram no SHIP_DEFS porque meia dúzia de sistemas resolve o navio ativo com
+// `SHIP_DEFS[player.activeShip] || SHIP_DEFS.fragata`. Estando de fora, todos
+// caíam no fallback SEM ERRO NENHUM: o navio mais raro do jogo saía com 1 vela,
+// 5 curandeiros, os multiplicadores da fragata, e não contava para a diária de
+// elite — e comprar o upgrade de vida na Ilha derrubava ~200k para ~20k.
+//
+// SÃO DERIVADOS, não escritos à mão. `hp` e `maxCannons` são o PISO da rolagem
+// (`hpMin`/`cannonMin`), e duplicá-los aqui já teria dado errado: o
+// bonus_dungeons.js foi rebalanceado e um número escrito à mão teria ficado
+// mentindo em silêncio até alguém rodar os testes.
+//
+// O PISO NÃO É O STAT DO NAVIO. Enquanto o jogador tem o navio, quem manda é a
+// instância dele — `player.activeBonusShipStats`, com o HP e os canhões ROLADOS
+// (ver recalcMaxHp/refreshTalentDerived no server.js). Este valor só é lido num
+// estado corrompido: `activeShip` apontando para o navio bônus sem a instância
+// correspondente, que é possível porque as duas coisas moram em COLUNAS
+// DIFERENTES do banco. Sem ele, `shipDef.hp` seria undefined e a vida máxima
+// viraria NaN — o jogador entraria com 10 de vida e morreria no primeiro tiro.
+//
+// `bonusOnly` tira da loja e barra os handlers de compra: sem a flag um pacote
+// forjado de buy_navio levaria o navio pelo `price` que estivesse aqui.
+
+// O que NÃO dá para derivar: a escala do navio do JOGADOR não é a do chefe NPC
+// (o colossal é 10 como chefe e 50 como navio). Tem de bater com o _SHIPS do
+// model_loader.gd no cliente.
+const _BONUS_SHIP_VISUALS = {
+  colossal_ghost_pirate_galleon:   { scale: 50,  yOffset:  0, rotOffset: 90 * Math.PI / 180 },
+  massive_imperial_warship:        { scale: 0.7, yOffset:  0, rotOffset: 0 },
+  gigantic_mechanical_pirate_ship: { scale: 0.8, yOffset: -4, rotOffset: 0 },
+};
+
+const _BONUS_SHIP_DEFS = Object.fromEntries(
+  Object.values(_DUNGEON_NPC_DEFS)
+    .filter(npc => npc.shipDropId && npc.stats)
+    .map(npc => [npc.shipDropId, {
+      bonusOnly:  true,
+      currency:   'none',
+      isElite:    true,
+      hp:         npc.stats.hpMin,      // PISO — ver o bloco acima
+      maxCannons: npc.stats.cannonMin,  // PISO — ver o bloco acima
+      sails:      3,
+      speedMult:  1.0,
+      damageMult: 1.0,
+      dropBonus:  0,
+      model:      npc.model,
+      ...(_BONUS_SHIP_VISUALS[npc.shipDropId] || { scale: 1, yOffset: 0, rotOffset: 0 }),
+    }]),
+);
+
 // ── SHIP_DEFS ─────────────────────────────────────────────────────────────────
 const SHIP_DEFS = {
   fragata: {
@@ -148,6 +202,9 @@ const SHIP_DEFS = {
     model: '/models/ships/fancy.glb',
     scale: 14.8, yOffset: 3.5, rotOffset: 0,
   },
+
+  // Navios bônus: DERIVADOS do BONUS_NPC_DEFS da masmorra, logo acima.
+  ..._BONUS_SHIP_DEFS,
 };
 
 // ── SHIP_RELIQC — mana máxima e slots de relíquia por navio ───────────────────

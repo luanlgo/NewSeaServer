@@ -1,5 +1,5 @@
 // managers/projectile-manager.js
-const { projUid, dist2D, broadcast, sendTo } = require('../utils/helpers');
+const { projUid, dist2D, broadcast, sendTo, guardFrame } = require('../utils/helpers');
 const { calcProjectileDamage, calcKillGold, calcKillXp } = require('../utils/combat-calc');
 const fx = require('../utils/talent-effects');
 const status = require('../utils/talent-status');
@@ -12,7 +12,9 @@ const {
 } = require('../constants');
 
 const { SKILLS_BY_SOURCE, MONSTER_SKILLS } = require('../constants/monster_skills');
+const { partyRewardMult } = require('./party-manager');
 const { starDropAllowed } = require('../utils/star-gate');
+const { isInvincible, consumeInvincible } = require('../utils/invincibility');
 
 // Pool de relíquias de um bicho = os ataques que ele REALMENTE usa.
 //
@@ -401,12 +403,15 @@ class ProjectileManager {
 
     // ONE broadcast for the entire salvo — but only to players in the same mapLevel
     if (spawnedProjs.length > 0) {
-      const msg = JSON.stringify({
+      // guardFrame: o salvo é a maior mensagem que escala com o jogador —
+      // 96 canhões dão ~17 KB (medido), e o cliente fecha a conexão sem avisar
+      // quando um frame passa do inbound_buffer_size dele.
+      const msg = guardFrame(JSON.stringify({
         type:        'spawn_salvo',
         ownerId:     shooter.id,
         ownerIsNPC:  false,
         projectiles: spawnedProjs,
-      });
+      }), 'spawn_salvo');
       const ownerZone = shooter.mapLevel || 1;
       this.players.forEach(p => {
         if ((p.mapLevel || 1) === ownerZone && p.ws?.readyState === 1) {
@@ -473,11 +478,12 @@ class ProjectileManager {
 
     fx.onHitTaken(target, now);
 
-    // Absorção — o dano recebido vira mana (acumulador fracionário, igual ao
-    // regen: 1% de um golpe de 40 é 0,4 e sem acumulador nunca viraria mana).
-    const mana = fx.damageToMana(target, dmg);
+    // Absorção — cada golpe LEVADO devolve mana, num valor plano. O acumulador
+    // fracionário continua sendo necessário: o talento rende 0,5 por nível, e
+    // sem ele todo nível ímpar arredondaria para baixo e sumiria.
+    const mana = fx.manaOnHit(target);
     if (mana > 0 && target.maxMana) {
-      status.noteHit(target, 'damage_to_mana_pct', now);
+      status.noteHit(target, 'mana_on_hit_flat', now);
       target._absorbAcc = (target._absorbAcc || 0) + mana;
       if (target._absorbAcc >= 1) {
         const add = Math.floor(target._absorbAcc);
@@ -537,14 +543,24 @@ class ProjectileManager {
       if (_zone === 'green') return;
     }
 
-    // ── Bala de cura: só funciona em jogadores aliados do grupo ─────────────
+    // ── Bala de cura: cura QUALQUER jogador acertado ────────────────────────
+    // Era restrita ao grupo, e fora dele o tiro sumia sem dano e sem cura — do
+    // lado de quem atirava não acontecia nada, o que lia como bala quebrada.
+    //
+    // A restrição não estava protegendo nada: a bala tem dano ZERO, ocupa o seu
+    // slot de munição e é comprada por dobrão. Mirar num estranho já é a escolha
+    // de gastar o próprio tiro ajudando alguém — inclusive num mapa de PvP, onde
+    // curar quem pode virar contra você é uma decisão, não um exploit.
+    //
+    // Continua valendo só entre JOGADORES: `!isNPC` (o alvo) e `!proj.ownerIsNPC`
+    // (quem atirou). Em si mesmo também não dá — o checkHit nunca entrega o dono
+    // do projétil como alvo.
     if (!isNPC && !proj.ownerIsNPC && proj.ammoType === 'bala_cura') {
       if (proj.piercing) proj.hitTargets.add(target.id);
       else { proj.dead = true; this.projectiles.delete(proj.id); }
 
       const shooter2 = this.players.get(proj.ownerId);
-      const isAlly   = shooter2 && this.partyManager && this.partyManager.areAllies(shooter2.id, target.id);
-      if (isAlly) {
+      if (shooter2) {
         const ammo = AMMO_DEFS['bala_cura'] || {};
         // Cura escala com o poder de fogo do atirante (healMult × cannonDamage).
         // O valor fixo antigo (5 HP) era imperceptível na escala atual de HP.
@@ -560,7 +576,7 @@ class ProjectileManager {
           hp: target.hp, maxHp: target.maxHp,
         });
       }
-      return; // sem dano independente de ser aliado ou não
+      return; // nunca causa dano
     }
 
     if (proj.piercing) {
@@ -628,7 +644,9 @@ class ProjectileManager {
     // Cannon damage adds to ammo base (cannon.damage was defined but unused before)
     const baseDmg    = ammo.damage + (proj.cannonDmg || 0);
     // Carapaça de Kraken: redução plana, aplicada depois dos multiplicadores.
-    const talentFlatDef = targetIsPlayer ? (target.tal?.flat_reduction || 0) : 0;
+    // O número sai da vida MÁXIMA do alvo (ver fx.flatReduction) — ler a chave
+    // crua aqui deixaria o corte preso a um valor fixo que envelhece por mapa.
+    const talentFlatDef = targetIsPlayer ? fx.flatReduction(target) : 0;
     const dmg        = calcProjectileDamage({ baseDmg, critMult, damageMult, skillDmg, skillDef, talentDmg, talentDef, islandDef, islandDmg, talentFlatDef });
 
     // A Bala Perfurante entra no multiplicador do ALVO (come a redução dele),
@@ -650,7 +668,10 @@ class ProjectileManager {
     }
 
     // ── Relic: invincibility (r2) ────────────────────────────────────────────
-    if (!isNPC && target.relicInvincibleExpires && now < target.relicInvincibleExpires) {
+    // A bolha apara UM golpe e acaba: os 5 s são a janela para o golpe chegar,
+    // não 5 s de imunidade. Ver utils/invincibility.js.
+    if (!isNPC && isInvincible(target, now)) {
+      consumeInvincible(target, now);
       // Avisa o mapa que o escudo absorveu o golpe — a bolha pulsa em branco
       this._broadcastToMap(target.mapLevel || 1, { type: 'shield_block', targetId: target.id });
       return;
@@ -676,6 +697,8 @@ class ProjectileManager {
       if (goldCost > 0) {
         target.gold = Math.max(0, (target.gold || 0) - goldCost);
         sendTo(target.ws, { type: 'gold_shield_cost', goldCost, gold: target.gold });
+        // Agregado: o escudo cobra a cada golpe aparado.
+        this.journal?.accrue(target, 'gold_shield', { gold: -goldCost });
       }
     }
 
@@ -728,6 +751,28 @@ class ProjectileManager {
       target.slowMult    = 1 - slowPower;
       target.slowExpires = now + slowDur;
     }
+    // ── Rasga-Velame (atk_miralonga): o próprio TIRO amarra ──────────────────
+    // Vem depois da munição e obedece ao "pior slow vence" de _applyCC: o
+    // talento nunca DESFAZ um slow maior que já esteja de pé.
+    //
+    // E, quando o slow de pé é o maior, o talento não encosta em NADA — nem na
+    // duração. O jogo guarda um slow só (slowMult + slowExpires, sem dono), e
+    // esticar a janela por cima faria um tiro de −10% prorrogar uma bala de gelo
+    // de −40%: o alvo levaria a intensidade de uma e o relógio da outra, que é
+    // mais do que qualquer das duas prometeu. Passado o gelo, o próximo tiro
+    // volta a amarrar normalmente.
+    const talSlow = shooter2 ? fx.slowOnHit(shooter2) : 0;
+    let talSlowHit = false;
+    if (talSlow > 0) {
+      const power = talSlow * (targetIsPlayer ? fx.slowStrengthMult(target) : 1);
+      const dur   = fx.SLOW_ON_HIT_MS * (targetIsPlayer ? fx.ccDurationMult(target) : 1);
+      if (1 - power <= (target.slowMult || 1)) {
+        target.slowMult    = 1 - power;
+        target.slowExpires = Math.max(target.slowExpires || 0, now + dur);
+        talSlowHit = true;
+        status.noteHit(shooter2, 'slow_on_hit_pct', now);
+      }
+    }
     if (ammo.dotDmg > 0) {
       const effect = proj.ammoType === 'bala_sangue' ? 'bleed' : 'fire';
       if (!target.dots) target.dots = [];
@@ -763,6 +808,7 @@ class ProjectileManager {
         effects: new Set(), // 'slow','fire','bleed','stun'
         killerProj: null,  // proj that caused death (for kill logic)
         ammo,              // last ammo (for effect durations)
+        ammoType: proj.ammoType || 'bala_ferro', // vai no `hit` — o cliente pinta o impacto
         stunChance: 0,     // max stun chance across this salvo
         stunDur:    0,     // stun duration (ms) from ammo def
       };
@@ -770,7 +816,7 @@ class ProjectileManager {
     }
     batch.totalDmg += dmg;
     if (proj.isCrit) batch.hasCrit = true;
-    if (ammo.slow > 0)   batch.effects.add('slow');
+    if (ammo.slow > 0 || talSlowHit) batch.effects.add('slow');
     if (ammo.dotDmg > 0) batch.effects.add(proj.ammoType === 'bala_sangue' ? 'bleed' : 'fire');
     // Accumulate stun — single roll per salvo in _flushHitBatch (not per projectile)
     if (ammo.stunChance > 0) {
@@ -906,23 +952,30 @@ class ProjectileManager {
       if (Math.random() < fx.goldDoubleChance(killer)) finalGold *= 2;
 
       // Dobrao drop (só para o killer — não é dividido)
+      let dobraoDropped = 0;
       if ((npcDef.dobraoChance || 0) > 0 && Math.random() < (npcDef.dobraoChance + (killer.talentDobraoBonus || 0))) {
         let dobraoAmt = Math.round(Math.floor(Math.random() * (npcDef.dobraoMax - npcDef.dobraoMin + 1) + npcDef.dobraoMin)
                                    * rewardMult * fx.lootMult(killer, 'dobrao'));
         // Cofre Duplo — mesma ideia da Veia de Ouro, do lado do dobrão.
         if (Math.random() < fx.dobraoDoubleChance(killer)) dobraoAmt *= 2;
         killer.dobroes = (killer.dobroes || 0) + dobraoAmt;
+        dobraoDropped  = dobraoAmt;
       }
 
-      // ── Divisão de recompensas de grupo ──────────────────────────────────
+      // ── Recompensa de grupo ──────────────────────────────────────────────
+      // NADA é dividido: cada membro na zona leva o valor cheio, com bônus por
+      // companheiro (ver PARTY_BONUS_PER_MATE em managers/party-manager.js).
+      // Caçar junto passou a valer MAIS que caçar sozinho, que era o objetivo —
+      // e por isso multiplica a economia; o botão de freio está lá.
       const partyMembers = this.partyManager
         ? this.partyManager.getPartyMembersInZone(killer.id, mapLvl, this.players)
         : [];
-      const totalMembers = partyMembers.length + 1;
-      const memberGold   = Math.floor(finalGold / totalMembers);
-      const memberXp     = Math.floor(xpGained  / totalMembers);
-      // Fragmentos NÃO são divididos: cada membro (e o killer) recebe o total por
-      // kill de qualquer um do grupo. Ex.: 3 membros matando 1 NPC cada → todos +3.
+      const partyMult    = partyRewardMult(partyMembers.length);
+      const memberGold   = Math.floor(finalGold * partyMult);
+      const memberXp     = Math.floor(xpGained  * partyMult);
+      // Fragmentos: cada membro (e o killer) recebe o total por kill de qualquer
+      // um do grupo. Ex.: 3 membros matando 1 NPC cada → todos +3. Já era assim
+      // antes de o ouro e o XP pararem de ser divididos.
       const memberFrags  = Math.floor(FRAGMENT_DROP_NPC * rewardMult);
 
       killer.gold  += memberGold;
@@ -935,11 +988,20 @@ class ProjectileManager {
         if (m.ws?.readyState === 1) {
           sendTo(m.ws, { type: 'currency_update', gold: m.gold, dobroes: m.dobroes, mapFragments: m.mapFragments });
         }
+        // Extrato do parceiro: a partilha é fonte própria, senão ele veria
+        // "abates de NPC" numa hora em que não matou nada.
+        this.journal?.accrue(m, 'party_share', { gold: memberGold, xp: memberXp });
         if (this.db) this.db.save(m, true).catch(() => {});
       }
 
       finalGold = memberGold;
       xpGained  = memberXp;
+
+      // Extrato do matador. Agregado: um jogador ativo mata dezenas de NPCs
+      // por minuto e o Diário não é log de combate.
+      this.journal?.accrue(killer, 'npc_kill',
+        { gold: memberGold, xp: memberXp, dobroes: dobraoDropped });
+      this.journal?.checkTier(killer);
 
       // Map unlock notification (xpToAdvance is per-map in MAP_DEFS)
       const xpNeeded = this.mapDefs.xpToAdvance || 99999;
@@ -1003,7 +1065,7 @@ class ProjectileManager {
       if (processedTargets.has(targetId)) return;
       processedTargets.add(targetId);
       
-      const { target, isNPC, totalDmg, hasCrit, effects, killerProj, ammo } = batch;
+      const { target, isNPC, totalDmg, hasCrit, effects, killerProj, ammo, ammoType } = batch;
 
       // ── ONE stun roll per salvo — stun só aplica em jogadores, não em NPCs ──
       if (!isNPC && batch.stunChance > 0 && Math.random() < batch.stunChance) {
@@ -1028,6 +1090,7 @@ class ProjectileManager {
         if (goldStealRatio > 0 && totalDmg > 0) {
           goldStolen = Math.max(1, Math.floor(totalDmg * goldStealRatio));
           target.gold = Math.max(0, (target.gold || 0) - goldStolen);
+          this.journal?.accrue(target, 'gold_stolen', { gold: -goldStolen });
         }
       }
 
@@ -1036,6 +1099,9 @@ class ProjectileManager {
         hp: target.hp, maxHp: target.maxHp,
         dmg: totalDmg, x: target.x, z: target.z,
         goldStolen,
+        // Munição da salva — só serve para o VFX de impacto do cliente saber de
+        // que cor/sabor é a explosão no casco (gelo estilhaça, fogo explode…).
+        ammoType,
         // O número já sai marcado como crítico: o `crit_hit` abaixo é posicional
         // (só x/z) e não dava para saber QUAL número dele veio.
         crit: hasCrit,
@@ -1159,53 +1225,10 @@ class ProjectileManager {
             }
           }
         } else {
-          // Zona vermelha: vítima perde 10% do ouro e dropa ruína saqueável
-          if (this.wreckManager) this.wreckManager.onPlayerDeath(target);
-
-          // Player killed by projectile — broadcast entity_dead para mostrar tela de morte
-          broadcast(this.wss, {
-            type:     'entity_dead',
-            id:       targetId,
-            isNPC:    false,
-            killerId: proj.ownerId,
-          });
-
-          // ── Sistema Procurado + missão pvpKills ──────────────────────────
-          const pvpKiller = this.players.get(proj.ownerId);
-          if (pvpKiller) {
-            pvpKiller.pvpKills = (pvpKiller.pvpKills || 0) + 1;
-            // ── 5% XP and npcKills transfer on PvP kill ──────────────────
-            const xpTransfer    = Math.floor((target.mapXp    || 0) * 0.05);
-            const killsTransfer = Math.floor((target.npcKills || 0) * 0.05);
-            if (xpTransfer > 0) {
-              pvpKiller.mapXp  = (pvpKiller.mapXp  || 0) + xpTransfer;
-              target.mapXp     = Math.max(0, (target.mapXp || 0) - xpTransfer);
-            }
-            if (killsTransfer > 0) {
-              pvpKiller.npcKills  = (pvpKiller.npcKills  || 0) + killsTransfer;
-              target.npcKills     = Math.max(0, (target.npcKills || 0) - killsTransfer);
-            }
-            if (xpTransfer > 0 || killsTransfer > 0) {
-              if (this._onPvpLoot) this._onPvpLoot(pvpKiller, target, xpTransfer, killsTransfer);
-            }
-            // Callback para missão pvpKills (definido em server.js) — passa o jogador morto
-            if (this._onPvpKill) this._onPvpKill(pvpKiller, target);
-            // Verificar se o killer tem o jogador morto como alvo Procurado
-            if (pvpKiller.wantedTarget && pvpKiller.wantedTarget.targetId === targetId) {
-              const wReward = pvpKiller.wantedTarget;
-              pvpKiller.gold    = (pvpKiller.gold    || 0) + wReward.rewardGold;
-              pvpKiller.dobroes = (pvpKiller.dobroes || 0) + wReward.rewardDobrao;
-              pvpKiller.wantedTarget = null;
-              sendTo(pvpKiller.ws, {
-                type:         'wanted_killed',
-                killedName:   wReward.targetName,
-                rewardGold:   wReward.rewardGold,
-                rewardDobrao: wReward.rewardDobrao,
-                gold:         pvpKiller.gold,
-                dobroes:      pvpKiller.dobroes,
-              });
-            }
-          }
+          // Ruína saqueável, tela de morte, espólio de 5%, missões e contrato de
+          // Procurado: tudo em resolvePlayerDeath (server.js), que é o mesmo
+          // caminho da aura, do DoT e das relíquias de área.
+          if (this.onPlayerKilled) this.onPlayerKilled(target, proj.ownerId);
         }
       }
 

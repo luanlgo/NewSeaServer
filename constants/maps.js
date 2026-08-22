@@ -4,8 +4,13 @@
 // pvpZone — regra de combate jogador×jogador do mapa:
 //   'green'  → PVE puro: dano PvP desabilitado (projétil atravessa)
 //   'yellow' → PvP liberado: matar jogador transfere 5% de XP/kills da vítima
-//   'red'    → yellow + qualquer morte dropa ruína saqueável com 10% do ouro
-//              da vítima (ver managers/wreck-manager.js)
+//   'red'    → yellow + qualquer morte dropa 10% do ouro da vítima no local.
+//              Em Red esse ouro vai para um ESPÓLIO de 1h que só se saqueia
+//              vencendo uma abordagem (managers/spoil-manager.js); fora de Red
+//              a mesma conta alimenta a ruína de 10s (managers/wreck-manager.js).
+//
+// As zonas são uma escala: compare com pvpZoneAtLeast/isSpoilZone lá embaixo,
+// nunca com o id do mapa.
 
 const { MAP_SIZE } = require('./engine');
 
@@ -548,7 +553,11 @@ MAP_DEFS[7] = {
   isBonusMap:  true,
   xpRequired:  0,
   xpToAdvance: null,
-  size:        MAP_SIZE,
+  // Arena, não oceano. `size` é a LARGURA total, então 600 dá ±300 do centro —
+  // duas travessias e meia do alcance de canhão (120). Era MAP_SIZE (1200), o
+  // mesmo do mapa 1, e como a masmorra não tem ilha nem ruína nenhuma, o que
+  // sobrava era procurar 5 barcos num quadrado vazio sem ponto de referência.
+  size:        600,
   sideMap:     null,
   npc: {
     count:           5,
@@ -601,7 +610,12 @@ MAP_DEFS[8] = {
   isBonusMap:  true,
   xpRequired:  0,
   xpToAdvance: null,
-  size:        MAP_SIZE,
+  // Aqui quem fecha a arena NÃO é o `size`: é a muralha do pátio da fortaleza
+  // (os `colliders` de `fortress` abaixo), que prende o jogador em
+  // x ±375 · z −230..+263. O `size` só precisa ser folgado o bastante para o
+  // plano do oceano (map_size × 1.2 no cliente) cobrir o que se enxerga por
+  // cima da muralha — daí 900 em vez dos 600 das outras duas masmorras.
+  size:        900,
   sideMap:     null,
   npc: {
     count:           5,
@@ -625,12 +639,46 @@ MAP_DEFS[8] = {
     rotOffset:       0,
     hitRadius:       12,
     relicDropChance: 0.03,
+    // Sem isto os 5 guardas nasceriam em qualquer ponto de ±450 — e metade cairia
+    // do lado de FORA da muralha, onde ninguém alcança. Como a masmorra só chama
+    // o chefe depois que os 5 morrem, um guarda inalcançável trava o dungeon.
+    // O raio 170 também os mantém longe da entrada do jogador (0, 220).
+    spawnAt: { x: 0, z: 20, radius: 170 },
     ammoTiers: [
       { minKills: 0,   ammo: 'bala_ferro' },
       { minKills: 150, ammo: 'bala_fogo'  },
     ],
   },
   boss: null,
+  // ── O cenário: o mapa inteiro se passa DENTRO do pátio da fortaleza ────────
+  // Aqui mora só a COLISÃO. O modelo em si é uma ruína do cliente
+  // (RUINS_DEFS[8] em scripts/main.gd), como toda decoração do jogo, para
+  // continuar editável no F6 — este bloco não tem `model` de propósito, e o
+  // cliente sabe lidar com place sem modelo (ainda vale p/ minimapa e fundo).
+  //
+  // Sem `model`, o que resta é o mesmo contrato da `arena` do mapa 11: um
+  // `colliders` traçado à mão (editor tecla 2) que SUBSTITUI o círculo de
+  // islandRadius. Se a fortaleza mudar de lugar ou de escala no F6, estes
+  // números têm de ser redesenhados junto, senão a parede que se vê e a
+  // parede que empurra deixam de ser a mesma.
+  //
+  // islandRadius: 1 é a convenção do projeto para entrada só-de-colisão (a
+  // mesma da floresta do mapa 11) — serve apenas para pushOutOfIslands olhar
+  // para cá; quem manda no formato é o `colliders`. Um raio de verdade aqui
+  // viraria uma ilha circular inventada no minimapa.
+  fortress: {
+    center:       { x: 0, z: -280 },
+    islandRadius: 1,
+    // Relativos ao `center`, na mesma escala do modelo (1500). O pátio livre vai
+    // de x −375..+375 e z +50..+543; cada caixa cobre a metade interna de uma
+    // parede, e a do norte é a fachada da torre de menagem.
+    colliders: [
+      { shape: 'box', x: -405, z: 296, hw:  30, hh: 250, rot: 0 }, // muralha oeste
+      { shape: 'box', x:  405, z: 296, hw:  30, hh: 250, rot: 0 }, // muralha leste
+      { shape: 'box', x:    0, z: 573, hw: 405, hh:  30, rot: 0 }, // muralha sul (portão)
+      { shape: 'box', x:    0, z:  20, hw: 405, hh:  30, rot: 0 }, // fachada da menagem
+    ],
+  },
   visual: {
     bgColor:          0x0a0a14,
     fogColor:         0x1a1a33,
@@ -654,7 +702,11 @@ MAP_DEFS[9] = {
   isBonusMap:  true,
   xpRequired:  0,
   xpToAdvance: null,
-  size:        MAP_SIZE,
+  // Arena, não oceano. `size` é a LARGURA total, então 600 dá ±300 do centro —
+  // duas travessias e meia do alcance de canhão (120). Era MAP_SIZE (1200), o
+  // mesmo do mapa 1, e como a masmorra não tem ilha nem ruína nenhuma, o que
+  // sobrava era procurar 5 barcos num quadrado vazio sem ponto de referência.
+  size:        600,
   sideMap:     null,
   npc: {
     count:           5,
@@ -708,7 +760,7 @@ MAP_DEFS[10] = {
   xpToAdvance: null,
   size:        MAP_SIZE * 4,
   sideMap:     [{sul: 3, left: 6, norte: 11}],
-  goldStealRatio: 0.01,  // 8% do dano convertido em ouro roubado pelos NPCs
+  goldStealRatio: 0.01,  // 1% do dano convertido em ouro roubado pelos NPCs
   banking: {
     center:      { x: 0, z: 0 },
     islandRadius: 180,
@@ -1104,4 +1156,32 @@ function getPvpZone(level) {
   return (MAP_DEFS[level] && MAP_DEFS[level].pvpZone) || 'yellow';
 }
 
-module.exports = { MAP_DEFS, BONUS_MAP_LEVELS, ARCH_PORTALS, getPvpZone };
+// ── Severidade das zonas ─────────────────────────────────────────────────────
+// As zonas são uma ESCALA, não três nomes soltos: cada degrau mantém tudo do
+// anterior e acrescenta. Comparar por posto (e não por `=== 'red'` ou, pior,
+// por `mapLevel === 11`) faz um mapa novo mais severo herdar automaticamente as
+// mecânicas dos degraus abaixo — basta cadastrá-lo aqui.
+const PVP_ZONE_RANK = { green: 0, yellow: 1, red: 2 };
+
+/** Posto da zona do mapa. Zona desconhecida vale o histórico ('yellow'). */
+function pvpZoneRank(level) {
+  return PVP_ZONE_RANK[getPvpZone(level)] ?? PVP_ZONE_RANK.yellow;
+}
+
+/** A zona do mapa é pelo menos tão severa quanto `zone`? */
+function pvpZoneAtLeast(level, zone) {
+  return pvpZoneRank(level) >= (PVP_ZONE_RANK[zone] ?? 99);
+}
+
+/**
+ * O espólio de abordagem nasce aqui? Vale de Red para cima — qualquer zona
+ * futura mais severa entra sozinha, sem tocar neste arquivo.
+ */
+function isSpoilZone(level) {
+  return pvpZoneAtLeast(level, 'red');
+}
+
+module.exports = {
+  MAP_DEFS, BONUS_MAP_LEVELS, ARCH_PORTALS,
+  getPvpZone, PVP_ZONE_RANK, pvpZoneRank, pvpZoneAtLeast, isSpoilZone,
+};

@@ -14,7 +14,7 @@
 //   client → server: loot_wreck    {wreckId}
 'use strict';
 
-const { getPvpZone } = require('../constants/maps');
+const { pvpZoneAtLeast } = require('../constants/maps');
 
 const WRECK_TTL_MS   = 10000;  // ruína fica 10 s no mar
 const WRECK_GOLD_PCT = 0.10;   // vítima perde 10% do ouro ao afundar
@@ -32,17 +32,37 @@ class WreckManager {
     this._seq     = 1;
   }
 
-  /** Chame em TODO caminho onde um jogador morre (projétil, ataque, aura, DoT). */
-  onPlayerDeath(player) {
+  /**
+   * Chame em TODO caminho onde um jogador morre (projétil, ataque, aura, DoT).
+   *
+   * ── A conta do ouro mora aqui, o recipiente nem sempre ─────────────────────
+   * Quanto a vítima perde é decisão deste arquivo e de mais nenhum —
+   * WRECK_GOLD_PCT é a penalidade de morte da zona vermelha, uma só. O que o
+   * espólio de abordagem mudou foi ONDE esse ouro vai parar: numa zona Red ele
+   * entra num destroço de 1 hora que exige vencer uma batalha
+   * (managers/spoil-manager.js), e a ruína de 10 segundos não é criada. Uma
+   * segunda porcentagem aqui dobraria a penalidade de morte sem que nenhum dos
+   * dois arquivos dissesse isso.
+   *
+   * @param {Function|null} onSpoilZone  recebe (player, loss) e devolve true se
+   *        absorveu o naufrágio — nesse caso não nasce ruína.
+   */
+  onPlayerDeath(player, onSpoilZone = null) {
     if (!player || player.isNPC) return;
     const lvl = player.mapLevel || 1;
-    if (getPvpZone(lvl) !== 'red') return;
+    // `>= red` e não `=== 'red'`: uma zona futura mais severa herda a regra em
+    // vez de silenciosamente parar de dropar ouro.
+    if (!pvpZoneAtLeast(lvl, 'red')) return;
 
     const loss = Math.floor((player.gold || 0) * WRECK_GOLD_PCT);
     if (loss <= 0) return;
 
     player.gold = (player.gold || 0) - loss;
     this.sendTo(player.ws, { type: 'wreck_gold_lost', amount: loss, gold: player.gold });
+    this.journal?.ledger(player, 'wreck_death', { gold: -loss });
+
+    // Zona de espólio: o pote vai para o destroço de 1h em vez da ruína de 10s.
+    if (onSpoilZone && onSpoilZone(player, loss)) return;
 
     const id = `wreck_${this._seq++}`;
     const wreck = {
@@ -72,6 +92,7 @@ class WreckManager {
 
     this.wrecks.delete(wreckId);
     player.gold = (player.gold || 0) + w.gold;
+    this.journal?.ledger(player, 'wreck_loot', { gold: w.gold }, { target: w.ownerName || '' });
 
     this.sendTo(player.ws, { type: 'wreck_looted', amount: w.gold, gold: player.gold });
     this.sendTo(player.ws, { type: 'currency_update', gold: player.gold, dobroes: player.dobroes, reward: { type: 'gold', amount: w.gold } });

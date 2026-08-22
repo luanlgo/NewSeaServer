@@ -2,7 +2,39 @@
 let nextId = 1;
 let nextProjId = 1;
 
+// ── Guarda de frame gigante ─────────────────────────────────────────────────
+// O cliente Godot fecha a conexão com 1009 "Message too big" quando UM frame
+// passa do `inbound_buffer_size` do WebSocketPeer. O default do engine é 65535 B
+// e o fecho é MUDO: o Godot não imprime erro e aqui só chega um `close` seco —
+// a queda fica invisível nos dois logs (medido, reproduzido com harness).
+//
+// O cliente já sobe o teto para 1 MB (scripts/network.gd::_do_connect), então
+// este aviso existe para pegar a mensagem culpada ANTES de ela chegar perto do
+// novo limite, e para não deixar builds antigas caírem sem deixar rastro.
+const WS_FRAME_WARN = parseInt(process.env.WS_FRAME_WARN) || 60 * 1024;
+const _frameWarned = new Set();
+
+function guardFrame(str, hint) {
+  // `str.length` é UTF-16; o frame vai em UTF-8. Só paga o byteLength exato
+  // quando já está perto do limite — no caso comum isto é uma comparação de int.
+  if (str.length < WS_FRAME_WARN) return str;
+  const bytes = Buffer.byteLength(str, 'utf8');
+  if (bytes < WS_FRAME_WARN) return str;
+  const type = hint || (str.match(/"type"\s*:\s*"([^"]{1,40})"/) || [])[1] || '?';
+  // Um balde por tipo e faixa de 64 KB: avisa a cada salto de tamanho sem
+  // repetir a mesma linha 10x por segundo.
+  const key = type + ':' + (bytes >> 16);
+  if (_frameWarned.has(key)) return str;
+  _frameWarned.add(key);
+  console.warn(`[WS] ⚠ frame gigante: type="${type}" ${bytes} bytes `
+    + `(limite de aviso ${WS_FRAME_WARN}). Cliente com inbound_buffer_size menor `
+    + `que isso FECHA a conexão com 1009 e sem log.`);
+  return str;
+}
+
 module.exports = {
+  guardFrame,
+
   uid: () => nextId++,
   projUid: () => nextProjId++,
   
@@ -13,7 +45,7 @@ module.exports = {
   clamp: (v, min, max) => Math.max(min, Math.min(max, v)),
   
   broadcast: (wss, data, excludeId = null) => {
-    const msg = JSON.stringify(data);
+    const msg = guardFrame(JSON.stringify(data), data && data.type);
     const MAX_BUFFER = parseInt(process.env.MAX_BUFFER_TO_BROADCST) || 500_000; // 500KB limite
 
     wss.clients.forEach(ws => {
@@ -31,7 +63,7 @@ module.exports = {
     if (!ws) return;
     const MAX_BUFFER = parseInt(process.env.MAX_BUFFER) || 1_000_000; // 1MB default
     if (ws.readyState === ws.OPEN && ws.bufferedAmount < MAX_BUFFER) {
-      ws.send(JSON.stringify(data));
+      ws.send(guardFrame(JSON.stringify(data), data && data.type));
     }
   },
 
@@ -43,7 +75,7 @@ module.exports = {
     if (!ws) return;
     const MAX_BUFFER = parseInt(process.env.MAX_BUFFER) || 1_000_000;
     if (ws.readyState === ws.OPEN && ws.bufferedAmount < MAX_BUFFER) {
-      ws.send(str);
+      ws.send(guardFrame(str));
     }
   }
 };

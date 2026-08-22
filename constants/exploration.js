@@ -23,7 +23,7 @@ const EXPLORATION_REWARDS = [
   { type: 'ammo',     id: 'bala_cura',       qty: 10,  weight: 16 },
   { type: 'ammo',     id: 'bala_luz',        qty: 10,  weight: 10 },
   { type: 'ammo',     id: 'bala_sangue',     qty: 10,  weight: 6  },
-  { type: 'ammo',     id: 'bala_sangue',     qty: 500, weight: 1  }, // jackpot raro
+  { type: 'ammo',     id: 'bala_fogo',       qty: 500, weight: 1  }, // jackpot raro
   // Recursos
   { type: 'resource', id: 'ironPlates',      qty: 5,   weight: 12 },
   { type: 'resource', id: 'goldDust',        qty: 3,   weight: 8  },
@@ -35,9 +35,6 @@ const EXPLORATION_REWARDS = [
   { type: 'mapPiece', id: 'mapa_fortaleza',  qty: 1,   weight: 2  }, // Fortaleza do Esquecimento (40 peças, ~2%)
   { type: 'mapPiece', id: 'mapa_abismo',     qty: 1,   weight: 1  }, // Abismo dos Afundados  (50 peças, ~1%)
 ];
-
-// Alias de compatibilidade para código legado
-const FRAGMENT_EXPLORE_DROPS = EXPLORATION_REWARDS;
 
 // ── BONUS_MAPS — mapas bônus desbloqueáveis via fragmentos ────────────────────
 const BONUS_MAPS = [
@@ -79,6 +76,6 @@ const WORLD_BOSS_DEF = [
 module.exports = {
   FRAGMENT_DROP_NPC, FRAGMENT_DROP_BOSS,
   FRAGMENT_EXPLORE_COST, FRAGMENT_EXPLORE_FALLBACK_COST,
-  EXPLORATION_REWARDS, FRAGMENT_EXPLORE_DROPS,
+  EXPLORATION_REWARDS,
   BONUS_MAPS, WORLD_BOSS_DEF,
 };

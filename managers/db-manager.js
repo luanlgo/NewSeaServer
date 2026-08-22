@@ -107,11 +107,6 @@ class DBManager {
     });
   }
 
-  // Limpa pendências para um jogador específico
-  cleanupPlayer(playerName) {
-    this._clearPending(playerName);
-  }
-
   _clearPending(playerName) {
     const pending = this._pending.get(playerName);
     if (pending) {
@@ -159,7 +154,7 @@ class DBManager {
              map_xp=?, map_level=?,
              map_fragments=?,
              relics_inv=?, relics_equipped=?,
-             talents=?,
+             talents=?, talent_builds=?,
              ship_island_upgrades=?,
              cannon_upgrades_data=?,
              iron_plates=?, gold_dust=?, gunpowder=?,
@@ -178,6 +173,7 @@ class DBManager {
              pet_xp=?,
              pet_relics=?,
              pet_food=?,
+             run_stock=?,
              tutorial_state=?,
              afk_until=?,
              last_seen=NOW()
@@ -204,6 +200,7 @@ class DBManager {
           JSON.stringify(inventory.relics || []),
           JSON.stringify(player.relicDeck || []),
           JSON.stringify(player.talents || DEFAULT_TALENTS),
+          JSON.stringify(player.talentBuilds || []),
           JSON.stringify(player.shipIslandUpgrades || DEFAULT_ISLAND_UPGRADES),
           JSON.stringify(player.cannonUpgradesData || []),
           player.ironPlates          || 0,
@@ -226,6 +223,7 @@ class DBManager {
           JSON.stringify(player.petXp       || {}),
           JSON.stringify(player.petRelics   || {}),
           Number(player.inventory?.uva || 0),   // comida de pet (uva)
+          Number(player.inventory?.run || 0),   // RUN da tripulação de piratas
           player.tutorialState || 0,
           player.afkTraining ? (player.afkUntil || null) : null,
           player.name, // WHERE name=?
@@ -263,8 +261,107 @@ class DBManager {
     await this._addColumns();
     await this._ensureAuctionsTable();
     await this._ensureMailTable();
+    await this._ensureJournalTables();
 
     console.log('💾 MySQL ready');
+  }
+
+  // ── Diário do capitão + relatórios de batalha ──────────────────────────────
+  //
+  // `battle_reports` guarda o relatório inteiro como JSON de uma vez. Não é
+  // preguiça de modelar: o relatório é um DOCUMENTO IMUTÁVEL — a fotografia da
+  // batalha no instante em que ela aconteceu. Normalizar em colunas convidaria
+  // a "corrigir" um relatório antigo quando o balanceamento mudasse, e é
+  // exatamente isso que ele não pode sofrer. Ninguém consulta por dentro dele:
+  // a busca é por id, e as duas colunas de nome existem só para autorizar a
+  // leitura de quem lutou.
+  async _ensureJournalTables() {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS battle_reports (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        attacker_name VARCHAR(255) NOT NULL,
+        defender_name VARCHAR(255) NOT NULL,
+        created_at    BIGINT NOT NULL,
+        data          JSON NOT NULL,
+        INDEX idx_report_attacker (attacker_name, created_at),
+        INDEX idx_report_defender (defender_name, created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS journal (
+        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+        player_name VARCHAR(255) NOT NULL,
+        at          BIGINT NOT NULL,
+        kind        VARCHAR(40) NOT NULL,
+        data        JSON,
+        report_id   BIGINT NULL,
+        INDEX idx_journal_player (player_name, at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+  }
+
+  /** Uma entrada no Diário. Ver managers/journal-manager.js para os `kind`. */
+  async addJournal(playerName, at, kind, data, reportId = null) {
+    await pool.query(
+      'INSERT INTO journal (player_name, at, kind, data, report_id) VALUES (?,?,?,?,?)',
+      [playerName, at, kind, JSON.stringify(data || {}), reportId]
+    );
+  }
+
+  /**
+   * Página do Diário, mais recente primeiro.
+   * @param {number} before  timestamp de corte para paginar ("mais antigas que")
+   */
+  async getJournal(playerName, limit = 60, before = 0) {
+    const lim = Math.max(1, Math.min(200, limit | 0));
+    const params = [playerName];
+    let where = 'player_name = ?';
+    if (before > 0) { where += ' AND at < ?'; params.push(Number(before)); }
+    const [rows] = await pool.query(
+      `SELECT id, at, kind, data, report_id FROM journal
+       WHERE ${where} ORDER BY at DESC, id DESC LIMIT ${lim}`,
+      params
+    );
+    return rows.map(r => ({
+      id:       Number(r.id),
+      at:       Number(r.at),
+      kind:     r.kind,
+      data:     r.data || {},
+      reportId: r.report_id != null ? Number(r.report_id) : null,
+    }));
+  }
+
+  /** Grava o relatório e devolve o id gerado (é o que vai para o Diário). */
+  async saveBattleReport(report) {
+    const [res] = await pool.query(
+      'INSERT INTO battle_reports (attacker_name, defender_name, created_at, data) VALUES (?,?,?,?)',
+      [report.attackerName, report.defenderName, report.at || Date.now(), JSON.stringify(report)]
+    );
+    return Number(res.insertId);
+  }
+
+  /**
+   * Anexa o saque ao relatório. É a ÚNICA escrita permitida depois da criação,
+   * e acontece no mesmo minuto: o saque é o desfecho da batalha, não uma
+   * revisão dela.
+   */
+  async updateBattleReportLoot(reportId, looted) {
+    const [rows] = await pool.query('SELECT data FROM battle_reports WHERE id = ?', [reportId]);
+    if (!rows.length) return;
+    const data = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    data.resourcesLooted = looted;
+    await pool.query('UPDATE battle_reports SET data = ? WHERE id = ?', [JSON.stringify(data), reportId]);
+  }
+
+  /** Relatório por id. Só o atacante e o defendido daquela batalha leem. */
+  async getBattleReport(reportId, playerName) {
+    const [rows] = await pool.query(
+      `SELECT data FROM battle_reports
+       WHERE id = ? AND (attacker_name = ? OR defender_name = ?)`,
+      [reportId, playerName, playerName]
+    );
+    if (!rows.length) return null;
+    return typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
   }
 
   // ── Correio entre jogadores ────────────────────────────────────────────────
@@ -349,6 +446,15 @@ class DBManager {
     return Number(rows[0] && rows[0].c || 0);
   }
 
+  // ── Leilão de navios raros ────────────────────────────────────────────────
+  //
+  // Duas tabelas, e a segunda existe por um motivo só: o leilão VENCE sozinho,
+  // no relógio, sem ninguém online. Quando isso acontece há ouro para pagar ao
+  // vendedor e um navio para entregar ao vencedor — e os dois podem estar
+  // dormindo. `auction_deliveries` é a caixa onde esse pagamento espera. Sem
+  // ela, resolver um leilão exigiria carregar e gravar a linha de um jogador
+  // offline, que é justamente a corrida que estraga um save quando ele loga no
+  // meio da operação.
   async _ensureAuctionsTable() {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS auctions (
@@ -363,52 +469,89 @@ class DBManager {
         created_at  BIGINT NOT NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
+
+    // Quem está ganhando agora. Dava para deduzir do último item de `bids`,
+    // mas aí toda leitura passaria a depender da ordem do array — e um dia
+    // alguém ordena aquilo por valor e o leilão paga a pessoa errada.
+    const cols = [
+      "ALTER TABLE auctions ADD COLUMN top_bidder_id   VARCHAR(255) DEFAULT NULL",
+      "ALTER TABLE auctions ADD COLUMN top_bidder_name VARCHAR(255) DEFAULT NULL",
+    ];
+    for (const sql of cols) {
+      try {
+        await pool.query(sql);
+      } catch (err) {
+        if (err.errno !== 1060) console.error('[DB] auctions migration:', err.message);
+      }
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS auction_deliveries (
+        id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+        to_name    VARCHAR(255) NOT NULL,
+        reason     VARCHAR(32)  NOT NULL,
+        gold       INT          NOT NULL DEFAULT 0,
+        ship_data  JSON         NULL,
+        created_at BIGINT       NOT NULL,
+        INDEX idx_adeliv_to (to_name)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
   }
 
-  // Salva todos os leilões ativos (substitui todos de uma vez)
-  async saveAuctions(auctionsMap) {
+  // Grava UM leilão. Antes isto era um DELETE da tabela inteira seguido de
+  // reinserção de tudo: além de ser O(n) a cada lance, apagava o leilão que
+  // outro jogador tivesse criado entre a leitura e a escrita.
+  async upsertAuction(a) {
     try {
-      await pool.query('DELETE FROM auctions');
-      for (const [id, a] of auctionsMap) {
-        await pool.query(
-          `INSERT INTO auctions (id, ship_data, owner_id, owner_name, min_bid, top_bid, bids, ends_at, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)
-           ON DUPLICATE KEY UPDATE
-             ship_data = VALUES(ship_data),
-             top_bid   = VALUES(top_bid),
-             bids      = VALUES(bids)`,
-          [
-            id,
-            JSON.stringify(a.shipData),
-            a.ownerId,
-            a.ownerName,
-            a.minBid,
-            a.topBid,
-            JSON.stringify(a.bids || []),
-            a.endsAt,
-            a.createdAt || Date.now(),
-          ]
-        );
-      }
+      await pool.query(
+        `INSERT INTO auctions
+           (id, ship_data, owner_id, owner_name, min_bid, top_bid, bids,
+            top_bidder_id, top_bidder_name, ends_at, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+           top_bid         = VALUES(top_bid),
+           bids            = VALUES(bids),
+           top_bidder_id   = VALUES(top_bidder_id),
+           top_bidder_name = VALUES(top_bidder_name)`,
+        [
+          a.id,
+          JSON.stringify(a.shipData),
+          a.ownerId,
+          a.ownerName,
+          a.minBid,
+          a.topBid || 0,
+          JSON.stringify(a.bids || []),
+          a.topBidderId   || null,
+          a.topBidderName || null,
+          a.endsAt,
+          a.createdAt || Date.now(),
+        ]
+      );
     } catch (err) {
-      console.error('[DB] Error saving auctions:', err);
+      console.error('[DB] Error saving auction:', err);
     }
   }
 
-  // Carrega todos os leilões do DB (chamado no startup)
+  // Carrega TODOS os leilões, inclusive os já vencidos. O filtro `ends_at >
+  // now` que morava aqui perdia exatamente os leilões que venceram com o
+  // servidor fora do ar — e com eles o navio, que não está em lugar nenhum
+  // enquanto o leilão corre. Quem decide o que fazer com um leilão vencido é a
+  // varredura do AuctionManager, não a consulta.
   async loadAuctions() {
     try {
-      const [rows] = await pool.query('SELECT * FROM auctions WHERE ends_at > ?', [Date.now()]);
+      const [rows] = await pool.query('SELECT * FROM auctions');
       return rows.map(r => ({
-        id:        r.id,
-        shipData:  r.ship_data,
-        ownerId:   r.owner_id,
-        ownerName: r.owner_name,
-        minBid:    r.min_bid,
-        topBid:    r.top_bid,
-        bids:      r.bids || [],
-        endsAt:    Number(r.ends_at),
-        createdAt: Number(r.created_at),
+        id:            r.id,
+        shipData:      r.ship_data,
+        ownerId:       r.owner_id,
+        ownerName:     r.owner_name,
+        minBid:        Number(r.min_bid),
+        topBid:        Number(r.top_bid),
+        bids:          r.bids || [],
+        topBidderId:   r.top_bidder_id   || null,
+        topBidderName: r.top_bidder_name || null,
+        endsAt:        Number(r.ends_at),
+        createdAt:     Number(r.created_at),
       }));
     } catch (err) {
       console.error('[DB] Error loading auctions:', err);
@@ -421,6 +564,42 @@ class DBManager {
       await pool.query('DELETE FROM auctions WHERE id = ?', [auctionId]);
     } catch (err) {
       console.error('[DB] Error deleting auction:', err);
+    }
+  }
+
+  /** Enfileira ouro e/ou navio para um jogador que não está online. */
+  async addAuctionDelivery(toName, reason, gold, shipData) {
+    try {
+      await pool.query(
+        `INSERT INTO auction_deliveries (to_name, reason, gold, ship_data, created_at)
+         VALUES (?,?,?,?,?)`,
+        [toName, reason, gold | 0, shipData ? JSON.stringify(shipData) : null, Date.now()]
+      );
+    } catch (err) {
+      console.error('[DB] Error queueing auction delivery:', err);
+    }
+  }
+
+  /**
+   * Retira (lê e apaga) tudo que espera por um jogador. Apagar junto é de
+   * propósito: entregue duas vezes é pior que não entregue, e o chamador
+   * aplica no player em memória logo em seguida, dentro do mesmo login.
+   */
+  async takeAuctionDeliveries(toName) {
+    try {
+      const [rows] = await pool.query(
+        'SELECT * FROM auction_deliveries WHERE to_name = ? ORDER BY created_at ASC', [toName]);
+      if (rows.length === 0) return [];
+      await pool.query('DELETE FROM auction_deliveries WHERE to_name = ?', [toName]);
+      return rows.map(r => ({
+        reason:    r.reason,
+        gold:      Number(r.gold || 0),
+        shipData:  r.ship_data || null,
+        createdAt: Number(r.created_at),
+      }));
+    } catch (err) {
+      console.error('[DB] Error taking auction deliveries:', err);
+      return [];
     }
   }
 
@@ -444,6 +623,7 @@ class DBManager {
       "ALTER TABLE players ADD COLUMN relics_inv JSON",
       "ALTER TABLE players ADD COLUMN relics_equipped JSON",
       "ALTER TABLE players ADD COLUMN talents JSON",
+      "ALTER TABLE players ADD COLUMN talent_builds JSON",
       "ALTER TABLE players ADD COLUMN ship_island_upgrades JSON",
       "ALTER TABLE players ADD COLUMN cannon_upgrades_data JSON",
       "ALTER TABLE players ADD COLUMN iron_plates INT NOT NULL DEFAULT 0",
@@ -467,6 +647,10 @@ class DBManager {
       "ALTER TABLE players ADD COLUMN pet_xp        JSON",
       "ALTER TABLE players ADD COLUMN pet_relics    JSON",
       "ALTER TABLE players ADD COLUMN pet_food      FLOAT NOT NULL DEFAULT 0",
+      // ── RUN da tripulação de piratas ──────────────────────────────────────
+      // Mesma escolha da comida de pet: uma coluna FLOAT em vez de um saco de
+      // inventário genérico, porque o consumo é fracionário (garrafas/minuto).
+      "ALTER TABLE players ADD COLUMN run_stock     FLOAT NOT NULL DEFAULT 0",
       // ── Auth (token de dispositivo, TOFU) ─────────────────────────────────
       "ALTER TABLE players ADD COLUMN secret_hash   VARCHAR(64) DEFAULT NULL",
       // ── Tutorial (0=pendente, 1=relíquia concedida, 2=completo) ───────────
@@ -548,6 +732,7 @@ class DBManager {
       mapLevel: row.map_level || 1,
       mapFragments: row.map_fragments || 0,
       talents: row.talents || { ...DEFAULT_TALENTS },
+      talentBuilds: row.talent_builds || [],
       shipIslandUpgrades: row.ship_island_upgrades || { ...DEFAULT_ISLAND_UPGRADES },
       cannonUpgradesData: row.cannon_upgrades_data || [],
       ironPlates:          row.iron_plates          || 0,
@@ -571,6 +756,10 @@ class DBManager {
       petXp:        row.pet_xp       || {},
       petRelics:    row.pet_relics   || {},
       petFood:      Number(row.pet_food || 0),
+      // ── Piratas ─────────────────────────────────────────────────────────
+      // O alistamento e o embarque não precisam de coluna nova: são as mesmas
+      // `pirates` / `equipped_pirates` que os curandeiros já usavam.
+      runStock:     Number(row.run_stock || 0),
       tutorialState: row.tutorial_state || 0,
       // Treino AFK: `afkTraining` é derivado — se o prazo já passou o jogador
       // volta como não-treinando e o tick de expiração o devolve ao mapa.
@@ -714,7 +903,7 @@ class DBManager {
         equipped_sails=?, sails_inv=?,
         map_xp=?, map_level=?, map_fragments=?,
         relics_inv=?, relics_equipped=?,
-        talents=?, ship_island_upgrades=?, cannon_upgrades_data=?,
+        talents=?, talent_builds=?, ship_island_upgrades=?, cannon_upgrades_data=?,
         iron_plates=?, gold_dust=?, gunpowder=?,
         bonus_maps_unlocked=?, cannon_research_level=?, ship_material_level=?,
         map_pieces=?,
@@ -754,6 +943,7 @@ class DBManager {
           JSON.stringify(inventory.relics || []),
           JSON.stringify(p.relicDeck || []),
           JSON.stringify(p.talents || DEFAULT_TALENTS),
+          JSON.stringify(p.talentBuilds || []),
           JSON.stringify(p.shipIslandUpgrades || DEFAULT_ISLAND_UPGRADES),
           JSON.stringify(p.cannonUpgradesData || []),
           p.ironPlates          || 0,

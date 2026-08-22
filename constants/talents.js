@@ -41,12 +41,6 @@
 // angle = ângulo CENTRAL do setor em graus (0° = direita, cresce no sentido
 // horário na tela porque Y cresce para baixo). Ataque no topo, as outras duas
 // abrindo para baixo.
-const TREE_DEFS = {
-  ataque:  { name: 'Ataque',  icon: '⚔', color: '#E05858', angle: -90 },
-  defesa:  { name: 'Defesa',  icon: '🛡', color: '#5FB3D9', angle: 30  },
-  recurso: { name: 'Recurso', icon: '💰', color: '#D4AF37', angle: 150 },
-};
-
 const TREE_ORDER  = ['ataque', 'defesa', 'recurso'];
 const RING_COUNTS = [4, 5, 6, 7, 8, 10];
 const RING_GATE   = [0, 10, 25, 45, 70, 100];
@@ -124,8 +118,15 @@ const TREE_ATAQUE = [
     name: 'Sangue Frio',            desc: '+0,5% de dano crítico com a vida acima de 80%, por nível.' },
   { id: 'atk_ultimorecurso', icon: '🩸', stat: 'damage_low_hp_pct',   perLevel: 4,   unit: 'pct', wired: true,
     name: 'Último Recurso',         desc: '+4% de dano com a vida abaixo de 30%, por nível.' },
-  { id: 'atk_miralonga',     icon: '🔭', stat: 'cannon_range_pct',    perLevel: 2,   unit: 'pct', wired: true,
-    name: 'Miras Longas',           desc: '+2% de alcance dos canhões por nível.' },
+  // ── Rasga-Velame: o nó que era alcance ─────────────────────────────────
+  // Nasceu como "+2% de alcance de canhão por nível" e o alcance é exatamente o
+  // eixo que este jogo NÃO quer esticar: mais alcance não muda a briga, só
+  // afasta os dois barcos até o combate virar troca de tiros de longe.
+  //
+  // O `id` ficou: ele é o que está gravado no DB de quem já comprou o nó, e
+  // trocar a chave apagaria os níveis pagos. O que mudou foi o STAT.
+  { id: 'atk_miralonga',     icon: '⛓', stat: 'slow_on_hit_pct',     perLevel: 1,   unit: 'pct', wired: true,
+    name: 'Rasga-Velame',           desc: 'Cada acerto de canhão deixa o alvo 1% mais lento por nível, durante 2s.' },
   { id: 'atk_abordagem',     icon: '⚓', stat: 'damage_close_pct',    perLevel: 3,   unit: 'pct', wired: true,
     name: 'Abordagem',              desc: '+3% de dano a menos de 100 unidades do alvo, por nível.' },
   { id: 'atk_bombardeio',    icon: '☄', stat: 'damage_vs_cc_pct',    perLevel: 2.5, unit: 'pct', wired: true,
@@ -194,8 +195,13 @@ const TREE_DEFESA = [
     name: 'Ward Salgada',           desc: '+2% de redução de dano de relíquias por nível.' },
   { id: 'def_vontade',      icon: '🪢', stat: 'cc_resist_pct',        perLevel: 2.5, unit: 'redpct', wired: true,
     name: 'Vontade de Ferro',       desc: '−2,5% na duração de atordoamentos e lentidões, por nível.' },
-  { id: 'def_reparo',       icon: '🔧', stat: 'repair_out_combat_pct', perLevel: 1,  unit: 'pct', wired: true,
-    name: 'Reparos de Emergência',  desc: '+1% da vida máxima recuperada por segundo fora de combate, por nível.' },
+  // 0,1% por nível (era 1%): a 1% o nó cheio devolvia 10% da vida máxima POR
+  // SEGUNDO — dez segundos de calmaria enchiam qualquer casco, e nada no jogo
+  // que dá dano fora de combate conseguia competir com isso. Em 0,1% o talento
+  // cheio vale 1%/s, que é o que a fantasia promete: o barco se conserta
+  // sozinho entre uma briga e outra, não durante.
+  { id: 'def_reparo',       icon: '🔧', stat: 'repair_out_combat_pct', perLevel: 0.1, unit: 'pct', wired: true,
+    name: 'Reparos de Emergência',  desc: '+0,1% da vida máxima recuperada por segundo fora de combate, por nível.' },
   { id: 'def_bombeamento',  icon: '🪣', stat: 'hp_regen_low_pct',     perLevel: 0.3, unit: 'pct', wired: true,
     name: 'Bombas de Porão',        desc: '+0,3% da vida máxima por segundo enquanto abaixo de 40%, por nível.' },
   { id: 'def_escorregadio', icon: '🧊', stat: 'slow_resist_pct',      perLevel: 3,   unit: 'redpct', wired: true,
@@ -238,12 +244,29 @@ const TREE_DEFESA = [
   // ── anel 5 ──
   { id: 'def_fortaleza',      icon: '🏰', stat: 'damage_reduction_pct_2', perLevel: 1, unit: 'pct', wired: true,
     name: 'Fortaleza Flutuante',    desc: '+1% de redução de dano por nível.' },
-  { id: 'def_absorcao',       icon: '🕳', stat: 'damage_to_mana_pct', perLevel: 1,   unit: 'pct', wired: true,
-    name: 'Absorção',               desc: '1% do dano recebido vira mana, por nível.' },
+  // ── Absorção: mana PLANA por golpe, não fração do dano ────────────────────
+  // "1% do dano recebido vira mana" foi escrito quando dano e mana moravam na
+  // mesma ordem de grandeza. Hoje um golpe tira dezenas de milhares e a barra
+  // inteira tem ~20 pontos: 1% de um golpe de 50k são 500 de mana num copo de
+  // 20, ou seja, QUALQUER acerto enchia a barra e o número do talento nunca
+  // significou nada. Agora a promessa é na moeda certa — meio ponto de mana por
+  // nível, a cada golpe levado, 5 no talento cheio.
+  { id: 'def_absorcao',       icon: '🕳', stat: 'mana_on_hit_flat',   perLevel: 0.5, unit: 'flat', wired: true,
+    name: 'Absorção',               desc: '+0,5 de mana a cada golpe recebido, por nível.' },
   { id: 'def_sanguessuga',    icon: '🩸', stat: 'lifesteal_pct',      perLevel: 0.5, unit: 'pct', wired: true,
     name: 'Sanguessuga',            desc: 'Recupera 0,5% do dano causado como vida, por nível.' },
-  { id: 'def_carapaca',       icon: '🐚', stat: 'flat_reduction',     perLevel: 2,   unit: 'flat', wired: true,
-    name: 'Carapaça de Kraken',     desc: '−2 de dano por acerto recebido, por nível.' },
+  // ── Carapaça de Kraken: o corte plano agora É do casco ─────────────────────
+  // −2 de dano por nível envelheceu junto com o jogo: num mapa onde um acerto
+  // tira 50k, os −20 do talento cheio somem no arredondamento. O número fixo
+  // também nunca serviu às duas pontas ao mesmo tempo — −20 é muito num barco
+  // de 200 de vida e é nada num de 70k.
+  //
+  // Amarrando o corte à vida MÁXIMA de quem apanha, ele acompanha o mapa
+  // sozinho e continua sendo o que o talento sempre foi: a defesa contra
+  // chuvisco. Contra um golpe de 50k, 1% de um casco de 70k é só um arranhão;
+  // contra uma salva de dez bolas pequenas, corta dez vezes.
+  { id: 'def_carapaca',       icon: '🐚', stat: 'flat_reduction_pct', perLevel: 0.1, unit: 'redpct', wired: true,
+    name: 'Carapaça de Kraken',     desc: '−0,1% da SUA vida máxima de dano por acerto recebido, por nível.' },
   { id: 'def_maresia',        icon: '🌫', stat: 'dot_reduction_pct',  perLevel: 3,   unit: 'pct',
     name: 'Maresia Purificadora',   desc: '+3% de redução de dano contínuo (veneno, fogo) por nível.' },
   { id: 'def_sentinela',      icon: '🔔', stat: 'reduction_after_hit_pct', perLevel: 1, unit: 'pct', wired: true,
@@ -277,24 +300,30 @@ const TREE_RECURSO = [
     name: 'Fluxo de Mana',          desc: '+8% na velocidade de recuperação de mana por nível.' },
   { id: 'res_reservatorio', icon: '🫙', stat: 'max_mana_flat',        perLevel: 1,   unit: 'flat', wired: true,
     name: 'Reservatório Arcano',    desc: '+1 de mana máxima por nível.' },
-  { id: 'res_saqueador',    icon: '🪦', stat: 'wreck_loot_pct',       perLevel: 5,   unit: 'pct',
+  // Existia desde sempre com o efeito "por aplicar" — agora tem para onde
+  // apontar: é o talento de quem vive de saquear espólio de abordagem.
+  { id: 'res_saqueador',    icon: '🪦', stat: 'wreck_loot_pct',       perLevel: 5,   unit: 'pct', wired: true,
     name: 'Saqueador de Naufrágios', desc: '+5% do espólio saqueado de destroços, por nível.' },
   { id: 'res_negociante',   icon: '🤝', stat: 'shop_discount_pct',    perLevel: 1,   unit: 'redpct',
     name: 'Negociante',             desc: '−1% no preço das lojas por nível.' },
   { id: 'res_impulso',      icon: '🌬', stat: 'accel_pct',            perLevel: 3,   unit: 'pct', wired: true,
     name: 'Impulso',                desc: '+3% de aceleração por nível.' },
 
-  // ── anel 2 ──
+  // ── anel 2 ── a tripulação de abordagem
+  // Saíram daqui quatro talentos de ofício (pólvora, ferro, fragmentos de mapa,
+  // munição): prometiam percentual sobre drops que o jogo nunca teve, e não
+  // havia sistema no horizonte para ligá-los. No lugar entra a tripulação de
+  // piratas, que é onde a árvore de Recurso passa a decidir uma briga.
   { id: 'res_pescador',   icon: '🎣', stat: 'fishing_yield_pct',      perLevel: 5,   unit: 'pct',
     name: 'Pescador Experiente',    desc: '+5% no resultado da pesca por nível.' },
-  { id: 'res_polvora',    icon: '🧨', stat: 'gunpowder_drop_pct',     perLevel: 5,   unit: 'pct',
-    name: 'Fabricante de Pólvora',  desc: '+5% de pólvora obtida por nível.' },
-  { id: 'res_ferreiro',   icon: '⚒', stat: 'iron_drop_pct',          perLevel: 5,   unit: 'pct',
-    name: 'Ferreiro',               desc: '+5% de placas de ferro obtidas por nível.' },
-  { id: 'res_cartografo', icon: '🗺', stat: 'map_fragment_pct',       perLevel: 4,   unit: 'pct',
-    name: 'Cartógrafo',             desc: '+4% de fragmentos de mapa obtidos por nível.' },
-  { id: 'res_alquimista', icon: '⚗', stat: 'ammo_drop_pct',          perLevel: 4,   unit: 'pct',
-    name: 'Alquimista',             desc: '+4% de munição obtida como espólio, por nível.' },
+  { id: 'res_alistamento', icon: '👥', stat: 'pirate_capacity_flat',  perLevel: 1,   unit: 'flat', wired: true,
+    name: 'Alistamento',            desc: '+1 de capacidade de porão para piratas, por nível.' },
+  { id: 'res_abordagem',   icon: '⚔', stat: 'pirate_power_pct',      perLevel: 2,   unit: 'pct', wired: true,
+    name: 'Mestre de Abordagem',    desc: '+2% de força dos seus piratas ao abordar um espólio, por nível.' },
+  { id: 'res_disciplina',  icon: '🎖', stat: 'pirate_casualty_pct',   perLevel: 1.5, unit: 'redpct', wired: true,
+    name: 'Disciplina de Convés',   desc: '−1,5% de baixas entre os seus piratas na abordagem, por nível.' },
+  { id: 'res_destilaria',  icon: '🍾', stat: 'run_upkeep_pct',        perLevel: 2,   unit: 'redpct', wired: true,
+    name: 'Destilaria de Bordo',    desc: '−2% no consumo de RUN da tripulação, por nível.' },
   { id: 'res_correnteza', icon: '🌊', stat: 'speed_out_combat_pct',   perLevel: 0.5, unit: 'pct', wired: true,
     name: 'Correnteza Favorável',   desc: '+0,5% de velocidade fora de combate, por nível.' },
 
@@ -315,16 +344,19 @@ const TREE_RECURSO = [
     name: 'Passagem Rápida',        desc: '−4% no tempo de recarga das passagens antigas, por nível.' },
 
   // ── anel 4 ──
-  { id: 'res_juros',        icon: '🏦', stat: 'bank_interest_pct',    perLevel: 0.5, unit: 'pct',
-    name: 'Juros do Banco',         desc: '+0,5% de juros diários no banco, por nível.' },
+  // Saíram os Juros do Banco (o banco nunca pagou juros) e a Rota Comercial
+  // (não há venda de itens a quem cobrar lucro). Entram os dois lados da moeda
+  // do espólio: defender o próprio naufrágio e contratar mais barato.
+  { id: 'res_muralha',      icon: '🏰', stat: 'pirate_defense_pct',   perLevel: 2.5, unit: 'pct', wired: true,
+    name: 'Muralha de Convés',      desc: '+2,5% de defesa dos seus piratas quando o seu espólio é abordado, por nível.' },
   { id: 'res_espolio',      icon: '👥', stat: 'party_loot_pct',       perLevel: 2,   unit: 'pct',
     name: 'Espólio Partilhado',     desc: '+2% no espólio recebido quando em grupo, por nível.' },
   { id: 'res_sorte',        icon: '🍀', stat: 'rare_drop_pct',        perLevel: 2,   unit: 'pct',
     name: 'Sorte de Marujo',        desc: '+2% de chance de drop raro por nível.' },
   { id: 'res_concentracao', icon: '🧘', stat: 'mana_out_combat_pct',  perLevel: 10,  unit: 'pct', wired: true,
     name: 'Concentração',           desc: '+10% de recuperação de mana fora de combate, por nível.' },
-  { id: 'res_rota',         icon: '📬', stat: 'trade_profit_pct',     perLevel: 2,   unit: 'pct',
-    name: 'Rota Comercial',         desc: '+2% de lucro ao vender itens, por nível.' },
+  { id: 'res_recrutador',   icon: '📝', stat: 'pirate_price_pct',     perLevel: 1.5, unit: 'redpct', wired: true,
+    name: 'Recrutador',             desc: '−1,5% no preço de contratar piratas, por nível.' },
   { id: 'res_sabedoria',    icon: '🗿', stat: 'xp_boss_pct',          perLevel: 5,   unit: 'pct', wired: true,
     name: 'Sabedoria Antiga',       desc: '+5% de XP obtido de chefes, por nível.' },
   { id: 'res_nevoa',        icon: '🌁', stat: 'fog_vision_pct',       perLevel: 5,   unit: 'pct',
@@ -345,10 +377,14 @@ const TREE_RECURSO = [
     name: 'Ritual Acelerado',       desc: '−1,5% no tempo de recarga das relíquias por nível.' },
   { id: 'res_porao',          icon: '📦', stat: 'inventory_slots',    perLevel: 2,   unit: 'flat',
     name: 'Porão Ampliado',         desc: '+2 espaços de porão por nível.' },
-  { id: 'res_navegacao',      icon: '🧭', stat: 'map_travel_pct',     perLevel: 3,   unit: 'pct',
-    name: 'Navegação Precisa',      desc: '+3% de velocidade ao cruzar bordas de mapa, por nível.' },
-  { id: 'res_cavalgar',       icon: '🏄', stat: 'wave_speed_pct',     perLevel: 0.5, unit: 'pct',
-    name: 'Cavalgar as Ondas',      desc: '+0,5% de velocidade navegando a favor da corrente, por nível.' },
+  // Saíram a Navegação Precisa e o Cavalgar as Ondas: a travessia de borda é
+  // instantânea e não existe corrente a favor — os dois prometiam velocidade em
+  // situações que o jogo não simula. No lugar, os dois nós que fecham a linha
+  // de piratas: porão grande e o comando que soma força e saque de uma vez.
+  { id: 'res_capitania',      icon: '🧿', stat: 'pirate_capacity_pct', perLevel: 3,  unit: 'pct', wired: true,
+    name: 'Capitania',              desc: '+3% de capacidade de porão para piratas, por nível.' },
+  { id: 'res_almirante',      icon: '🎩', stat: 'pirate_command_pct',  perLevel: 2,  unit: 'pct', wired: true,
+    name: 'Almirante',              desc: '+2% de força de abordagem e +2% de saque de espólio, por nível.' },
   { id: 'res_esquadra',       icon: '⛴', stat: 'party_speed_pct',    perLevel: 0.5, unit: 'pct', wired: true,
     name: 'Vento de Esquadra',      desc: '+0,5% de velocidade para todo o grupo por perto, por nível.' },
   { id: 'res_tesouroabissal', icon: '🏆', stat: 'abyssal_treasure_pct', perLevel: 2, unit: 'pct', wired: true,
@@ -451,7 +487,7 @@ const TALENT_XP_GROWTH = 1.1;
 const TALENT_XP_CAP    = Number.MAX_SAFE_INTEGER;   // 9.007.199.254.740.991
 
 module.exports = {
-  TREE_DEFS, TREE_ORDER, TALENT_TREES, TALENT_DEFS,
+  TREE_ORDER, TALENT_TREES, TALENT_DEFS,
   RING_COUNTS, RING_GATE, TALENT_MAX, TREE_SIZE,
   LEGACY_TALENT_MAP,
   TALENT_COST_TIERS, TALENT_XP_BASE, TALENT_XP_GROWTH, TALENT_XP_CAP,

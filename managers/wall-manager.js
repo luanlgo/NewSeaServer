@@ -21,13 +21,6 @@ class WallManager {
     this.wallsByMap.set(mapLevel, list);
   }
 
-  /** Remove um muro antes do tempo (ex.: caster desconectou no meio da duração). */
-  removeWall(mapLevel, id) {
-    const list = this.wallsByMap.get(mapLevel);
-    if (!list) return;
-    this.wallsByMap.set(mapLevel, list.filter(w => w.id !== id));
-  }
-
   /**
    * Muros ativos no mapa — filtra expirados nesta própria chamada, sem
    * timer de limpeza separado (mesmo padrão de `slowExpires`/`stunExpires`

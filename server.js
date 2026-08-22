@@ -42,6 +42,7 @@ const _resetAttempts    = new Map();     // email → tentativas erradas de cód
 
 const { sendTo, sendRaw } = require('./utils/helpers');
 const stateBuilder = require('./utils/state-builder');
+const { isInvincible } = require('./utils/invincibility');
 // Tradução dos 120 talentos em multiplicadores — ver utils/talent-effects.js.
 const fx = require('./utils/talent-effects');
 
@@ -57,6 +58,7 @@ const WorldBossManager  = require('./managers/world-boss-manager');
 const ProjectileManager = require('./managers/projectile-manager');
 const AttackManager     = require('./managers/attack-manager');
 const PartyManager      = require('./managers/party-manager');
+const { partyRewardMult } = require('./managers/party-manager');
 const PetManager        = require('./managers/pet-manager');
 const WallManager       = require('./managers/wall-manager');
 const MonsterSkillManager = require('./managers/monster-skill-manager');
@@ -156,6 +158,7 @@ const {
   SHIP_DEFS,
   maxHealersFor,
   PIRATE_DEFS,
+  SHOP,
   FRAGMENT_EXPLORE_COST,
   FRAGMENT_EXPLORE_FALLBACK_COST,
   EXPLORATION_REWARDS,
@@ -186,18 +189,19 @@ const {
 } = require('./constants');
 const {
   calcXpRequired:       _calcXpRequired,
-  getCostTier:          _getCostTier,
   applyTalentBonuses:   _applyTalentBonuses,
   recalcMaxHp:          _recalcMaxHp,
-  sumTalentStat:        _sumTalentStat,
   countTreeSpent:       _countTreeSpent,
   migrateLegacyTalents: _migrateLegacyTalents,
-  validateBuyTalent:    _validateBuyTalent,
+  refundRemovedTalents: _refundRemovedTalents,
   validateRefundTalent: _validateRefundTalent,
+  validateBuild:        _validateBuild,
+  applyBuild:           _applyBuild,
+  snapshotBuild:        _snapshotBuild,
 } = require('./utils/talent-logic');
+const fxTal = require('./utils/talent-effects');
 const { calcMaxCannons: _calcMaxCannons, trimCannons: _trimCannons } = require('./utils/combat-calc');
 const worldState = require('./utils/world-state');
-const { stringify } = require('querystring');
 const { BONUS_DUNGEON_DEFS, BONUS_NPC_DEFS, rollBonusShip } = require('./constants/bonus_dungeons');
 
 // helper to compute map size per-level (default fallback)
@@ -424,6 +428,9 @@ const monsterSkillManager = new MonsterSkillManager({});
 // 1. ProjectileManager first (no npcs yet — injected after)
 const projectileManager = new ProjectileManager(wss, players, null, null, null, MAP_DEFS);
 projectileManager.partyManager = partyManager;
+// Livro-caixa: o abate de NPC é a maior fonte de ouro e XP do jogo, e entra no
+// Diário AGREGADO (ver accrue no journal-manager) — uma linha por minuto, não
+// uma por abate. A injeção acontece mais abaixo, junto do journalManager.
 
 // 2. AttackManager — gerencia ataques especiais de NPC (telegraph + AoE)
 const attackManager = new AttackManager(addEvent, projectileManager);
@@ -433,12 +440,36 @@ const attackManager = new AttackManager(addEvent, projectileManager);
 attackManager.wallManager = wallManager;
 
 // 2b. WreckManager — ruínas saqueáveis da Zona Vermelha (mapa 11).
-// Injetado em projectileManager/attackManager para o hook onPlayerDeath em
-// todos os caminhos de morte (projétil, ataque AoE, aura, DoT).
+// Não é mais injetado nos managers: quem chama o onPlayerDeath dele agora é o
+// resolvePlayerDeath, por onde passa TODA morte de jogador.
 const { WreckManager } = require('./managers/wreck-manager');
 const wreckManager = new WreckManager(sendTo, addEvent);
-projectileManager.wreckManager = wreckManager;
-attackManager.wreckManager     = wreckManager;
+
+// 2b-bis. Piratas, Diário e Espólio.
+//
+// A ordem importa: o SpoilManager depende dos outros dois — ele enterra piratas
+// pelo PirateManager e escreve no Diário pelo JournalManager.
+const JournalManager = require('./managers/journal-manager');
+const PirateManager  = require('./managers/pirate-manager');
+const SpoilManager   = require('./managers/spoil-manager');
+const AuctionManager = require('./managers/auction-manager');
+const JOURNAL_KINDS  = JournalManager.KINDS;
+const JOURNAL_SRC    = JournalManager.SRC;
+const journalManager = new JournalManager(db);
+const pirateManager  = new PirateManager(players, db);
+const spoilManager   = new SpoilManager(sendTo, addEvent, players, db, journalManager, pirateManager);
+// A casa de leilões só fica utilizável depois do `init()` lá embaixo, que
+// depende do banco — até lá a vitrine responde vazia, e é por isso que ele é
+// aguardado antes do log de "DB pronto".
+const auctionManager = new AuctionManager(sendTo, players, db, journalManager, JOURNAL_SRC);
+projectileManager.journal = journalManager;
+attackManager.journal     = journalManager;
+wreckManager.journal      = journalManager;
+
+// 2c. Morte de jogador — um caminho só (ver resolvePlayerDeath). Quem causa o
+// dano não precisa saber o que uma morte desencadeia, só avisar que aconteceu.
+projectileManager.onPlayerKilled = resolvePlayerDeath;
+attackManager.onPlayerKilled     = resolvePlayerDeath;
 
 // 3. NPC managers (need projectileManager + attackManager for broadcasting)
 let   npcManager  = new NPCManager(projectileManager, MAP_DEFS, 1, attackManager); // map 1 NPCs (let — pode ser recriado)
@@ -460,6 +491,7 @@ monsterSkillManager.ctx = {
   grantSkillXp:     (p, skill, amt) => grantSkillXp(p, skill, amt, wss),
   getMapManagerFor: (lvl) => (lvl === 1 ? npcManager : lvl === 2 ? npcManager2 : getMapManager(lvl)),
   onNpcDamaged:     (killer, npc) => _monsterSkillNpcKill(killer, npc),
+  onPlayerKilled:   (victim, killerId) => resolvePlayerDeath(victim, killerId),
   clampToMap:       (ent) => {
     // Mesma proteção do arrasto do Arpão: nunca empurrar/puxar pra fora do
     // mapa nem pra dentro de ilha/muro.
@@ -508,6 +540,141 @@ function _monsterSkillNpcKill(killer, npc) {
     mapLevel: killer.mapLevel || 1, mapXpNeeded: mapDef.xpToAdvance || 99999,
     mapFragments: killer.mapFragments || 0,
   });
+}
+
+/**
+ * Morte de um JOGADOR — venha o golpe de onde vier (projétil, aura, DoT,
+ * relíquia de área, skill do bestiário). Contraparte de `_monsterSkillNpcKill`,
+ * que já fazia o mesmo pelo lado do NPC.
+ *
+ * Antes só o caminho do PROJÉTIL resolvia a morte por completo. Os outros ou
+ * faziam metade (aura/DoT: ruína + tela de morte, sem crédito de PvP nenhum) ou
+ * não faziam nada (raio, foguete, meteoro, arpão, skills do bestiário: o alvo
+ * ficava com 0 de vida e continuava navegando). Consequência prática: matar o
+ * alvo do contrato de Procurado com relíquia não pagava a recompensa, não
+ * limpava o `wantedTarget` — e o limite diário já tinha sido gasto.
+ *
+ * Idempotente: só o primeiro golpe a zerar o HP resolve a morte. O marcador é o
+ * `_deathResolved`, e NÃO o `dead` — o caminho do projétil marca `dead` já no
+ * `hit()`, para os outros projéteis do mesmo tiro pularem o alvo, e só resolve a
+ * morte no fim do tick (`_flushHitBatch`).
+ *
+ * @param {object} victim    jogador que levou o golpe (só age se hp <= 0)
+ * @param {number|string|null} killerId  autor do golpe — id de jogador OU de NPC
+ *                                       (uid() é um contador só, não colide)
+ * @returns {boolean} true se foi esta chamada que matou
+ */
+function resolvePlayerDeath(victim, killerId = null) {
+  if (!victim || victim.isNPC) return false;
+  if (victim.hp > 0 || victim._deathResolved) return false;
+  victim._deathResolved = true;
+  victim.dead        = true;
+  victim.isPeaceful  = false;   // sai do modo pesca ao morrer
+
+  // Zona vermelha: perde 10% do ouro no local. Em zona de espólio esse ouro vai
+  // para o destroço de 1h (que exige vencer uma abordagem para saquear); nas
+  // demais, para a ruína de 10s de sempre. A porcentagem é a mesma nos dois —
+  // quem a calcula continua sendo o wreck-manager.
+  wreckManager.onPlayerDeath(victim, (v, loss) => spoilManager.onPlayerDeath(v, loss));
+  // Tela de morte. urgent=true porque esperar o flush do buffer (~48 ms) para
+  // avisar quem acabou de afundar é exatamente o tipo de atraso que o jogador lê
+  // como travamento.
+  addEvent({
+    type: 'entity_dead', id: victim.id, name: victim.name, isNPC: false,
+    killerId: killerId === null || killerId === undefined ? undefined : killerId,
+  }, victim.mapLevel || 1, true);
+
+  // Morte por NPC/ambiente não credita nada
+  const killer = (killerId === null || killerId === undefined) ? null : players.get(killerId);
+  if (!killer || killer.id === victim.id) return true;
+  _creditPvpKill(killer, victim);
+  return true;
+}
+
+/** Tudo que um abate de JOGADOR rende a quem matou. Só chamado por resolvePlayerDeath. */
+function _creditPvpKill(killer, victim) {
+  killer.pvpKills = (killer.pvpKills || 0) + 1;
+
+  // ── Espólio: 5% do XP e das kills da vítima mudam de dono ──────────────────
+  const xpTransfer    = Math.floor((victim.mapXp    || 0) * 0.05);
+  const killsTransfer = Math.floor((victim.npcKills || 0) * 0.05);
+  if (xpTransfer > 0) {
+    killer.mapXp = (killer.mapXp || 0) + xpTransfer;
+    victim.mapXp = Math.max(0, (victim.mapXp || 0) - xpTransfer);
+    // Os dois lados do mesmo XP: quem ganhou e quem perdeu veem a linha.
+    journalManager.ledger(killer, JOURNAL_SRC.PVP_KILL,  { xp:  xpTransfer }, { target: victim.name });
+    journalManager.ledger(victim, JOURNAL_SRC.PVP_DEATH, { xp: -xpTransfer }, { target: killer.name });
+  }
+  if (killsTransfer > 0) {
+    killer.npcKills = (killer.npcKills || 0) + killsTransfer;
+    victim.npcKills = Math.max(0, (victim.npcKills || 0) - killsTransfer);
+    // O Tier anda junto com os abates — inclusive os que mudam de dono aqui.
+    journalManager.checkTier(killer);
+    journalManager.checkTier(victim);
+  }
+
+  // ── Contrato de Procurado ─────────────────────────────────────────────────
+  // Antes do currency_update lá embaixo: assim o saldo que vai para o cliente já
+  // inclui o prêmio, em vez de mandar o valor de antes e corrigir depois.
+  if (killer.wantedTarget && killer.wantedTarget.targetId === victim.id) {
+    const wReward = killer.wantedTarget;
+    killer.gold    = (killer.gold    || 0) + wReward.rewardGold;
+    killer.dobroes = (killer.dobroes || 0) + wReward.rewardDobrao;
+    killer.wantedTarget = null;
+    sendTo(killer.ws, {
+      type:         'wanted_killed',
+      killedName:   wReward.targetName,
+      rewardGold:   wReward.rewardGold,
+      rewardDobrao: wReward.rewardDobrao,
+      gold:         killer.gold,
+      dobroes:      killer.dobroes,
+    });
+    journalManager.ledger(killer, JOURNAL_SRC.WANTED, {
+      gold:    wReward.rewardGold,
+      dobroes: wReward.rewardDobrao,
+    }, { target: wReward.targetName });
+    journalManager.log(killer, JOURNAL_KINDS.REWARD, {
+      source:  'procurado',
+      gold:    wReward.rewardGold,
+      dobroes: wReward.rewardDobrao,
+      target:  wReward.targetName,
+    });
+  }
+
+  // ── Missões diárias ───────────────────────────────────────────────────────
+  progressDailyMission(killer, 'pvpKills',  1);
+  progressDailyMission(killer, 'shipsSunk', 1);
+  if (SHIP_DEFS[victim.activeShip]?.isElite) {
+    progressDailyMission(killer, 'eliteKills', 1);
+  }
+
+  // ── Carteira dos dois lados (a vítima também perdeu ouro para a ruína) ─────
+  const killerMapDef = MAP_DEFS[killer.mapLevel || 1] || {};
+  sendTo(killer.ws, {
+    type:         'currency_update',
+    gold:         killer.gold,
+    dobroes:      killer.dobroes,
+    npcKills:     killer.npcKills,
+    pvpKills:     killer.pvpKills,
+    mapXp:        killer.mapXp,
+    mapLevel:     killer.mapLevel || 1,
+    mapXpNeeded:  killerMapDef.xpToAdvance || 99999,
+    mapFragments: killer.mapFragments || 0,
+    reward: { type: 'pvp_loot', xp: xpTransfer, kills: killsTransfer },
+  });
+  const victimMapDef = MAP_DEFS[victim.mapLevel || 1] || {};
+  sendTo(victim.ws, {
+    type:         'currency_update',
+    gold:         victim.gold,
+    dobroes:      victim.dobroes,
+    npcKills:     victim.npcKills,
+    mapXp:        victim.mapXp,
+    mapLevel:     victim.mapLevel || 1,
+    mapXpNeeded:  victimMapDef.xpToAdvance || 99999,
+    mapFragments: victim.mapFragments || 0,
+  });
+  db.save(killer).catch(e => console.error('Save error:', e));
+  db.save(victim).catch(e => console.error('Save error:', e));
 }
 
 // Maps 3+ são criados sob demanda via regularManagers (elimina npcManager3/4/6 hardcoded)
@@ -608,6 +775,8 @@ let   bossManager2 = new BossManager(wss, players, null, 2); // let — pode ser
 let   bossManager3 = null;
 bossManager.partyManager  = partyManager;
 bossManager2.partyManager = partyManager;
+bossManager.journal       = journalManager;
+bossManager2.journal      = journalManager;
 
 // 5. Wire everything into projectileManager
 projectileManager.npcs          = allNpcs;
@@ -628,11 +797,14 @@ bossManager2.npcs = npcManager2.npcs;
 // 6. World Boss Manager — tracks total zone-boss kills and spawns the World Boss
 const worldBossManager = new WorldBossManager(wss, players, [npcManager, npcManager2]);
 projectileManager.worldBossManager = worldBossManager;
+worldBossManager.journal           = journalManager;
 
 // 6b. Frota de Caçadores — evento periódico: 1–3 navios colossais caçam os
 // jogadores de um mapa (managers/fleet-event-manager.js). getMapManager e
 // addEvent são declarações hoisted — a referência aqui é válida.
 const fleetEventManager = new FleetEventManager(wss, players, MAP_DEFS, getMapManager, addEvent);
+// Diário: o bounty da frota vira uma linha no histórico do caçador.
+fleetEventManager.journal = journalManager;
 
 // ── Callbacks de Missões Diárias ─────────────────────────────────────────────
 // Nomes dos monstros do recife (um por mapa 1-3)
@@ -649,6 +821,7 @@ function maybeGrantTutorialRelic(killer) {
   // +1500 de ouro de bônus — cobre o canhão c4 (1000) + Curandeiro (100) que os
   // passos seguintes do tutorial mandam comprar, com folga para munição.
   killer.gold = (killer.gold || 0) + 1500;
+  journalManager.ledger(killer, JOURNAL_SRC.TUTORIAL, { gold: 1500 });
   const instanceId = `rl_tut_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
   if (!killer.inventory.relics) killer.inventory.relics = [];
   killer.inventory.relics.push({ instanceId, relicId: 'r14' });
@@ -708,45 +881,9 @@ function _setupMissionCallbacks(pmgr, bmgr, bmgr2) {
     }
   };
 
-  // ── Jogador morto em PvP ───────────────────────────────────────────────────
-  pmgr._onPvpKill = (killer, deadPlayer) => {
-    progressDailyMission(killer, 'pvpKills', 1);
-    progressDailyMission(killer, 'shipsSunk', 1);
-    // eliteKills: matar jogador em navio elite
-    if (deadPlayer && SHIP_DEFS[deadPlayer.activeShip]?.isElite) {
-      progressDailyMission(killer, 'eliteKills', 1);
-    }
-  };
-
-  pmgr._onPvpLoot = (killer, victim, xpGained, killsGained) => {
-    // Notify killer of the loot
-    const killerMapDef = MAP_DEFS[killer.mapLevel || 1] || {};
-    sendTo(killer.ws, {
-      type:       'currency_update',
-      gold:        killer.gold,
-      dobroes:     killer.dobroes,
-      npcKills:    killer.npcKills,
-      mapXp:       killer.mapXp,
-      mapLevel:    killer.mapLevel || 1,
-      mapXpNeeded: killerMapDef.xpToAdvance || 99999,
-      mapFragments: killer.mapFragments || 0,
-      reward: { type: 'pvp_loot', xp: xpGained, kills: killsGained },
-    });
-    // Notify victim of the loss
-    const victimMapDef = MAP_DEFS[victim.mapLevel || 1] || {};
-    sendTo(victim.ws, {
-      type:       'currency_update',
-      gold:        victim.gold,
-      dobroes:     victim.dobroes,
-      npcKills:    victim.npcKills,
-      mapXp:       victim.mapXp,
-      mapLevel:    victim.mapLevel || 1,
-      mapXpNeeded: victimMapDef.xpToAdvance || 99999,
-      mapFragments: victim.mapFragments || 0,
-    });
-    db.save(killer).catch(e => console.error('Save error:', e));
-    db.save(victim).catch(e => console.error('Save error:', e));
-  };
+  // Abate de jogador (missões pvpKills/shipsSunk/eliteKills, espólio de 5% e
+  // contrato de Procurado) mora em `_creditPvpKill`, chamado por
+  // `resolvePlayerDeath` — o único lugar onde um jogador morre.
 
   // ── Jogador recebe dano ────────────────────────────────────────────────────
   pmgr._onPlayerDamaged = (player, dmg) => {
@@ -782,6 +919,10 @@ function _recalcSails(player) {
 }
 
 // Recalc cannon stats from equipped list (applies per-cannon C6 upgrades)
+//
+// Sem multiplicador de alcance por talento: o nó que fazia isso (atk_miralonga)
+// virou o Rasga-Velame, que aplica lentidão no acerto. Alcance é o eixo que
+// este jogo não quer esticar — mais alcance só afasta os dois barcos.
 function recalcCannons(player) {
   if (!player.cannons.length) {
     player.cannonRange       = 80;
@@ -887,11 +1028,6 @@ const NIGHT_END_HOUR    = 5.0;    // amanhecer: fim garantido do evento
 let bloodMoonActive = false;
 let bloodMoonMult   = 1;
 
-/** true quando a hora do mundo está dentro da faixa noturna (cruza a meia-noite). */
-function isNightHour(h) {
-  return h >= NIGHT_START_HOUR || h < NIGHT_END_HOUR;
-}
-
 /**
  * Sorteia/encerra a Lua de Sangue nas viradas do ciclo. Detecta a passagem POR
  * cima do limiar (prev → cur) em vez de testar só a hora atual: assim o sorteio
@@ -928,10 +1064,10 @@ function _broadcastBloodMoon() {
   });
 }
 
-/** Multiplicador de atributos/recompensa do evento (1 quando não há lua). */
-function bloodMoonFactor() {
-  return bloodMoonActive ? bloodMoonMult : 1;
-}
+// O multiplicador do evento é lido por `worldState.bloodMoonFactor()`
+// (utils/world-state.js), alimentado pelo `setBloodMoon` acima. Existia aqui
+// uma segunda cópia da mesma conta que ninguém chamava.
+
 // ── Skill XP helper ─────────────────────────────────────────────────────────
 function xpForLevel(n) { return 50 * n * n; }
 
@@ -974,12 +1110,15 @@ function applySkillMultipliers(player) {
 
 // Aplica bônus de talentos nos campos de player usados pelo servidor
 function applyTalentBonuses(player) { _applyTalentBonuses(player, TALENT_DEFS); }
-function recalcMaxHp(player)        { _recalcMaxHp(player, SHIP_DEFS, TALENT_DEFS); }
-
-// HP plano vindo dos talentos (Casco de Ferro + Madeira Nobre).
-function talentFlatHp(player) {
-  return _sumTalentStat(player, TALENT_DEFS, 'max_hp_flat')
-       + _sumTalentStat(player, TALENT_DEFS, 'max_hp_flat_2');
+// O SHIP_DEFS traz o PISO do navio bônus, mas quem manda é a instância que o
+// jogador possui: o HP dela foi ROLADO entre hpMin e hpMax quando o navio caiu,
+// e é esse valor que a vida máxima tem de usar. Todo caminho que recalcula vida
+// — subir a skill de vida, comprar upgrade na ilha — passa por aqui, então o
+// override mora AQUI e não em cada chamador; era ele faltando na compra do
+// upgrade que fazia a vida despencar de 200k para o piso da tabela.
+function recalcMaxHp(player) {
+  const bonus = player.activeBonusShipStats;
+  _recalcMaxHp(player, SHIP_DEFS, TALENT_DEFS, bonus ? (bonus.maxHp || bonus.hp || 1000) : null);
 }
 
 /**
@@ -1005,12 +1144,10 @@ function refreshTalentDerived(player, opts = {}) {
   applyTalentBonuses(player);
 
   const bonus = player.activeBonusShipStats;
+  recalcMaxHp(player); // já usa o HP do navio bônus quando há um ativo
   if (bonus) {
-    // Navio bônus: mesma fórmula, mas sobre o HP dele em vez do SHIP_DEFS.
-    _recalcMaxHp(player, SHIP_DEFS, TALENT_DEFS, bonus.maxHp || bonus.hp || 1000);
     player.maxCannons = (bonus.cannon || 5) + (player.talentCannonBonus || 0);
   } else {
-    recalcMaxHp(player);
     const ship = SHIP_DEFS[player.activeShip] || SHIP_DEFS.fragata;
     player.maxCannons = _calcMaxCannons(ship, player.talentCannonBonus || 0, MAX_CANNON_SLOTS);
   }
@@ -1262,6 +1399,7 @@ function applyBorderTransition(p, dir, targetLevel) {
       : null,
     dailyMissions: targetLevel === 4 ? buildDailyMissions(p) : undefined,
     wrecks: wreckManager.snapshot(targetLevel),   // ruínas ativas (zona vermelha)
+    spoils: spoilManager.snapshot(targetLevel),   // espólios de abordagem (zona red+)
   });
   return true;
 }
@@ -1277,6 +1415,7 @@ setInterval(() => {
   missionBoatManager.update(now, dt);
   fleetEventManager.update(now);
   wreckManager.update(now);
+  spoilManager.update(now);
 
   // ── World time — avança e transmite periodicamente ────────────────────────
   const _prevHour = worldTimeHour;
@@ -1721,11 +1860,7 @@ setInterval(() => {
           target.hp = Math.max(0, target.hp - aDamage);
           target.lastCombatTime = now;
           aHits.push({ id: target.id, dmg: aDamage, hp: target.hp, isNPC: false });
-          if (target.hp <= 0 && !target.dead) {
-            target.dead = true;
-            wreckManager.onPlayerDeath(target);
-            addEvent({ type: 'entity_dead', id: target.id, isNPC: false, killerId: p.id }, target.mapLevel);
-          }
+          resolvePlayerDeath(target, p.id);
         });
 
         // broadcast aura tick only to players in the same map level
@@ -1764,8 +1899,9 @@ setInterval(() => {
 
   function processDots(e, isNPC) {
     if (!e.dots || e.dots.length === 0 || e.dead) return;
-    // Névoa Espectral (do jogador ou do pet): invencível também pausa DoT
-    if (!isNPC && e.relicInvincibleExpires && now < e.relicInvincibleExpires) return;
+    // Névoa Espectral (do jogador ou do pet): invencível também pausa DoT — sem
+    // gastar a carga do escudo (ver utils/invincibility.js).
+    if (!isNPC && isInvincible(e, now)) return;
     e.dots = e.dots.filter(dot => {
       if (now < dot.next) return true;
       e.hp = Math.max(0, e.hp - dot.dmg);
@@ -1804,14 +1940,21 @@ setInterval(() => {
               const gold = Math.round(Math.floor(baseGold * (1 + (killer.dropBonus||0)) * (1 + tier*0.01)) * dotDiff);
               killer.gold += gold;
               // Dobrao drop
+              let dotDobrao = 0;
               if ((dotNpcDef.dobraoChance || 0) > 0 && Math.random() < dotNpcDef.dobraoChance) {
                 const dAmt = Math.round(Math.floor(Math.random() * (dotNpcDef.dobraoMax - dotNpcDef.dobraoMin + 1) + dotNpcDef.dobraoMin) * dotDiff);
                 killer.dobroes = (killer.dobroes || 0) + dAmt;
+                dotDobrao = dAmt;
               }
               // XP grant on DOT kill — use e.mapLevel (NPC zone), not killer.mapLevel
               const dotXpMapDef = MAP_DEFS[e.mapLevel || 1] || MAP_DEFS[1];
               const xpGained = Math.round(Math.floor((dotXpMapDef.npc?.xpPerKill || 12) * (1 + tier * 0.01)) * dotDiff);
               killer.mapXp = (killer.mapXp || 0) + xpGained;
+              // Mesma fonte do abate a tiro: o jogador não distingue quem deu o
+              // golpe final, e separar em duas linhas só picotaria o extrato.
+              journalManager.accrue(killer, JOURNAL_SRC.NPC_KILL,
+                { gold, xp: xpGained, dobroes: dotDobrao });
+              journalManager.checkTier(killer);
               // XP is lifetime total — never reset, mapLevel only changes at border
               const xpNeeded = (MAP_DEFS[killer.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
               if (xpNeeded && killer.mapXp >= xpNeeded && MAP_DEFS[(killer.mapLevel||1) + 1]) {
@@ -1822,17 +1965,33 @@ setInterval(() => {
               } else {
                 killer._mapUnlockNotified = false;
               }
-              // Fragment drop (DOT kill path) — cada membro do grupo recebe o total
-              // de fragmentos por kill (não dividido), inclusive quem não matou.
+              // ── Recompensa de grupo (abate por DoT) ───────────────────────
+              // Mesma regra do abate a tiro (projectile-manager): ouro e XP
+              // cheios para cada companheiro na zona, com bônus por cabeça. Só
+              // o fragmento já era assim. O caminho do DoT ficava de fora e
+              // isso apareceria em jogo como "matei com fogo e o grupo não
+              // ganhou nada" — o jogador não distingue quem deu o golpe final.
               const dotFragGain = Math.floor(FRAGMENT_DROP_NPC * dotDiff);
               killer.mapFragments = (killer.mapFragments || 0) + dotFragGain;
               const dotPartyMembers = partyManager.getPartyMembersInZone(killer.id, e.mapLevel || 1, players);
+              const dotPartyMult = partyRewardMult(dotPartyMembers.length);
+              const dotMateGold  = Math.floor(gold     * dotPartyMult);
+              const dotMateXp    = Math.floor(xpGained * dotPartyMult);
               for (const m of dotPartyMembers) {
+                m.gold         = (m.gold  || 0) + dotMateGold;
+                m.mapXp        = (m.mapXp || 0) + dotMateXp;
                 m.mapFragments = (m.mapFragments || 0) + dotFragGain;
                 if (m.ws?.readyState === 1) {
                   sendTo(m.ws, { type: 'currency_update', gold: m.gold, dobroes: m.dobroes, mapFragments: m.mapFragments });
                 }
+                journalManager.accrue(m, JOURNAL_SRC.PARTY_SHARE, { gold: dotMateGold, xp: dotMateXp });
                 db.save(m).catch(err => console.error('Save error:', err));
+              }
+              // O bônus do próprio matador entra como diferença: `gold` e
+              // `xpGained` já foram creditados cheios acima.
+              if (dotPartyMult > 1.0) {
+                killer.gold  += dotMateGold - gold;
+                killer.mapXp += dotMateXp   - xpGained;
               }
               db.save(killer).catch(e => console.error('Save error:', e));
               const curXpNeeded = (MAP_DEFS[killer.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
@@ -1867,9 +2026,10 @@ setInterval(() => {
             }
           }
         } else {
-          wreckManager.onPlayerDeath(e);   // zona vermelha: dropa ruína saqueável
-          addEvent({ type: 'entity_dead', id: e.id, isNPC: false }, e.mapLevel || 1);
-          // Player respawn is manual — client sends request_respawn
+          // Quem aplicou o DoT leva o crédito do abate (o `dot.ownerId` já era
+          // usado para creditar a kill de NPC logo acima) — respawn é manual,
+          // o cliente pede com request_respawn.
+          resolvePlayerDeath(e, dot.ownerId);
         }
       }
       return dot.dur > 0 && e.hp > 0;
@@ -2082,6 +2242,13 @@ setInterval(() => {
     }
   }
 
+  // ── Rede de segurança: ninguém navega com 0 de vida ───────────────────────
+  // Cada fonte de dano chama resolvePlayerDeath com o autor do golpe, que é o
+  // caminho bom (o abate rende crédito a alguém). Este laço cobre o resto —
+  // fontes sem dono, como o DoT legado do player-manager — para que o pior caso
+  // seja "morreu sem creditar ninguém" em vez de "ficou vivo com HP zerado".
+  players.forEach(p => { if (p._dbLoaded && p.hp <= 0) resolvePlayerDeath(p, null); });
+
   flushEvents();
 
   // Custo deste tick. Medido no fim, depois do broadcast — é ele que domina.
@@ -2096,6 +2263,9 @@ setInterval(() => {
 // Save all players every 15s — uses a single batch query instead of N individual saves
 setInterval(() => {
   db.batchSave(players).catch(e => console.error('Periodic batch save error:', e));
+  // Mesmo tique fecha as janelas vencidas do livro-caixa (ver accrue). O sweep
+  // é barato — só olha o relógio de quem tem balde aberto.
+  journalManager.sweep(players);
 }, 15000);
 
 // ── Mana regen: +0,5/s por jogador (metade da velocidade antiga de +1/s) ──────
@@ -2429,6 +2599,7 @@ function teleportPlayerToMap(p, targetLevel, spawnX, spawnZ) {
       : null,
     dailyMissions: targetLevel === 4 ? buildDailyMissions(p) : undefined,
     wrecks: wreckManager.snapshot(targetLevel),
+    spoils: spoilManager.snapshot(targetLevel),
   });
   return true;
 }
@@ -2547,11 +2718,21 @@ wss.on('connection', (ws) => {
   let player = null;
 
   ws.isAlive = true;
+  ws._openedAt = Date.now();
   // Estado do anti-flood (token bucket)
   ws._rlTokens     = WS_MSG_BUCKET_CAP;
   ws._rlLast       = Date.now();
   ws._rlViolations = 0;
   ws.on('pong', () => { ws.isAlive = true; });
+
+  // ── Sem este handler o processo INTEIRO cai ────────────────────────────────
+  // O `ws` faz `websocket.emit('error', err)` em erro de protocolo/frame, e um
+  // 'error' de EventEmitter sem ouvinte vira exceção não tratada. Como não há
+  // `process.on('uncaughtException')` aqui, um frame malformado de UM cliente
+  // derrubava o servidor de todo mundo.
+  ws.on('error', (err) => {
+    console.error(`[WS] erro na conexão de "${player?.name || 'sem login'}":`, err.message);
+  });
 
   ws.on('message', async (raw) => {
     // ── Anti-flood: recarrega tokens e descarta excesso ──────────────────────
@@ -2777,6 +2958,55 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        // ── Espólio de abordagem (zona Red ou superior) ─────────────────────
+        // DOIS pedidos, não três. `spoil_inspect` é só o farol 🟢🟡🔴 que o
+        // cliente pinta no destroço quando o jogador chega perto — não conta
+        // nada sobre o butim. `spoil_raid` é o F: aborda e, vencendo, saqueia
+        // no mesmo gesto. Não existe estado "venci mas ainda não saqueei".
+        case 'spoil_inspect': {
+          if (!player) break;
+          spoilManager.handleInspect(player, String(msg.spoilId || ''));
+          break;
+        }
+        case 'spoil_raid': {
+          if (!player) break;
+          spoilManager.handleRaid(player, String(msg.spoilId || ''));
+          break;
+        }
+
+        // ── Tripulação de piratas ───────────────────────────────────────────
+        case 'pirate_board': {
+          if (!player) break;
+          pirateManager.handleBoard(player, msg);
+          break;
+        }
+        case 'pirate_state_request': {
+          if (!player) break;
+          pirateManager.sendState(player);
+          break;
+        }
+
+        // ── Diário do capitão ───────────────────────────────────────────────
+        case 'journal_list': {
+          if (!player) break;
+          journalManager.sendList(player,
+            Math.max(1, Math.min(200, Number(msg.limit || 60))),
+            Number(msg.before || 0));
+          break;
+        }
+        case 'battle_report': {
+          if (!player) break;
+          journalManager.sendReport(player, Number(msg.reportId || 0));
+          break;
+        }
+
+        // ── Loja Geral (Comida de Pet, RUN, e o que vier) ───────────────────
+        case 'buy_general_item': {
+          if (!player) break;
+          handleBuyGeneralItem(player, msg, ws);
+          break;
+        }
+
         case 'teleport_arch': {
           if (!player) break;
           handleArchTeleport(player);
@@ -2820,6 +3050,7 @@ wss.on('connection', (ws) => {
                 player.mapPieces[bonusDef.pieceId] = 0;
               }
               player.dead     = false;
+              player._deathResolved = false;   // libera a próxima morte (resolvePlayerDeath)
               player.hp       = Math.max(1, Math.floor((player.maxHp || 100) * 0.10));
               player.mapLevel = returnLevel;
               player.x        = returnX;
@@ -2858,6 +3089,7 @@ wss.on('connection', (ws) => {
             const mapSize = getMapSize(player.mapLevel || 1);
             player.hp             = Math.max(1, Math.floor((player.maxHp || 100) * 0.10));
             player.dead           = false;
+            player._deathResolved = false;   // libera a próxima morte (resolvePlayerDeath)
             player.x              = (Math.random() - 0.5) * mapSize * 0.8;
             player.z              = (Math.random() - 0.5) * mapSize * 0.8;
             player.rotation       = Math.random() * Math.PI * 2;
@@ -3025,6 +3257,38 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        // ── Casa de leilões (mesma ilha do banco, mapa 7) ───────────────────
+        // Os quatro handlers são async e cada um grava no banco antes de
+        // responder. O `.catch` é obrigatório: sem ele, uma falha de MySQL
+        // viraria unhandled rejection e derrubaria o processo inteiro por
+        // causa de um lance.
+        case 'auction_list': {
+          if (!player) break;
+          auctionManager.handleList(player);
+          break;
+        }
+
+        case 'auction_create': {
+          if (!player) break;
+          auctionManager.handleCreate(player, msg)
+            .catch(e => console.error('[Leilão] create:', e.message));
+          break;
+        }
+
+        case 'auction_bid': {
+          if (!player) break;
+          auctionManager.handleBid(player, msg)
+            .catch(e => console.error('[Leilão] bid:', e.message));
+          break;
+        }
+
+        case 'auction_cancel': {
+          if (!player) break;
+          auctionManager.handleCancel(player, msg)
+            .catch(e => console.error('[Leilão] cancel:', e.message));
+          break;
+        }
+
         case 'activate_bonus_ship':
         case 'equip_bonus_ship': {
           if (!player) break;
@@ -3104,6 +3368,18 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        // ── TALENT: os 3 slots de build ──────────────────────────────────────
+        case 'save_talent_build': {
+          if (!player) break;
+          handleSaveTalentBuild(player, msg);
+          break;
+        }
+        case 'load_talent_build': {
+          if (!player) break;
+          handleLoadTalentBuild(player, msg);
+          break;
+        }
+
         // ── Compra de comida para pets ────────────────────────────────────────
         case 'buy_pet_food': {
           if (!player) break;
@@ -3122,6 +3398,8 @@ wss.on('connection', (ws) => {
             break;
           }
           player.gold -= totalCost;
+          journalManager.ledger(player, JOURNAL_SRC.SHOP_PET_FOOD,
+            { gold: -totalCost }, { detail: foodId, n: qty });
           if (!player.inventory) player.inventory = {};
           player.inventory[foodId] = (player.inventory[foodId] || 0) + qty;
           // Pet inativo por falta de comida volta à ativa automaticamente
@@ -3211,8 +3489,21 @@ wss.on('connection', (ws) => {
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
+    // O código é o que separa "fechou a janela" (1000/1001) de "o cliente não
+    // aguentou o frame" (1009) e de "o TCP morreu" (1006). Sem ele, toda queda
+    // tinha exatamente a mesma cara no log — que foi o motivo de a investigação
+    // da desconexão de ~30s não ter por onde começar.
+    const secs = ((Date.now() - ws._openedAt) / 1000).toFixed(1);
+    const why  = code === 1009 ? ' ← FRAME GRANDE DEMAIS PARA O CLIENTE'
+               : code === 1006 ? ' ← queda abrupta (sem frame de fecho)'
+               : '';
+    console.log(`[WS] close code=${code} reason="${reason || ''}" `
+      + `player="${player?.name || 'sem login'}" apos ${secs}s${why}`);
     if (player) {
+      // Fecha o extrato ANTES de tudo: o último minuto de abates ainda está
+      // acumulado na memória do jogador e some junto com ele se não gravar.
+      journalManager.flushPlayer(player, true);
       if (player._dbLoaded) {
         db.save(player, true).catch(e => console.error('Save error:', e)); // persist on disconnect
       }
@@ -3358,9 +3649,18 @@ async function handleLogin(ws, msg) {
   // um save do sistema antigo entra aqui com 10 chaves que não existem mais.
   // migrateLegacyTalents apaga essas chaves e devolve o total como pontos livres.
   player.talents       = saved.talents || { totalSpent: 0 };
+  player.talentBuilds  = Array.isArray(saved.talentBuilds) ? saved.talentBuilds : [];
   const refunded       = _migrateLegacyTalents(player, LEGACY_TALENT_MAP);
   if (refunded > 0) {
     console.log(`[TALENTOS] ${player.name}: ${refunded} ponto(s) do sistema antigo devolvidos`);
+  }
+  // Talentos aposentados (a revisão da árvore de Recurso tirou os que
+  // prometiam bônus sobre sistemas que o jogo não tem). Sem esta devolução os
+  // pontos parariam de fazer efeito mas continuariam encarecendo as compras
+  // seguintes, porque `totalSpent` não sabe que o nó saiu.
+  const devolvidos = _refundRemovedTalents(player, TALENT_DEFS);
+  if (devolvidos > 0) {
+    console.log(`[TALENTOS] ${player.name}: ${devolvidos} ponto(s) de talentos aposentados devolvidos`);
   }
   player.npcKills      = saved.npcKills      || 0;
   player.pvpKills      = saved.pvpKills      || 0;
@@ -3443,6 +3743,7 @@ async function handleLogin(ws, msg) {
   player.petXp       = saved.petXp       || {};
   player.petRelics   = saved.petRelics   || {};
   player.inventory.uva = Number(saved.petFood || 0);   // comida (coluna pet_food)
+  player.inventory.run = Number(saved.runStock || 0);  // RUN da tripulação (coluna run_stock)
   // Pad cannonUpgradesData to match inventory.cannons length
   while (player.cannonUpgradesData.length < player.inventory.cannons.length) {
     player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0 });
@@ -3482,8 +3783,23 @@ async function handleLogin(ws, msg) {
     console.log(`[BONUS SHIP] Restaurado: "${ship.name}" → maxHp=${player.maxHp}, maxCannons=${player.maxCannons}`);
   }
 
+  // Quem saiu do jogo afundado voltava com 0 de vida (o `hp` é persistido) e
+  // navegava assim até o próximo golpe. Volta com a vida de um respawn — e
+  // assim a rede de segurança do tick não o afunda no instante do login.
+  if (!(player.hp > 0)) {
+    player.hp   = Math.max(1, Math.floor((player.maxHp || 100) * 0.10));
+    player.dead = false;
+  }
+  player._deathResolved = false;
+
   // All DB data is now applied — safe for periodic saves
   player._dbLoaded = true;
+
+  // Entregas do leilão que venceram com o jogador offline (ouro de venda,
+  // navio arrematado, navio devolvido, reembolso de lance superado). Tem de
+  // rodar ANTES do payload do init: o que chega aqui muda `gold` e
+  // `bonusShips`, e os dois são lidos logo abaixo.
+  await auctionManager.onPlayerJoined(player);
 
   const initShots = salvoCount(player);
   const initZone    = player.mapLevel || 1;
@@ -3518,6 +3834,10 @@ async function handleLogin(ws, msg) {
     inventory:        player.inventory,
     skills:   player.skills,
     npcKills:   player.npcKills || 0,
+    pvpKills:   player.pvpKills || 0,   // ficha do capitão (aba Status)
+    // Prateleira da Loja Geral. O cliente não conhece item nenhum pelo nome:
+    // a lista inteira vem daqui (constants/shop.js).
+    generalShop: SHOP.gerais,
     difficulty:   player.difficulty || 0,
     difficulties: DIFFICULTIES,
     tutorialState: player.tutorialState || 0,
@@ -3555,6 +3875,7 @@ async function handleLogin(ws, msg) {
     maxRelics:           player.maxRelics || 4,
     talents:             player.talents || {},
     talentPoints:        player.talentPoints || 0,
+    talentBuilds:        _normalizeBuilds(player),
     shipIslandUpgrades:  player.shipIslandUpgrades || { hp: 0, defense: 0, damage: 0 },
     cannonUpgradesData:  player.cannonUpgradesData || [],
     ironPlates:          player.ironPlates          || 0,
@@ -3568,10 +3889,15 @@ async function handleLogin(ws, msg) {
     bankGold:              player.bankGold                || 0,
     bankUnlocked:        player.bankUnlocked        || false,
     wrecks:              wreckManager.snapshot(player.mapLevel || 1),  // ruínas ativas (zona vermelha)
+    spoils:              spoilManager.snapshot(player.mapLevel || 1),  // espólios de abordagem (zona red+)
     cannonResearchLevel: player.cannonResearchLevel || 0,
     shipMaterialLevel:   player.shipMaterialLevel   || 0,
     // ── Pets ────────────────────────────────────────────────────────────────
     ...petManager.injectInitData(player),
+    // ── Piratas ─────────────────────────────────────────────────────────────
+    ...pirateManager.injectInitData(player),
+    // ── Casa de leilões ─────────────────────────────────────────────────────
+    ...auctionManager.injectInitData(player),
     bossProgress: (() => {
       if (MAP_DEFS[initZone]?.isTrainingMap) return null; // mapa de treino: sem boss
       const kts = MAP_DEFS[initZone]?.boss?.killsToSpawn ?? 10;
@@ -3584,6 +3910,8 @@ async function handleLogin(ws, msg) {
 
   // Notifica PetManager que jogador entrou (envia pets selvagens do mapa)
   petManager.onPlayerJoined(player);
+  // Corta o excesso de peso no porão e apura a RUN da tripulação
+  pirateManager.onPlayerJoined(player);
 
   // Reconexão com sessão AFK ativa → notificar cliente
   if (player.afkTraining && player.afkUntil > Date.now()) {
@@ -3711,6 +4039,7 @@ function handleGoldShieldCost(player, msg) {
   // Gasta ouro do jogador
   if (player.gold >= amount) {
     player.gold -= amount;
+    journalManager.accrue(player, JOURNAL_SRC.GOLD_SHIELD, { gold: -amount });
 
     // Notifica o cliente
     sendTo(player.ws, {
@@ -3768,6 +4097,9 @@ function handleBuyCannon(player, msg, ws) {
     if (player.dobroes < totalCost) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
     player.dobroes -= totalCost;
   }
+  journalManager.ledger(player, JOURNAL_SRC.SHOP_CANNON,
+    def.currency === 'gold' ? { gold: -totalCost } : { dobroes: -totalCost },
+    { detail: def.name || msg.cannonId, n: qty });
   if (!player.cannonUpgradesData) player.cannonUpgradesData = [];
   for (let i = 0; i < qty; i++) {
     player.inventory.cannons.push(msg.cannonId);
@@ -3836,50 +4168,31 @@ function handleEquipCannonSync(player, msg, ws) {
 }
 
 /**
- * Recalcula as vagas de curandeiro do navio ativo e corta o excesso.
+ * Recalcula o porão de piratas do navio ativo e corta o excesso.
  *
- * Precisa rodar em TODA troca de navio: quem descia de um elite (10 vagas) para
- * um normal (5) continuaria com os 10 equipados e curando o dobro do permitido.
+ * Precisa rodar em TODA troca de navio: quem descia de um elite para uma
+ * fragata continuaria navegando com uma tripulação que não cabe no porão.
  *
- * @returns {number} quantos curandeiros foram desequipados
+ * A régua era CONTAGEM de curandeiros (`maxHealers`) e passou a ser PESO — ver
+ * managers/pirate-manager.js. `maxHealers` continua sendo preenchido porque o
+ * armazém antigo do cliente ainda lê o campo; quem manda é a capacidade.
+ *
+ * @returns {number} quantos piratas desembarcaram
  */
 function refreshHealerSlots(player) {
-  player.maxHealers = maxHealersFor(player.activeShip);
-  const atuais = player.pirates || [];
-  if (atuais.length <= player.maxHealers) return 0;
-  const removidos = atuais.length - player.maxHealers;
-  player.pirates = atuais.slice(0, player.maxHealers);
-  return removidos;
+  player.maxHealers      = maxHealersFor(player.activeShip);
+  player.pirateCapacity  = pirateManager.capacityOf(player);
+  return pirateManager.refreshCapacity(player);
 }
 
+/**
+ * `equip_pirate_sync` é o nome antigo do embarque, de quando só havia
+ * curandeiros. Continua valendo — clientes não atualizados seguem funcionando —
+ * e delega para o mesmo caminho que o `pirate_board` novo usa, que valida
+ * estoque e peso.
+ */
 function handleEquipPirateSync(player, msg, ws) {
-  const incoming = msg.pirates || [];
-  const healers  = incoming.filter(p => p === 'healer' || p === 'healer_elite');
-
-  // Não dá para equipar mais curandeiros do que o jogador POSSUI: o cliente
-  // manda a lista inteira e sem esta checagem daria para forjar 10 iguais
-  // tendo comprado um só.
-  const estoque = {};
-  for (const pid of (player.inventory?.pirates || [])) estoque[pid] = (estoque[pid] || 0) + 1;
-  const validos = [];
-  for (const h of healers) {
-    if ((estoque[h] || 0) <= 0) continue;
-    estoque[h] -= 1;
-    validos.push(h);
-  }
-
-  player.maxHealers       = maxHealersFor(player.activeShip);
-  player.pirates          = validos.slice(0, player.maxHealers);
-  player.homingCharges    = 0;
-  player.damageMultiplier = 1.0;
-
-  db.save(player, true).catch(e => console.error('Save error:', e));
-  sendTo(ws, {
-    type: 'pirate_state',
-    pirates: player.pirates,
-    maxHealers: player.maxHealers,
-    homingCharges: player.homingCharges,
-  });
+  pirateManager.handleBoard(player, msg);
 }
 
 function handleCancelActiveMission(player) {
@@ -3938,6 +4251,15 @@ function handleClaimDailyMission(player, msg) {
   // missionsCompleted: completar OUTRA missão diária enquanto mission_streak está ativa
   if (missionId !== 'mission_streak') progressDailyMission(player, 'missionsCompleted', 1);
   db.save(player).catch(e => console.error('Save error:', e));
+  journalManager.log(player, JOURNAL_KINDS.REWARD, {
+    source:  'missao',
+    gold:    def.reward.gold   || 0,
+    dobroes: def.reward.dobrao || 0,
+  });
+  journalManager.ledger(player, JOURNAL_SRC.MISSION, {
+    gold:    def.reward.gold   || 0,
+    dobroes: def.reward.dobrao || 0,
+  }, { detail: missionId });
   sendTo(player.ws, {
     type:     'daily_mission_claimed',
     id:       missionId,
@@ -3985,7 +4307,7 @@ function handleRequestWanted(player) {
     name:        p.name,
     mapLevel:    p.mapLevel || 1,
     npcKills:    p.npcKills || 0,
-    rewardGold:  1000 * (p.npcKills || 0),
+    rewardGold:  100 * (p.npcKills || 0),
     rewardDobrao: 10  * (p.npcKills || 0),
   }));
   sendTo(player.ws, {
@@ -4017,7 +4339,7 @@ function handleAcceptWanted(player, msg) {
     targetMapLevel: wTarget.mapLevel || 1,
     // Piso garantido: presas com poucos/zero kills davam recompensa ZERO,
     // fazendo a caçada parecer "sem recompensa" ao matar o alvo.
-    rewardGold:   Math.max(2000, 1000 * (wTarget.npcKills || 0)),
+    rewardGold:   Math.max(200, 100 * (wTarget.npcKills || 0)),
     rewardDobrao: Math.max(20,   10   * (wTarget.npcKills || 0)),
   };
   sendTo(player.ws, {
@@ -4034,16 +4356,74 @@ function handleBuyPirate(player, msg, ws) {
   const { SHOP } = require('./constants');
   const item = SHOP.piratasMap[msg.pirateId];
   if (!item) { sendTo(ws, { type:'error', message:'Pirata não encontrado: ' + msg.pirateId }); return; }
+  // Recrutador (res_recrutador) desconta na contratação. O preço é calculado
+  // aqui e não no cliente — que só desenha o valor que o servidor mandou.
+  const price = Math.max(1, Math.round(item.price * fxTal.piratePriceMult(player)));
   if (item.currency === 'gold') {
-    if (player.gold < item.price) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
-    player.gold -= item.price;
+    if (player.gold < price) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
+    player.gold -= price;
   } else {
-    if (player.dobroes < item.price) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
-    player.dobroes -= item.price;
+    if (player.dobroes < price) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
+    player.dobroes -= price;
   }
+  journalManager.ledger(player, JOURNAL_SRC.SHOP_PIRATE,
+    item.currency === 'gold' ? { gold: -price } : { dobroes: -price },
+    { detail: item.name || msg.pirateId });
+  if (!player.inventory) player.inventory = {};
+  if (!player.inventory.pirates) player.inventory.pirates = [];
   player.inventory.pirates.push(msg.pirateId);
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(ws, { type:'inventory_update', inventory: player.inventory, gold: player.gold, dobroes: player.dobroes });
+  pirateManager.sendState(player);
+}
+
+/**
+ * Loja Geral — um handler para toda a prateleira de consumíveis.
+ *
+ * O catálogo é SHOP.gerais (constants/shop.js); pôr um item novo à venda é
+ * acrescentar uma linha lá, sem tocar aqui. Preço e moeda são autoritativos do
+ * servidor: `msg` só diz O QUE e QUANTOS.
+ */
+function handleBuyGeneralItem(player, msg, ws) {
+  const item = SHOP.geraisMap[String(msg.itemId || '')];
+  const qty  = Math.max(1, Math.min(999999, Math.floor(Number(msg.qty || 0))));
+  if (!item || qty <= 0) {
+    sendTo(ws, { type: 'error', message: 'Item inválido.' });
+    return;
+  }
+
+  const total    = item.price * qty;
+  const currency = item.currency === 'dobrao' ? 'dobroes' : 'gold';
+  if ((player[currency] || 0) < total) {
+    sendTo(ws, {
+      type: 'error',
+      message: `${item.currency === 'dobrao' ? 'Dobrões' : 'Ouro'} insuficiente (precisa ${total}).`,
+    });
+    return;
+  }
+
+  player[currency] -= total;
+  journalManager.ledger(player, JOURNAL_SRC.SHOP_GENERAL,
+    currency === 'gold' ? { gold: -total } : { dobroes: -total },
+    { detail: item.name || item.id, n: qty });
+  if (!player.inventory) player.inventory = {};
+  player.inventory[item.id] = (player.inventory[item.id] || 0) + qty;
+
+  // Gancho de reativação: comprar comida acorda o pet, comprar RUN acorda a
+  // tripulação. Sem isso o jogador compraria e continuaria inativo até o
+  // próximo tique de 60s.
+  if (item.onBuy === 'pet')     petManager.onFoodPurchased(player);
+  if (item.onBuy === 'pirates') pirateManager.onRunPurchased(player);
+
+  sendTo(ws, {
+    type:         'inventory_update',
+    inventory:    player.inventory,
+    gold:         player.gold,
+    dobroes:      player.dobroes,
+    notification: `${item.icon} +${qty}× ${item.name} (-${total} ${item.currency === 'dobrao' ? '🟡' : '🪙'})`,
+  });
+  db.save(player, true).catch(e => console.error('Save error:', e));
+  console.log(`[Loja] ${player.name} comprou ${qty}x ${item.id} por ${total}`);
 }
 
 function handleBuyAmmo(player, msg, ws) {
@@ -4059,6 +4439,9 @@ function handleBuyAmmo(player, msg, ws) {
     if (player.dobroes < totalCost) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
     player.dobroes -= totalCost;
   }
+  journalManager.ledger(player, JOURNAL_SRC.SHOP_AMMO,
+    item.currency === 'gold' ? { gold: -totalCost } : { dobroes: -totalCost },
+    { detail: item.name || msg.ammoId, n: packs });
   const gained = (item.qty || 30) * packs;
   player.inventory.ammo[msg.ammoId] = (player.inventory.ammo[msg.ammoId] || 0) + gained;
   progressDailyMission(player, 'itemsBought', 1);
@@ -4070,6 +4453,9 @@ function handleBuyNavio(player, msg, ws) {
   const { SHIP_DEFS } = require('./constants');
   const ship = SHIP_DEFS[msg.shipId];
   if (!ship) return;
+  // Navio bônus está no SHIP_DEFS para herdar as regras de navio, mas não se
+  // compra: sem esta linha um pacote forjado o levaria pelo `price` da tabela.
+  if (ship.bonusOnly) { sendTo(ws, { type:'error', message:'Este navio não está à venda' }); return; }
   if (player.inventory.ships.includes(msg.shipId)) { sendTo(ws, { type:'error', message:'Já possui este navio' }); return; }
   if (ship.currency === 'gold') {
     if (player.gold < ship.price) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
@@ -4078,6 +4464,9 @@ function handleBuyNavio(player, msg, ws) {
     if (player.dobroes < ship.price) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
     player.dobroes -= ship.price;
   }
+  journalManager.ledger(player, JOURNAL_SRC.SHOP_SHIP,
+    ship.currency === 'dobrao' ? { dobroes: -ship.price } : { gold: -ship.price },
+    { detail: ship.name || msg.shipId });
   player.inventory.ships.push(msg.shipId);
   progressDailyMission(player, 'itemsBought', 1);
   db.save(player, true).catch(e => console.error('Save error:', e));
@@ -4094,6 +4483,9 @@ function handleBuyVela(player, msg, ws) {
     if (player.dobroes < sail.price) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
     player.dobroes -= sail.price;
   }
+  journalManager.ledger(player, JOURNAL_SRC.SHOP_SAIL,
+    sail.currency === 'dobrao' ? { dobroes: -sail.price } : { gold: -sail.price },
+    { detail: sail.name || msg.sailId });
   player.inventory.sails.push(msg.sailId);
   progressDailyMission(player, 'itemsBought', 1);
   db.save(player, true).catch(e => console.error('Save error:', e));
@@ -4104,6 +4496,8 @@ function handleBuyEliteShip(player, msg, ws) {
   const { SHIP_DEFS } = require('./constants');
   const shipDef = SHIP_DEFS[msg.shipId];
   if (!shipDef || !shipDef.isElite) { sendTo(ws, { type:'error', message:'Navio elite não encontrado' }); return; }
+  // Os navios bônus também são isElite — a flag abaixo é o que os separa da loja.
+  if (shipDef.bonusOnly) { sendTo(ws, { type:'error', message:'Este navio não está à venda' }); return; }
   if (player.inventory.ships.includes(msg.shipId)) { sendTo(ws, { type:'error', message:'Já possui este navio' }); return; }
   if (shipDef.currency === 'dobrao') {
     if (player.dobroes < shipDef.price) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
@@ -4112,6 +4506,9 @@ function handleBuyEliteShip(player, msg, ws) {
     if (player.gold < shipDef.price) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
     player.gold -= shipDef.price;
   }
+  journalManager.ledger(player, JOURNAL_SRC.SHOP_ELITE,
+    shipDef.currency === 'dobrao' ? { dobroes: -shipDef.price } : { gold: -shipDef.price },
+    { detail: shipDef.name || msg.shipId });
   player.inventory.ships.push(msg.shipId);
   progressDailyMission(player, 'itemsBought', 1);
   db.save(player, true).catch(e => console.error('Save error:', e));
@@ -4148,13 +4545,16 @@ function handleBuyShipUpgrade(player, msg, ws) {
 
   player.dobroes  -= def.dobroes;
   player.goldDust -= dustCost;
+  journalManager.ledger(player, JOURNAL_SRC.UPG_ISLAND, { dobroes: -def.dobroes },
+    { detail: upgradeType, n: level + 1 });
   player.shipIslandUpgrades[upgradeType] = level + 1;
 
   if (upgradeType === 'hp') {
-    recalcMaxHp(player);
-    const _shipHpBase = (SHIP_DEFS[player.activeShip] || SHIP_DEFS.fragata).hp;
-    const _hpGained   = Math.round(_shipHpBase * 0.05);
-    player.hp = Math.min(player.hp + _hpGained, player.maxHp);
+    // A vida ganha é o DELTA do maxHp, não 5% do SHIP_DEFS: num navio bônus o
+    // HP base não vem do SHIP_DEFS e a conta à mão creditava a vida da fragata.
+    const _prevMaxHp = player.maxHp || 0;
+    refreshTalentDerived(player);
+    player.hp = Math.min(player.hp + Math.max(0, player.maxHp - _prevMaxHp), player.maxHp);
   }
 
   progressDailyMission(player, 'itemsBought', 1);
@@ -4181,6 +4581,8 @@ function handleBuyAfkTime(player, msg) {
     return;
   }
   player.gold -= _afkCost;
+  journalManager.ledger(player, JOURNAL_SRC.AFK_TRAINING, { gold: -_afkCost },
+    { n: _afkHours });
   const _afkNow2  = Date.now();
   const _afkExtra = player.afkTraining ? Math.max(0, (player.afkUntil || _afkNow2) - _afkNow2) : 0;
   player.afkUntil    = _afkNow2 + _afkExtra + _afkHours * 3600000;
@@ -4313,6 +4715,11 @@ function handleBuyCannonUpgrade(player, msg, ws) {
     }
     player.ironPlates -= platesNeeded;
   }
+  // Depois do estorno das chapas, de propósito: a compra que volta atrás não
+  // pode deixar rastro de gasto no extrato.
+  journalManager.ledger(player, JOURNAL_SRC.UPG_CANNON,
+    cupgDef.currency === 'gold' ? { gold: -cupgDef.price } : { dobroes: -cupgDef.price },
+    { detail: cupgDef.name || cupgDef.id });
   upg[field] = 1;
   recalcCannons(player);
   db.save(player, true).catch(e => console.error('Save error:', e));
@@ -4347,6 +4754,9 @@ function handleExchangeGold(player, msg, ws) {
   }
   player.gold    -= goldCost;
   player.dobroes  = (player.dobroes || 0) + dobraoGain;
+  // Uma linha só com os dois lados do câmbio — o extrato mostra "🪙 −10.000
+  // 🟡 +100" e fica claro que foi troca, não gasto.
+  journalManager.ledger(player, JOURNAL_SRC.EXCHANGE, { gold: -goldCost, dobroes: dobraoGain });
   db.save(player, true).catch(e => console.error('exchange_gold save error:', e));
   sendTo(ws, {
     type:    'currency_update',
@@ -4394,6 +4804,13 @@ function handleExploreMap(player, msg, ws) {
   if (times === 0) {
     sendTo(ws, { type: 'error', message: 'Fragmentos ou dobrões insuficientes!' });
     return;
+  }
+
+  // Uma linha para a leva inteira, não uma por exploração: quem explora 50
+  // vezes de uma vez quer ver "Exploração ×50 · 🟡 −500", não 50 linhas iguais.
+  if (timesDobroes > 0) {
+    journalManager.ledger(player, JOURNAL_SRC.EXPLORATION,
+      { dobroes: -(timesDobroes * FRAGMENT_EXPLORE_FALLBACK_COST) }, { n: timesDobroes });
   }
 
   // Pre-compute weight sum
@@ -4480,6 +4897,9 @@ function handleUnlockBonusMap(player, msg, ws) {
   });
 }
 
+/** Onde o jogador aparece ao entrar na masmorra — ver a nota no corpo. */
+const BONUS_ENTRY_Z = 220;
+
 function handleEnterBonusMap(player, msg, ws) {
   const mapId  = msg.mapId;
   const level  = BONUS_MAP_LEVELS[mapId];
@@ -4510,8 +4930,12 @@ function handleEnterBonusMap(player, msg, ws) {
   player.preBonusX        = player.x || 0;
   player.preBonusZ        = player.z || 0;
   player.mapLevel         = level;
+  // O jogador entra na BORDA e o chefe nasce no centro (spawnWithDef 0,0). Os
+  // dois nasciam no mesmo ponto; num mapa de 1200 isso passava despercebido,
+  // numa arena de 600 seria nascer dentro do chefe. 220 de distância também é
+  // mais que o alcance de canhão (120), então ninguém leva tiro ao chegar.
   player.x                = 0;
-  player.z                = 0;
+  player.z                = BONUS_ENTRY_Z;
   player.speed            = 0;
   player.input            = { w: false, a: false, s: false, d: false };
 
@@ -4535,7 +4959,7 @@ function handleEnterBonusMap(player, msg, ws) {
     mapDef:         mapDef,
     mapSize:        mapDef.size,
     x:              0,
-    z:              0,
+    z:              BONUS_ENTRY_Z,
     mapXp:          player.mapXp || 0,
     npcs:           entrySnapshot(mgr),
     bossProgress:   null,
@@ -4606,6 +5030,7 @@ function sendBonusDungeonComplete(player, mapLevel, mapDef) {
 
   player.dobroes    = (player.dobroes    || 0) + dobraoAmt;
   player.gold       = (player.gold       || 0) + goldAmt;
+  journalManager.ledger(player, JOURNAL_SRC.DUNGEON, { gold: goldAmt, dobroes: dobraoAmt });
   player.ironPlates = (player.ironPlates || 0) + ironAmt;
   player.goldDust   = (player.goldDust   || 0) + dustAmt;
   player.gunpowder  = (player.gunpowder  || 0) + powderAmt;
@@ -4659,10 +5084,6 @@ function sendBonusDungeonComplete(player, mapLevel, mapDef) {
   console.log(`🏆 ${player.name} completou masmorra bônus ${dungeonId ?? mapLevel} — dobrões:${dobraoAmt} ouro:${goldAmt} navio:${shipDrop?.id ?? 'nenhum'}`);
 }
 
-function _rollBonusStat(min, max) {
-  return Math.floor(min + Math.random() * (max - min + 1));
-}
-
 // ──────────────────────────────────────────────────────────────────────────────
 // Banco (Bank)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -4674,6 +5095,10 @@ function handleBankDeposit(player, msg, ws) {
   player.gold        -= amount;
   player.bankGold     = (player.bankGold || 0) + amount;
   if (!player.bankUnlocked) player.bankUnlocked = true;
+  // O cofre não é ganho nem gasto — é o mesmo ouro mudando de bolso. Entra no
+  // extrato mesmo assim: quem procura "para onde foram 50 mil" precisa achar o
+  // depósito, senão o saldo some sem explicação.
+  journalManager.ledger(player, JOURNAL_SRC.BANK_IN, { gold: -amount });
 
   db.save(player, true).catch(e => console.error('Save error (bank deposit):', e));
   sendTo(ws, {
@@ -4691,6 +5116,7 @@ function handleBankWithdraw(player, msg, ws) {
 
   player.bankGold -= amount;
   player.gold      = (player.gold || 0) + amount;
+  journalManager.ledger(player, JOURNAL_SRC.BANK_OUT, { gold: amount });
 
   db.save(player, true).catch(e => console.error('Save error (bank withdraw):', e));
   sendTo(ws, {
@@ -4782,6 +5208,8 @@ function handleSellRareShip(player, msg, ws) {
   ships.splice(idx, 1);
   player.bonusShips = ships;
   player.gold       = (player.gold || 0) + salePrice;
+  journalManager.ledger(player, JOURNAL_SRC.SHIP_SALE, { gold: salePrice },
+    { detail: ship.shipId || ship.name || tier });
 
   db.save(player, true).catch(e => console.error('Save error (sell rare ship):', e));
   sendTo(ws, {
@@ -4828,6 +5256,9 @@ function handleCannonResearch(player, msg, ws) {
   player.ironPlates -= costDef.ironPlates;
   if (costDef.gold)   player.gold   -= costDef.gold;
   if (costDef.dobroes) player.dobroes -= costDef.dobroes;
+  journalManager.ledger(player, JOURNAL_SRC.RESEARCH,
+    { gold: -(costDef.gold || 0), dobroes: -(costDef.dobroes || 0) },
+    { n: resLevel + 1 });
   upg.rl = resLevel + 1;
   db.save(player, true).catch(e => console.error('Save error:', e));
 
@@ -5248,6 +5679,7 @@ function handleUseRelic(player, msg) {
           p.hp = Math.max(0, p.hp - relicDamage);
           p.lastCombatTime = Date.now();
           hits2.push({ id: p.id, hp: p.hp, isNPC: false, dmg: relicDamage });
+          resolvePlayerDeath(p, player.id);
         }
       });
       // Envia o resultado (dano real) para todos após o impacto
@@ -5352,6 +5784,7 @@ function handleUseRelic(player, msg) {
           p.hp = Math.max(0, p.hp - relicDamage);
           p.lastCombatTime = Date.now();
           hitsRkt.push({ id: p.id, hp: p.hp, isNPC: false, dmg: relicDamage });
+          resolvePlayerDeath(p, player.id);
         }
       });
       addEvent({
@@ -5465,6 +5898,7 @@ function handleUseRelic(player, msg) {
           p.hp = Math.max(0, p.hp - dmg);
           p.lastCombatTime = Date.now();
           hitsM.push({ id: p.id, hp: p.hp, isNPC: false, dmg });
+          resolvePlayerDeath(p, player.id);
         }
       });
       return hitsM;
@@ -5783,6 +6217,7 @@ function handleUseRelic(player, msg) {
       } else {
         target.lastCombatTime = Date.now();
         hitsH.push({ id: target.id, hp: target.hp, isNPC: false, dmg: hDmg });
+        resolvePlayerDeath(target, player.id);
       }
 
       // ── Puxão: reposiciona perto do caster + stun durante o arrasto ────
@@ -5923,6 +6358,7 @@ function relicAreaDamage(player, cx, cz, radius, dmg) {
     p.hp = Math.max(0, p.hp - dmg);
     p.lastCombatTime = Date.now();
     hits.push({ id: p.id, hp: p.hp, isNPC: false, dmg });
+    resolvePlayerDeath(p, player.id);
   });
   return hits;
 }
@@ -6007,15 +6443,25 @@ function handleBuyTalent(player, msg) {
   let costTier = TALENT_COST_TIERS[TALENT_COST_TIERS.length - 1];
   for (const tier of TALENT_COST_TIERS) { if (totalSpent < tier.upTo) { costTier = tier; break; } }
 
+  // Quanto saiu do bolso de verdade — o ponto gratuito do reset não gasta nada,
+  // e o extrato não pode inventar um gasto que não houve.
+  let talentPaid = null;
   if ((player.talentPoints || 0) > 0) {
     // Usa um ponto gratuito do reset — sem custo de moeda
     player.talentPoints -= 1;
   } else if (costTier.currency === 'gold') {
     if ((player.gold || 0) < costTier.cost) { sendTo(player.ws, { type: 'error', message: `Ouro insuficiente! Necessário: ${costTier.cost}` }); return; }
     player.gold -= costTier.cost;
+    talentPaid = { gold: -costTier.cost };
   } else {
     if ((player.dobroes || 0) < costTier.cost) { sendTo(player.ws, { type: 'error', message: `Dobrões insuficientes! Necessário: ${costTier.cost}` }); return; }
     player.dobroes -= costTier.cost;
+    talentPaid = { dobroes: -costTier.cost };
+  }
+
+  if (talentPaid) {
+    journalManager.ledger(player, JOURNAL_SRC.TALENT, talentPaid,
+      { detail: talentId, n: curLevel + 1 });
   }
 
   // Aplica o nível
@@ -6112,10 +6558,91 @@ function handleResetTalents(player) {
   });
 }
 
+// ── Builds de talento — 3 slots por capitão ──────────────────────────────────
+// Guardar e recolocar uma árvore inteira. Não é um atalho de poder: resetar já
+// devolvia todos os pontos de graça (handleResetTalents) e ponto devolvido não
+// custa moeda para regastar, então trocar de build sempre foi grátis — só era
+// insuportável de fazer à mão, nó por nó. O slot guarda o mapa de níveis e
+// nada mais; o custo em moeda ficou lá atrás, na primeira compra de cada ponto.
+const TALENT_BUILD_SLOTS = 3;
+
+function _normalizeBuilds(player) {
+  if (!Array.isArray(player.talentBuilds)) player.talentBuilds = [];
+  player.talentBuilds.length = TALENT_BUILD_SLOTS;
+  for (let i = 0; i < TALENT_BUILD_SLOTS; i++) {
+    if (!player.talentBuilds[i] || typeof player.talentBuilds[i] !== 'object') {
+      player.talentBuilds[i] = null;
+    }
+  }
+  return player.talentBuilds;
+}
+
+function _sendTalentUpdate(player, extra = {}) {
+  sendTo(player.ws, Object.assign({
+    type:         'talent_update',
+    talents:      player.talents,
+    talentPoints: player.talentPoints || 0,
+    talentBuilds: _normalizeBuilds(player),
+    gold:         player.gold,
+    dobroes:      player.dobroes,
+    maxHp:        player.maxHp,
+    hp:           player.hp,
+    maxCannons:   player.maxCannons,
+    maxMana:      player.maxMana,
+    mana:         player.mana,
+  }, extra));
+}
+
+function handleSaveTalentBuild(player, msg) {
+  const slot = Math.floor(Number(msg.slot));
+  if (!(slot >= 0 && slot < TALENT_BUILD_SLOTS)) return;
+
+  const nodes = _snapshotBuild(player, TALENT_DEFS);
+  if (Object.keys(nodes).length === 0) {
+    sendTo(player.ws, { type: 'error', message: 'Não há nada na árvore para guardar.' });
+    return;
+  }
+  _normalizeBuilds(player)[slot] = {
+    nodes,
+    spent:   player.talents?.totalSpent || 0,
+    savedAt: Date.now(),
+  };
+  db.save(player, true).catch(e => console.error('Save error:', e));
+  _sendTalentUpdate(player, { buildMsg: `Build guardada no slot ${slot + 1}.` });
+}
+
+function handleLoadTalentBuild(player, msg) {
+  const slot = Math.floor(Number(msg.slot));
+  if (!(slot >= 0 && slot < TALENT_BUILD_SLOTS)) return;
+
+  const build = _normalizeBuilds(player)[slot];
+  if (!build) { sendTo(player.ws, { type: 'error', message: 'Slot vazio.' }); return; }
+
+  const erro = _validateBuild(player, build.nodes, {
+    talentDefs: TALENT_DEFS,
+    ringGate:   RING_GATE,
+  });
+  if (erro) { sendTo(player.ws, { type: 'error', message: erro }); return; }
+
+  _applyBuild(player, build.nodes, TALENT_DEFS);
+  refreshTalentDerived(player);
+  // Trocar de build pode encolher o limite de canhões (Bateria Extra saiu) —
+  // mesmo corte do reset e da devolução avulsa.
+  const trim = _trimCannons(player.cannons, player.maxCannons);
+  if (trim.removed > 0) { player.cannons = trim.cannons; recalcCannons(player); }
+
+  db.save(player, true).catch(e => console.error('Save error:', e));
+  _sendTalentUpdate(player, { buildMsg: `Build ${slot + 1} aplicada.` });
+}
+
 function handleEquipNavio(player, msg, ws) {
   const { SHIP_DEFS } = require('./constants');
   const ship = SHIP_DEFS[msg.shipId];
   if (!ship) return;
+  // Navio bônus se equipa por handleActivateBonusShip (que carrega os stats
+  // ROLADOS da instância). Passar por aqui zeraria activeBonusShipStats e o
+  // jogador perderia a rolagem, ficando com o piso da tabela.
+  if (ship.bonusOnly) { sendTo(ws, { type:'error', message:'Use o Banco para ativar um navio bônus' }); return; }
   if (!player.inventory.ships.includes(msg.shipId)) return;
   player.activeShip           = msg.shipId;
   player.activeBonusShipStats = null; // limpa navio bônus ao equipar navio regular
@@ -6172,6 +6699,7 @@ async function shutdown() {
   if (bossManager2) bossManager2.destroy();
   if (worldBossManager) worldBossManager.destroy();
   if (playerManager) playerManager.destroy();
+  if (auctionManager) auctionManager.destroy();
   
   // Destroi managers dinâmicos (mapas 3-6 e bônus)
   for (const { npc, boss } of regularManagers.values()) {
@@ -6213,7 +6741,11 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => console.log(`\n⚓  Sea of Code on http://localhost:${PORT}\n`));
 
 // Conecta ao banco em background (WebSocket/jogo só funcionam depois)
-db.init().then(() => {
+db.init().then(async () => {
+  // Carrega os leilões e resolve os que venceram com o servidor fora do ar.
+  // Antes do log de "DB pronto" de propósito: enquanto isto não termina, um
+  // jogador poderia reanunciar um navio que já está em leilão.
+  await auctionManager.init();
   console.log('✅ DB pronto — jogo totalmente operacional');
 }).catch(err => {
   console.error('❌ Falha ao conectar ao banco:', err.message);

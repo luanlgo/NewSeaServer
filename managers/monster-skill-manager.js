@@ -278,20 +278,6 @@ class MonsterSkillManager {
     }
   }
 
-  /**
-   * Salva de Bombordo: filtra os alvos pelo SETOR ativo do tick — setores
-   * alternados (paridade do tick), a leitura é o RITMO. Sem isto o círculo
-   * inteiro levava dano enquanto o desenho mostrava metade dos setores.
-   */
-  static inActiveSector(def, ox, oz, e, tickIndex) {
-    const n = def.sectorCount;
-    if (!n) return true;
-    const TAU = Math.PI * 2;
-    const a = Math.atan2(e.z - oz, e.x - ox) - (def.sectorOffset || 0);
-    const idx = Math.floor((((a % TAU) + TAU) % TAU) / (TAU / n));
-    return idx % 2 === (tickIndex % 2);
-  }
-
   // ── Alvos ──────────────────────────────────────────────────────────────────
 
   /** Todos os inimigos válidos do caster dentro da forma. */
@@ -362,7 +348,7 @@ class MonsterSkillManager {
    * Devolve a entrada de `hits` para o broadcast.
    */
   _damage(player, t, dmg) {
-    const { onNpcDamaged } = this.ctx;
+    const { onNpcDamaged, onPlayerKilled } = this.ctx;
     const e = t.e;
     // Névoa Espectral: enquanto o vulto está desfeito, NADA o machuca — nem a
     // área de uma relíquia. Sem esta linha o golpe atravessaria a névoa e o
@@ -381,6 +367,10 @@ class MonsterSkillManager {
       if (e.hp <= 0 && !e.dead) onNpcDamaged(player, e);
     } else {
       e.lastCombatTime = Date.now();
+      // Simétrico ao onNpcDamaged: uma skill do bestiário que afunda um JOGADOR
+      // também precisa resolver a morte (ruína, tela de morte, espólio,
+      // contrato de Procurado) — antes o alvo só ficava com 0 de vida.
+      if (onPlayerKilled) onPlayerKilled(e, player.id);
     }
     return { id: e.id, hp: e.hp, isNPC: t.isNPC, dmg };
   }
@@ -538,6 +528,11 @@ class MonsterSkillManager {
         // 12, a corrente dos Grilhões em 120 quando é 45.
         catchRadius: def.catchRadius, biteRadius: def.biteRadius,
         armWidth: def.armWidth, maxLength: def.maxLength,
+        // Lente do Abismo: tempo de viagem do feixe pelo corredor. O cliente já
+        // lia `travelMs` (ver _apply_monster_params) e ninguém o mandava — o
+        // raio atravessava no default da demo enquanto o dano saía no compasso
+        // do servidor.
+        travelMs: def.travelMs,
         // Canalizada: o cliente gira o efeito seguindo o cursor.
         follow: def.follow || false,
         // Dash: o corredor fica PLANTADO onde nasceu (o caster viaja, o

@@ -24,6 +24,12 @@ const RELIC_DEFS = {
   // mais que qualquer relíquia de dano e tirava a pressão de todo o PvE.
   r1:  { name: 'Âncora Sagrada',    icon: '⚓',  rarity: 'comum',    effect: 'heal_ship',   manaCost: 5, toggle: false, healAmount: 2000, healPct: 0.10,
          petUsable: true, petTarget: 'dono',    petRange: 'curto' },
+  // ── Névoa Espectral: UM golpe, não cinco segundos ─────────────────────────
+  // `duration` deixou de ser tempo de imunidade e passou a ser a JANELA em que
+  // o vulto fica de pé esperando o golpe. O primeiro que ele aparar o desfaz —
+  // ver utils/invincibility.js. Cinco segundos em que literalmente nada te
+  // machuca era resposta boa demais para qualquer coisa: apagava a fase inteira
+  // de um chefe, e no PvP bastava apertar para vencer a troca.
   r2:  { name: 'Névoa Espectral',   icon: '🌫️',  rarity: 'épico',    effect: 'invincible',  manaCost: 6, toggle: false, duration: 5000,
          petUsable: true, petTarget: 'dono',    petRange: 'curto' },
   r3:  { name: 'Raio Divino',       icon: '⚡',  rarity: 'raro',     effect: 'lightning',   manaCost: 5, toggle: false, damage: 2000, damagePct: 0.80, targetMouse: true, radius: 45,  castTime: 700,

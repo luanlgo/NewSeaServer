@@ -14,6 +14,7 @@
 const { dist2D } = require('../utils/helpers');
 const { ATTACK_DEFS, MAP_DEFS } = require('../constants');
 const { starAttackAllowed } = require('../utils/star-gate');
+const { isInvincible, consumeInvincible } = require('../utils/invincibility');
 // Geometria compartilhada com as relíquias do bestiário: o ataque do bicho e a
 // relíquia que ele dropa precisam acertar EXATAMENTE a mesma área.
 const MonsterSkillManager = require('./monster-skill-manager');
@@ -674,8 +675,10 @@ class AttackManager {
     for (const p of mapPlayers) {
       if (this._isHit(p, attack, targetX, targetZ, castOrigin)) {
         // Névoa Espectral: invencível bloqueia também ataques em área
-        // (antes só projéteis respeitavam — necessário para a defensiva do pet)
-        if (p.relicInvincibleExpires && _hitNow < p.relicInvincibleExpires) {
+        // (antes só projéteis respeitavam — necessário para a defensiva do pet).
+        // Aparar em área gasta a carga igual: um golpe é um golpe.
+        if (isInvincible(p, _hitNow)) {
+          consumeInvincible(p, _hitNow);
           this.addEvent({ type: 'shield_block', targetId: p.id }, mapLevel);
           continue;
         }
@@ -697,7 +700,10 @@ class AttackManager {
           const blocked = Math.round(dmg * 0.30);
           dmg -= blocked;
           const goldCost = Math.round(blocked * 0.10);
-          if (goldCost > 0) p.gold = Math.max(0, (p.gold || 0) - goldCost);
+          if (goldCost > 0) {
+            p.gold = Math.max(0, (p.gold || 0) - goldCost);
+            this.journal?.accrue(p, 'gold_shield', { gold: -goldCost });
+          }
         }
         // ── Carapaça Eriçada (r32): mitiga e DEVOLVE parte do golpe ───────
         // Isto só existia no projectile-manager, ou seja, a carapaça só valia
@@ -733,6 +739,7 @@ class AttackManager {
         if (goldStealRatio > 0 && dmg > 0) {
           goldStolen = Math.max(1, Math.floor(dmg * goldStealRatio));
           p.gold     = Math.max(0, (p.gold || 0) - goldStolen);
+          this.journal?.accrue(p, 'gold_stolen', { gold: -goldStolen });
         }
 
         hits.push({ id: p.id, hp: p.hp, dmg, goldStolen });
@@ -759,19 +766,10 @@ class AttackManager {
           }
         }
 
-        // Verifica morte do jogador
-        if (p.hp <= 0 && !p.dead) {
-          p.dead = true;
-          // Zona vermelha: qualquer morte (até pro arauto) dropa ruína saqueável
-          if (this.wreckManager) this.wreckManager.onPlayerDeath(p);
-          this.addEvent({
-            type:     'entity_dead',
-            id:       p.id,
-            name:     p.name,
-            isNPC:    false,
-            killerId: npc.id,
-          }, mapLevel, /* urgent */ true);
-        }
+        // Morte do jogador — ruína saqueável e tela de morte saem de
+        // resolvePlayerDeath (server.js), o mesmo caminho do PvP. Killer é um
+        // NPC, então nada é creditado a ninguém.
+        if (this.onPlayerKilled) this.onPlayerKilled(p, npc.id);
 
         // ── CC do bestiário (`cc`) ───────────────────────────────────────
         // O lado da RELÍQUIA sempre aplicou (monster-skill-manager); o lado do
@@ -1088,7 +1086,7 @@ class AttackManager {
     const perto = allPlayers
       .filter(p => p.mapLevel === mapLevel && !p.dead
                 && !(p.safeUntil && agora < p.safeUntil)
-                && !(p.relicInvincibleExpires && agora < p.relicInvincibleExpires)
+                && !isInvincible(p, agora)
                 && dist2D(npc, p) <= raio)
       .sort((a, b) => dist2D(npc, a) - dist2D(npc, b));
     if (perto.length === 0) return;
@@ -1114,12 +1112,7 @@ class AttackManager {
           x: npc.x, z: npc.z,
           hits: [{ id: presa.id, hp: presa.hp, maxHp: presa.maxHp, dmg }],
         }, mapLevel);
-        if (presa.hp <= 0 && !presa.dead) {
-          presa.dead = true;
-          if (this.wreckManager) this.wreckManager.onPlayerDeath(presa);
-          this.addEvent({ type: 'entity_dead', id: presa.id, name: presa.name,
-                          isNPC: false, killerId: npc.id }, mapLevel, true);
-        }
+        if (this.onPlayerKilled) this.onPlayerKilled(presa, npc.id);
       }, i * step);
       (npc._tickTimers ||= []).push(tm);
     }

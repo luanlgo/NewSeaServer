@@ -239,6 +239,13 @@ class FleetEventManager {
         dobroes: killer.dobroes,
         reward:  { type: 'dobrao', amount: dobrao },
       });
+      // Diário: a caçada à frota é um evento raro e com nome — o jogador vai
+      // querer reencontrá-lo depois. `journal` é injetado pelo server.js e pode
+      // não existir (testes), daí o encadeamento opcional.
+      this.journal?.log(killer, 'reward', {
+        source: 'frota', gold, dobroes: dobrao, target: npc.name,
+      });
+      this.journal?.ledger(killer, 'fleet', { gold, dobroes: dobrao }, { target: npc.name });
     }
 
     const remaining = this.active.shipIds.size;

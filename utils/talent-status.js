@@ -3,7 +3,7 @@
 //
 // ── Por que existe ────────────────────────────────────────────────────────────
 // Dos 120 talentos, 68 são passivos permanentes (ficariam acesos o tempo todo e
-// não informam nada) e 52 dependem de contexto. Estes 52 são os que viram ícone.
+// não informam nada) e 51 dependem de contexto. Estes 51 são os que viram ícone.
 // Eles se dividem em dois regimes:
 //
 //   ESTADO    — 22 talentos que descrevem uma situação em que o jogador ESTÁ:
@@ -35,7 +35,7 @@ const LINGER_MS = 3000;
 /** Teto de ícones enviados. A HUD quebra em duas linhas; mais que isso é sopa. */
 const MAX_STATUS = 24;
 
-// ── Os 52 que podem virar status ─────────────────────────────────────────────
+// ── Os 51 que podem virar status ─────────────────────────────────────────────
 // kind: 'stack' | 'window' | 'cooldown' | 'cond' | 'hit'
 // Os três primeiros regimes têm tratamento próprio abaixo; 'cond' e 'hit' saem
 // do coletor de procs, e a diferença entre eles é só o LINGER.
@@ -55,7 +55,6 @@ const STATUS_STATS = {
   speed_in_combat_pct:     'cond',
   speed_out_combat_pct:    'cond',
   speed_low_hp_pct:        'cond',
-  wave_speed_pct:          'cond',
   weather_speed_pct:       'cond',
   crit_damage_high_hp:     'cond',
   damage_low_hp_pct:       'cond',
@@ -86,7 +85,7 @@ const STATUS_STATS = {
   burn_pct:                'hit',
   thorns_pct:              'hit',
   lifesteal_pct:           'hit',
-  damage_to_mana_pct:      'hit',
+  mana_on_hit_flat:        'hit',
   death_save_chance:       'hit',
   dodge_chance:            'hit',
   relic_crit_chance:       'hit',
@@ -96,7 +95,8 @@ const STATUS_STATS = {
   reduction_relic_pct:     'hit',
   dot_reduction_pct:       'hit',
   crit_taken_reduction:    'hit',
-  flat_reduction:          'hit',
+  flat_reduction_pct:      'hit',
+  slow_on_hit_pct:         'hit',
 };
 
 // stat → id do talento. Derivado dos defs: se um talento mudar de stat, o mapa
@@ -199,7 +199,7 @@ function activeStatuses(player, ctx = {}, now = Date.now()) {
   const seen = new Set(out.map(e => e[0]));
   for (const stat of procs) {
     const kind = STATUS_STATS[stat];
-    // `procs` traz passivos junto (damage_pct e afins) — só os 52 entram, e as
+    // `procs` traz passivos junto (damage_pct e afins) — só os 51 entram, e as
     // janelas/pilhas já foram tratadas acima com o número certo.
     if (kind !== 'cond') continue;
     const id = ID_BY_STAT[stat];

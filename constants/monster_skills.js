@@ -755,8 +755,14 @@ const MONSTER_SKILLS = {
     // você correr em linha reta desde o começo. O preço é atravessar a arena
     // sem atirar, e é essa troca que a skill vende.
     desc: 'Lança 3 luzes que perseguem alvos diferentes. Cada uma implode numa explosão de luz ao alcançar — ou depois de 5 s, onde estiver.',
+    // `radius` 60 (era 34): o número é o raio da IMPLOSÃO, e o desenho é medido
+    // por ele — a versão do jogador saía com metade do estouro do bicho (70) e
+    // lia como um faísca, não como uma luz de carne implodindo. Subir o raio
+    // também abre a área de dano, que é o preço de fazer o efeito valer o que
+    // o desenho promete; não foi para 70 porque a relíquia lança TRÊS e o bicho
+    // acerta uma sala inteira de uma vez.
     relic: { manaCost: 6, lightCount: 3, lifeMs: 5000, lightSpeed: 40, catchRadius: 14,
-             seekRadius: 150, radius: 34, damagePct: 0.95, castMs: 1000,
+             seekRadius: 150, radius: 60, damagePct: 0.95, castMs: 1000,
              cc: { slowPct: 0.25, slowMs: 1500 } },
     npc:   { rangeMin: 0, rangeMax: 300, lightCount: 3, lifeMs: 5000, lightSpeed: 62, catchRadius: 18,
              radius: 70, damageMult: 2.2, castTime: 1000, cooldown: 21000, weight: 6,
@@ -801,18 +807,37 @@ const MONSTER_SKILLS = {
     //   2. o raio dispara pelo corredor — rápido, reto, sem re-mira
     //   3. o fim do corredor irrompe (`eruptRadius`), e é lá que mais dói
     //
-    // Não é canalizada (nada de `follow`): ela mira UMA vez, no fim do cast, e
-    // solta. É o oposto do Jato do Pescoço e da Lança do Vazio, que perseguem
-    // — aqui você não sai do eixo depois que saiu, você sai ANTES. Um chefe de
-    // arena precisa de pelo menos um golpe que se leia pela geometria e não
-    // pelo reflexo, senão o conjunto inteiro vira corrida.
+    // ── Duas faces, dois ritmos ─────────────────────────────────────────────
+    // NA MÃO DO BICHO ela NÃO é canalizada (o `follow` mora dentro de `relic`,
+    // não aqui em cima): mira uma vez no fim do cast e solta. Um chefe de arena
+    // precisa de pelo menos um golpe que se leia pela geometria e não pelo
+    // reflexo, senão o conjunto inteiro vira corrida.
+    //
+    // NA MÃO DO JOGADOR ela é o oposto: a lente ACOMPANHA o cursor e o corredor
+    // machuca leva a leva enquanto dura. É a família do Jato do Pescoço — quem
+    // segura o alvo dentro do feixe leva o dano cheio, quem só o cruza leva uma
+    // leva ou duas. A troca é honesta nos dois lados: o bicho cobra leitura de
+    // mapa, o jogador cobra mira contínua.
     //
     // `eruptRadius` no fim faz o corredor ter um lugar PIOR que os outros: quem
     // está na linha leva, quem está no ponto final leva e ainda apanha da
     // irrupção. Dá ao jogador uma leitura de "para que lado eu saio" em vez de
     // só "saio".
     desc: 'A lente se abre, gira carregando e dispara um raio reto. O fim do corredor irrompe em lascas de luz.',
-    relic: { manaCost: 6, length: 130, width: 26, eruptRadius: 32, damagePct: 1.10, castMs: 1300, travelMs: 180 },
+    // `follow`/`ticks` só aqui dentro: o spread de `relic` vem DEPOIS do
+    // `follow: s.follow || false` no montador dos defs (ver o fim do arquivo),
+    // então este campo sobrescreve o de cima sem tocar na versão do bicho.
+    //
+    // 10 levas × 0,15 = 1,50 do poder de fogo se o alvo ficar no corredor as
+    // 1,35 s inteiras (era 1,10 num golpe só). O teto subiu porque agora tem
+    // como errar: antes bastava acertar o instante do disparo.
+    //
+    // `width` 26 → 34: num corredor que você dirige com o mouse, 13 un de folga
+    // para cada lado é menos que o erro de mão em movimento — era a mesma
+    // queixa que engrossou o Jato do Pescoço.
+    relic: { manaCost: 6, length: 130, width: 34, eruptRadius: 32, damagePct: 1.10,
+             castMs: 1300, travelMs: 180, follow: true,
+             ticks: { count: 10, intervalMs: 150, pct: 0.15 } },
     npc:   { rangeMin: 0, rangeMax: 280, length: 280, width: 46, eruptRadius: 60, damageMult: 2.9, castTime: 1400, cooldown: 15000, weight: 7,
              travelMs: 200 },
   },
@@ -840,8 +865,6 @@ const MONSTER_SKILLS = {
 // Uma passada só sobre a tabela gera as duas visões. Não escreva estas
 // estruturas à mão: adicionar um ataque em MONSTER_SKILLS já propaga pros dois.
 
-/** relicId → skillKey (ex.: 'r14' → 'crab_claw_slam'). */
-const RELIC_TO_SKILL = {};
 /** npc source → [relicId, ...] — o pool de drop DAQUELE bicho. */
 const SKILLS_BY_SOURCE = {};
 /** Entradas prontas para o RELIC_DEFS do jogo (effect genérico 'monster_skill'). */
@@ -852,7 +875,6 @@ const MONSTER_ATTACK_DEFS = {};
 const STAR_RELIC_IDS = new Set();
 
 for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
-  RELIC_TO_SKILL[s.relicId] = key;
   (SKILLS_BY_SOURCE[s.source] ||= []).push(s.relicId);
   if (s.star) STAR_RELIC_IDS.add(s.relicId);
 
@@ -914,5 +936,5 @@ for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
 
 module.exports = {
   MONSTER_SKILLS, MONSTER_RELIC_DEFS, MONSTER_ATTACK_DEFS,
-  RELIC_TO_SKILL, SKILLS_BY_SOURCE, STAR_RELIC_IDS,
+  SKILLS_BY_SOURCE, STAR_RELIC_IDS,
 };

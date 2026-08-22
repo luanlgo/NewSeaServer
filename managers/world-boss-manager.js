@@ -246,10 +246,12 @@ class WorldBossManager {
 
       // XP de mapa proporcional ao dano, com o talento de XP do jogador
       const xpShare = totalXp > 0 ? Math.max(1, Math.round(totalXp * share)) : 0;
+      let xpCredited = 0;
       if (xpShare > 0) {
         // Mesma correção do boss-manager: o boss mundial é chefe, então o XP
         // passa por lootMult('xp_boss') e não só pelo bônus geral de XP.
-        player.mapXp = (player.mapXp || 0) + Math.round(xpShare * fx.lootMult(player, 'xp_boss'));
+        xpCredited = Math.round(xpShare * fx.lootMult(player, 'xp_boss'));
+        player.mapXp = (player.mapXp || 0) + xpCredited;
         const xpNeeded = (MAP_DEFS[player.mapLevel || 1] || MAP_DEFS[1]).xpToAdvance || 99999;
         if (xpNeeded && player.mapXp >= xpNeeded && MAP_DEFS[(player.mapLevel || 1) + 1]) {
           if (!player._mapUnlockNotified) {
@@ -260,6 +262,9 @@ class WorldBossManager {
           player._mapUnlockNotified = false;
         }
       }
+
+      this.journal?.ledger(player, 'world_boss',
+        { dobroes: drops, xp: xpCredited }, { target: boss.name || '' });
 
       db.save(player, true).catch(e => console.error('WorldBoss save error:', e));
 

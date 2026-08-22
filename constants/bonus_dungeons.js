@@ -10,7 +10,16 @@
 // ── BONUS NPC DEFINITIONS ──────────────────────────────────────────────────
 // NPCs ordered from most common to rarest (colossal → massive → gigantic)
 const BONUS_NPC_DEFS = {
-  // ── Tier 1: ~300× mapa-1 HP, ~300× dano/salva, recompensa base ──────────────
+  // ── Tier 1 ────────────────────────────────────────────────────────────────
+  // ATENÇÃO à régua: até 2026-08-19 estes números eram múltiplos do MAPA 1
+  // ("~300× mapa-1"), calibrados quando o jogo terminava por ali. O jogo passou
+  // do mapa 11, onde o NPC COMUM tem 3.000.000 de vida, e a masmorra ficou para
+  // trás — o chefe tier 1 tinha menos vida que um NPC comum do mapa 4.
+  //
+  // `hpMin/hpMax` faz DUAS coisas: é a vida do chefe E a vida do navio que ele
+  // dropa (ver rollBonusShip). Os valores de agora são do Luang e miram o navio:
+  // 70–100 mil abre acima do Fancy (70.000), que é o melhor navio comprável —
+  // antes o prêmio da masmorra era um downgrade do que se compra com ouro.
   colossal_ghost_pirate_galleon: {
     id:             'colossal_ghost_pirate_galleon',
     name:           'Colossal Ghost Pirate Galleon',
@@ -21,20 +30,23 @@ const BONUS_NPC_DEFS = {
     rotOffset:      0,
     hitRadius:      18,
     usesCannons:    true,
-    cannonRange:    450,
+    // 120 = alcance do melhor canhão do Mercado. Era 450: o chefe alcançava
+    // quase 4× mais longe que qualquer canhão comprável, então ele batia de
+    // onde o jogador não tinha como responder. Os três voltaram para 120.
+    cannonRange:    120,
     cannonSpread:   0.12,
     cannonCount:    2,       // projéteis por salva do NPC inimigo
     fireInterval:   3000,
     shipDropId:     'colossal_ghost_pirate_galleon',
-    shipDropChance: 0.03,
+    shipDropChance: 1, //0.03
     stats: {
-      hpMin:     30000, hpMax:     40000,  // ≈300-400× mapa-1 (base 100)
-      cannonMin: 60,    cannonMax: 80,     // slots do NAVIO DROPADO (não do NPC)
+      hpMin:     70000, hpMax:     80000,
+      cannonMin: 60,    cannonMax: 70,     // slots do NAVIO DROPADO (não do NPC)
       dmgMin:    1000,  dmgMax:    1400,   // ≈300× mapa-1 por salva (2 proj × 1200 = 2400)
     },
   },
 
-  // ── Tier 2: ~400× HP, ~400× dano/salva ───────────────────────────────────
+  // ── Tier 2 ────────────────────────────────────────────────────────────────
   massive_imperial_warship: {
     id:             'massive_imperial_warship',
     name:           'Massive Imperial Warship',
@@ -45,20 +57,20 @@ const BONUS_NPC_DEFS = {
     rotOffset:      0,
     hitRadius:      16,
     usesCannons:    true,
-    cannonRange:    460,
+    cannonRange:    120,
     cannonSpread:   0.10,
     cannonCount:    2,
     fireInterval:   2800,
     shipDropId:     'massive_imperial_warship',
-    shipDropChance: 0.02,
+    shipDropChance: 1, //0.02
     stats: {
-      hpMin:     35000, hpMax:     45000,  // ≈400× mapa-1
-      cannonMin: 70,    cannonMax: 90,     // slots do NAVIO DROPADO
+      hpMin:     80000, hpMax:     90000,
+      cannonMin: 70,    cannonMax: 80,     // slots do NAVIO DROPADO
       dmgMin:    1400,  dmgMax:    1800,   // ≈400× mapa-1 por salva (2 × 1600 = 3200)
     },
   },
 
-  // ── Tier 3: ~500× HP, ~500× dano/salva ───────────────────────────────────
+  // ── Tier 3 ────────────────────────────────────────────────────────────────
   gigantic_mechanical_pirate_ship: {
     id:             'gigantic_mechanical_pirate_ship',
     name:           'Gigantic Mechanical Pirate Ship',
@@ -69,15 +81,15 @@ const BONUS_NPC_DEFS = {
     rotOffset:      0,
     hitRadius:      22,
     usesCannons:    true,
-    cannonRange:    480,
+    cannonRange:    120,
     cannonSpread:   0.08,
     cannonCount:    2,
     fireInterval:   2500,
     shipDropId:     'gigantic_mechanical_pirate_ship',
-    shipDropChance: 0.01,
+    shipDropChance: 1, //0.01
     stats: {
-      hpMin:     45000, hpMax:     55000,  // ≈500× mapa-1
-      cannonMin: 80,    cannonMax: 100,    // slots do NAVIO DROPADO
+      hpMin:     90000, hpMax:    100000,
+      cannonMin: 80,    cannonMax: 90,    // slots do NAVIO DROPADO
       dmgMin:    1900,  dmgMax:    2500,   // ≈500× mapa-1 por salva (2 × 2200 = 4400)
     },
   },
@@ -92,10 +104,10 @@ const BONUS_NPC_DEFS = {
 const WAVE_REWARD_BASE = {
   dobroes:    3000,    // 500× referência (mapa-2 dá ~6/kill)
   gold:       20000,   // ≈500× mapa-1 (35 avg × 500 ≈ 17.500, arredondado)
-  ironPlates: 15,
-  goldDust:   5,
-  gunpowder:  8,
-  xp:         300,
+  ironPlates: 500,
+  goldDust:   100,
+  gunpowder:  800,
+  xp:         3000,
 };
 const WAVE_REWARD_MULT = 1.5;  // +50% por tier (mapa 2 = 1.5×, mapa 3 = 2.25×)
 
@@ -184,80 +196,6 @@ function rollBonusShip(npcDef) {
   };
 }
 
-// ── DUNGEON MAP LEVEL ASSIGNMENTS ──────────────────────────────────────────
-// Map level IDs used for dungeon zones on the server and client.
-// Change these if you need to shift dungeon levels away from other maps.
-const DUNGEON_MAP_LEVEL = {
-  bonus_map_1: 10,
-  bonus_map_2: 11,
-  bonus_map_3: 12,
-};
-
-// ── BONUS_DUNGEON_MAP_CONFIGS ──────────────────────────────────────────────
-// Visual / spatial config sent to the client via map_transition.mapDef.
-// All numeric values here are designed to be tuned for balance / atmosphere.
-const BONUS_DUNGEON_MAP_CONFIGS = {
-  bonus_map_1: {
-    id: 'bonus_map_1', mapLevel: 10, name: 'Baía dos Naufragados', icon: '🏴‍☠️',
-    size:            1000,   // zone radius in world units
-    playerSpawnZ:    150,   // player Z on entry (NPC spawns at 0,0)
-    // Respawn: delay (ms) before a new dungeon NPC appears after one is killed.
-    // 0 = NPC only respawns when a new player enters.
-    npcRespawnDelay: 30000,
-  },
-  bonus_map_2: {
-    id: 'bonus_map_2', mapLevel: 11, name: 'Fortaleza do Esquecimento', icon: '🏰',
-    size:            1000,
-    playerSpawnZ:    150,
-    npcRespawnDelay: 30000,
-  },
-  bonus_map_3: {
-    id: 'bonus_map_3', mapLevel: 12, name: 'Abismo dos Afundados', icon: '🌊',
-    size:            1000,
-    playerSpawnZ:    150,
-    npcRespawnDelay: 45000,
-  },
-};
-
-// ── DUNGEON_MAP_DEFS ────────────────────────────────────────────────────────
-// MAP_DEFS-compatible entries (keyed by mapLevel) for use with NPCManager.
-// NPC stats use the average of min/max from BONUS_NPC_DEFS for consistent
-// fight difficulty. Adjust hpMin/hpMax/cannonMin/cannonMax in BONUS_NPC_DEFS
-// to balance the fight.
-const DUNGEON_MAP_DEFS = {};
-Object.entries(BONUS_DUNGEON_MAP_CONFIGS).forEach(([dungeonId, config]) => {
-  const dungeonDef  = BONUS_DUNGEON_DEFS[dungeonId];
-  const npcDef      = BONUS_NPC_DEFS[dungeonDef.npcId];
-  const avgHp  = Math.round((npcDef.stats.hpMin  + npcDef.stats.hpMax)  / 2);
-  const avgDmg = Math.round((npcDef.stats.dmgMin + npcDef.stats.dmgMax) / 2);
-  // cannonCount do NPC vem de npcDef.cannonCount (projéteis por salva do inimigo).
-  // stats.cannonMin/Max são os slots do NAVIO DROPADO, não do NPC inimigo.
-  const npcCannonCount = npcDef.cannonCount || 2;
-  DUNGEON_MAP_DEFS[config.mapLevel] = {
-    size:      config.size,
-    isDungeon: true,
-    dungeonId,
-    npc: {
-      count:        1,
-      names:        [npcDef.name],
-      baseHp:       avgHp,
-      baseDamage:   avgDmg,
-      hitRadius:    npcDef.hitRadius,
-      usesCannons:  true,
-      cannonRange:  npcDef.cannonRange  || 150,
-      cannonCount:  npcCannonCount,      // projéteis por salva (2, não 70!)
-      fireInterval: npcDef.fireInterval || 3500,
-      model:        npcDef.model,
-      scale:        npcDef.scale,
-      yOffset:      npcDef.yOffset,
-      rotOffset:    npcDef.rotOffset,
-      hullColor:    0x111111,
-      sailColor:    0x440022,
-      flagColor:    0x220011,
-    },
-  };
-});
-
 module.exports = {
   BONUS_NPC_DEFS,
   BONUS_DUNGEON_DEFS,
@@ -265,7 +203,4 @@ module.exports = {
   WAVE_REWARD_MULT,
   computeWaveRewards,
   rollBonusShip,
-  DUNGEON_MAP_LEVEL,
-  BONUS_DUNGEON_MAP_CONFIGS,
-  DUNGEON_MAP_DEFS,
 };

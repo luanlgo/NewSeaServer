@@ -3,6 +3,7 @@ const { uid, rand, clamp, dist2D } = require('../utils/helpers');
 const { pushOutOfIslands, pushOutOfWalls } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, NPC_COUNT, MAP_DEFS, WORLD_BOSS_DEF, HIT_RADIUS, difficultyMult } = require('../constants');
 const { bloodMoonFactor } = require('../utils/world-state');
+const { isInvincible, consumeInvincible } = require('../utils/invincibility');
 const fx = require('../utils/talent-effects');
 
 // ── Equilíbrio de aggro dos NPCs normais (navios piratas / monstros) ─────────
@@ -306,8 +307,9 @@ class NPCManager {
 
   // Rescales boss stats — keeps HP proportional, NEVER resets to full.
   // Escala APENAS pela dificuldade escolhida pelo jogador (não por kills).
-  _rescaleBoss(boss, diffMult = boss.diffMult || 1) {
+  _rescaleBoss(boss, diffMult = boss.diffMult || 1, diffIdx = boss.diffIdx || 0) {
     if (boss._scaledForDiff === diffMult) return;
+    boss.diffIdx = diffIdx;
     // Dungeon bosses têm stats fixos definidos em spawnWithDef — não escalam.
     // Sem esse guard, _rescaleBoss zeraria cannonDmg e resetaria HP para 600 (fallback).
     if (boss.isDungeonBoss) {
@@ -440,6 +442,7 @@ class NPCManager {
             id: npc.id,
             hp: npc.hp,
             maxHp: npc.maxHp,
+            diffIdx: npc.diffIdx || 0,
             tier: 0
           });
         }
@@ -457,15 +460,17 @@ class NPCManager {
             // Fora de combate e novo target em range → rescala para a dificuldade dele
             // (× Lua de Sangue, quando ativa — mesma regra dos NPCs comuns)
             const bossBlood = bloodMoonFactor();
-            const diffMult  = difficultyMult(nearest.difficulty || 0) * bossBlood;
+            const bossDiffIdx = nearest.difficulty || 0;
+            const diffMult  = difficultyMult(bossDiffIdx) * bossBlood;
             npc.bloodMult   = bossBlood;
             if (diffMult !== npc._scaledForDiff) {
-              this._rescaleBoss(npc, diffMult);
+              this._rescaleBoss(npc, diffMult, bossDiffIdx);
               this._broadcast({
                 type: 'entity_rescale',
                 id: npc.id,
                 hp: npc.hp,
                 maxHp: npc.maxHp,
+                diffIdx: npc.diffIdx || 0,
                 tier: 0,
               });
               console.log(`👹 Boss map${npc.mapLevel} rescaled → diff ${nearest.difficulty || 0} (OOC, target: ${nearest.id})`);
@@ -473,12 +478,13 @@ class NPCManager {
           } else if (!nearest && (npc._scaledForDiff || 1) !== 1) {
             // Fora de combate e sem ninguém por perto → reset para dificuldade base
             npc.bloodMult = 1;
-            this._rescaleBoss(npc, 1);
+            this._rescaleBoss(npc, 1, 0);
             this._broadcast({
               type: 'entity_rescale',
               id: npc.id,
               hp: npc.hp,
               maxHp: npc.maxHp,
+              diffIdx: npc.diffIdx || 0,
               tier: 0,
             });
             console.log(`👹 Boss map${npc.mapLevel} reset → base (OOC, idle)`);
@@ -764,15 +770,18 @@ class NPCManager {
                   if (p.dead) continue;
                   if (dist2D(npc, p) > (atk.damageRadius || 220)) continue;
                   let dmg = Math.round((atk.damage || 200) * (npc.dmgMult || 1));
-                  // Invencível (Névoa) + defensiva do pet valem aqui também
-                  if (p.relicInvincibleExpires && Date.now() < p.relicInvincibleExpires) continue;
+                  // Invencível (Névoa) + defensiva do pet valem aqui também.
+                  // A Névoa apara este golpe e se gasta nele.
+                  if (isInvincible(p)) { consumeInvincible(p); continue; }
                   const petMgr = this.projectileManager ? this.projectileManager.petManager : null;
                   if (petMgr) {
                     dmg = petMgr.interceptOwnerDamage(p, dmg);
                     if (dmg <= 0) continue;
                   }
                   p.hp = Math.max(0, p.hp - dmg);
-                  if (p.hp <= 0 && !p.dead) p.dead = true;
+                  // Antes só marcava `dead` — sem ruína e sem entity_dead, o
+                  // jogador morria pelo emerge do boss e nem via a tela de morte.
+                  this.projectileManager?.onPlayerKilled?.(p, npc.id);
                   this._broadcast({ type: 'npc_attack_hit', targetId: pid, damage: dmg, x: npc.x, z: npc.z, attackId: atk.id });
                 }
                 this._broadcast({ type: 'boss_emerge_vfx', npcId: npc.id, x: npc.x, z: npc.z });
@@ -967,6 +976,11 @@ class NPCManager {
       isDungeonBoss: n.isDungeonBoss || false,
       isWorldBoss: n.isWorldBoss || false,
       isFleetShip: n.isFleetShip || false,
+      // Dificuldade em que ESTE bicho está escalado — o cliente pinta o nome
+      // com a cor dela (mesma paleta do botão/cartas de dificuldade).
+      // Navio de frota tem stats fixos por mapa e nunca re-escala: -1 = sem
+      // dificuldade, e o cliente deixa o nome branco em vez de mentir "fácil".
+      diffIdx: n.isFleetShip ? -1 : (n.diffIdx || 0),
       rarity: n.rarity || null,
       mapLevel: n.mapLevel || 1,
       npcHullColor: n.npcHullColor,
@@ -1000,17 +1014,6 @@ class NPCManager {
     }
   }
 
-  /** Broadcast to ALL connected players regardless of zone (for world boss events). */
-  _broadcastAll(data) {
-    const msg = JSON.stringify(data);
-    
-    if (this.projectileManager.wss) {
-      for (const ws of this.projectileManager.wss.clients) {
-        const MAX_BUFFER = parseInt(process.env.MAX_BUFFER);
-        if (ws.readyState === 1 && ws.bufferedAmount < MAX_BUFFER) ws.send(msg);
-      }
-    }
-  }
 
   /**
    * Registra uma zona de perigo para que os NPCs tentem desviar.

@@ -56,6 +56,7 @@ const KILL_SPEED_MS = 5000;   // atk_ventania
 const RELIC_SPEED_MS = 4000;  // atk_impulsoarcano
 const SENTINEL_MS   = 5000;   // def_sentinela
 const SECOND_WIND_CD_MS = 60000; // def_segundofolego
+const SLOW_ON_HIT_MS    = 2000;  // atk_miralonga (Rasga-Velame)
 
 // Limites de acúmulo.
 const FRENZY_MAX_STACKS   = 5;   // atk_frenesi
@@ -267,14 +268,26 @@ function damageReduction(target, ctx = {}, procs = null) {
 }
 
 /**
+ * Corte PLANO da Carapaça de Kraken, em pontos de vida.
+ *
+ * O talento declara uma fração da vida MÁXIMA de quem apanha, não um número
+ * fixo: assim o mesmo nó vale a mesma coisa no barco de 200 e no de 70k, e
+ * continua valendo quando o mapa seguinte dobrar o dano de todo mundo. Ver a
+ * nota em constants/talents.js.
+ */
+function flatReduction(target) {
+  if (!target || !target.tal || !target.maxHp) return 0;
+  return target.maxHp * _p(target, 'flat_reduction_pct');
+}
+
+/**
  * Aplica redução percentual + redução plana (def_carapaca) a um golpe.
  * @returns {number} dano final, nunca abaixo de 1 se o golpe original era > 0
  */
 function applyDamageReduction(target, dmg, ctx = {}) {
   if (dmg <= 0) return dmg;
   const dr = damageReduction(target, ctx);
-  const flat = _f(target, 'flat_reduction');
-  return Math.max(1, Math.round(dmg * (1 - dr) - flat));
+  return Math.max(1, Math.round(dmg * (1 - dr) - flatReduction(target)));
 }
 
 /** Chance de desviar totalmente de um tiro (def_esquiva + def_alvodificil + vento). */
@@ -299,10 +312,16 @@ function lifestealAmount(attacker, dmgDealt) {
   return pct > 0 ? Math.round(dmgDealt * pct) : 0;
 }
 
-/** Mana ganha ao levar dano (def_absorcao). */
-function damageToMana(target, dmgTaken) {
-  const pct = _p(target, 'damage_to_mana_pct');
-  return pct > 0 ? dmgTaken * pct : 0;
+/**
+ * Mana ganha ao levar um golpe (def_absorcao) — valor PLANO, independente do
+ * tamanho do golpe.
+ *
+ * Era fração do dano, e nessa forma o talento nunca teve significado: a barra
+ * de mana tem ~20 pontos e um golpe tira dezenas de milhares, então qualquer
+ * percentagem enchia tudo. Ver a nota em constants/talents.js.
+ */
+function manaOnHit(target) {
+  return _f(target, 'mana_on_hit_flat');
 }
 
 /** Chance de sobreviver a um golpe fatal com 1 de vida (def_teimosia). */
@@ -417,9 +436,16 @@ function reloadMult(player) {
   return Math.max(0.20, 1 - _p(player, 'reload_pct'));
 }
 
-/** Multiplicador do alcance do canhão (atk_miralonga). */
-function cannonRangeMult(player) {
-  return 1 + _p(player, 'cannon_range_pct');
+/**
+ * Rasga-Velame (atk_miralonga): lentidão que cada acerto de canhão gruda no
+ * alvo. Devolve a INTENSIDADE em fração (0,10 = −10% de velocidade); a duração
+ * é fixa, em SLOW_ON_HIT_MS.
+ *
+ * Curta de propósito: o nó cheio vale −10%, e é a cadência do canhão que
+ * mantém o efeito de pé. Parar de atirar solta o alvo em 2s.
+ */
+function slowOnHit(player) {
+  return _p(player, 'slow_on_hit_pct');
 }
 
 // ── Movimento ────────────────────────────────────────────────────────────────
@@ -445,7 +471,6 @@ function speedMult(player, ctx = {}, procs = null) {
   if (now - (player._moveStartedAt || 0) < BURST_MS)    add += _pc(player, 'burst_speed_pct', procs);
   if (now - (player._lastKillAt   || 0) < KILL_SPEED_MS) add += _pc(player, 'speed_on_kill_pct', procs);
   if (now - (player._lastRelicAt  || 0) < RELIC_SPEED_MS) add += _pc(player, 'speed_on_relic_pct', procs);
-  if (ctx.withCurrent) add += _pc(player, 'wave_speed_pct', procs);
 
   // Espírito do Vento: a metade de velocidade é o total declarado (+2%/nível).
   add += _p(player, 'wind_spirit_pct');
@@ -491,11 +516,6 @@ function weatherResist(player) {
   return _clamp(_p(player, 'weather_speed_pct'), 0, 1);
 }
 
-/** Multiplicador da velocidade ao cruzar bordas de mapa (res_navegacao). */
-function mapTravelMult(player) {
-  return 1 + _p(player, 'map_travel_pct');
-}
-
 // ── Controle de grupo ────────────────────────────────────────────────────────
 
 /** Multiplicador da DURAÇÃO de atordoamento/lentidão sofridos (def_vontade). */
@@ -520,9 +540,8 @@ const _ABYSSAL = new Set(['gold', 'dobrao', 'xp']);
 
 /**
  * Multiplicador de um tipo de ganho.
- * @param {string} kind gold|dobrao|xp|xp_boss|rare|relic_drop|gunpowder|iron|
- *                      map_fragment|ammo|wreck|fishing|mission|bounty|trade|
- *                      pet_food|party_loot|bank
+ * @param {string} kind gold|dobrao|xp|xp_boss|rare|relic_drop|wreck|fishing|
+ *                      mission|bounty|pet_food|party_loot
  */
 function lootMult(player, kind) {
   if (!player || !player.tal) return 1.0;
@@ -533,18 +552,12 @@ function lootMult(player, kind) {
     xp_boss:      'xp_boss_pct',
     rare:         'rare_drop_pct',
     relic_drop:   'relic_drop_pct',
-    gunpowder:    'gunpowder_drop_pct',
-    iron:         'iron_drop_pct',
-    map_fragment: 'map_fragment_pct',
-    ammo:         'ammo_drop_pct',
     wreck:        'wreck_loot_pct',
     fishing:      'fishing_yield_pct',
     mission:      'mission_reward_pct',
     bounty:       'bounty_pct',
-    trade:        'trade_profit_pct',
     pet_food:     'pet_food_pct',
     party_loot:   'party_loot_pct',
-    bank:         'bank_interest_pct',
   }[kind];
   if (!KEY) return 1.0;
 
@@ -578,6 +591,70 @@ function deathPenaltyMult(player) {
 /** Espaços extras de porão (res_porao). */
 function inventorySlotBonus(player) {
   return _f(player, 'inventory_slots');
+}
+
+// ── Piratas e espólio ────────────────────────────────────────────────────────
+// Os oito nós de tripulação do anel 2 ao 5 da árvore de Recurso. Quem consome:
+// PirateManager (porão e RUN), SpoilManager (abordagem e saque) e o handler de
+// compra de pirata (preço).
+
+/**
+ * Capacidade EXTRA de porão para piratas (res_alistamento + res_capitania).
+ *
+ * O flat entra direto e o percentual incide sobre a capacidade BASE do navio,
+ * que o PirateManager passa em `baseCapacity`. Fazer o percentual incidir sobre
+ * o total já somado faria os dois talentos se multiplicarem — e o texto de cada
+ * um promete somar.
+ */
+function pirateCapacityBonus(player, baseCapacity = 0) {
+  return Math.floor(_f(player, 'pirate_capacity_flat')
+                  + baseCapacity * _p(player, 'pirate_capacity_pct'));
+}
+
+/**
+ * Força a MAIS na ofensiva dos piratas do jogador ao abordar
+ * (res_abordagem + a metade ofensiva do res_almirante).
+ */
+function pirateBattlePowerPct(player) {
+  return _p(player, 'pirate_power_pct') + _p(player, 'pirate_command_pct');
+}
+
+/**
+ * Defesa a MAIS dos piratas do jogador quando o espólio DELE é abordado
+ * (res_muralha). Lido no momento da criação do espólio: é o capitão que
+ * afundou quem paga por ter treinado a tripulação, não quem vai abordar.
+ */
+function pirateDefensePct(player) {
+  return _p(player, 'pirate_defense_pct');
+}
+
+/**
+ * Quanto as baixas do jogador encolhem na abordagem (res_disciplina).
+ * Teto em 80%: uma tripulação imortal esvaziaria o risco da zona Red.
+ */
+function pirateCasualtyReductionPct(player) {
+  return _clamp(_p(player, 'pirate_casualty_pct'), 0, 0.80);
+}
+
+/**
+ * Multiplicador do consumo de RUN (res_destilaria). Piso em 25% — a tripulação
+ * nunca bebe de graça.
+ */
+function runUpkeepMult(player) {
+  return Math.max(0.25, 1 - _p(player, 'run_upkeep_pct'));
+}
+
+/**
+ * Fração a MAIS saqueada de um espólio
+ * (res_saqueador + a metade de saque do res_almirante).
+ */
+function spoilLootPct(player) {
+  return _p(player, 'wreck_loot_pct') + _p(player, 'pirate_command_pct');
+}
+
+/** Multiplicador do preço de contratar um pirata (res_recrutador). */
+function piratePriceMult(player) {
+  return Math.max(0.30, 1 - _p(player, 'pirate_price_pct'));
 }
 
 // ── Diversos ─────────────────────────────────────────────────────────────────
@@ -686,7 +763,7 @@ function consumeOpener(player, targetId) {
 module.exports = {
   // constantes úteis para quem consome
   OUT_OF_COMBAT_MS, MAX_DR, MAX_DODGE, FRENZY_MAX_STACKS, KILLSTREAK_MAX,
-  SENTINEL_MAX_STACKS, SECOND_WIND_CD_MS,
+  SENTINEL_MAX_STACKS, SECOND_WIND_CD_MS, SLOW_ON_HIT_MS,
   BURST_MS, KILL_SPEED_MS, RELIC_SPEED_MS, SENTINEL_MS,
   inCombat,
   // dano causado
@@ -694,21 +771,24 @@ module.exports = {
   pierceChance, doubleShotChance, burnDot,
   // dano recebido
   damageReduction, applyDamageReduction, dodgeChance, thornsDamage,
-  lifestealAmount, damageToMana, deathSaveChance, secondWindHeal,
+  lifestealAmount, manaOnHit, deathSaveChance, secondWindHeal, flatReduction,
   // vida e mana
   maxHpPctBonus, healingReceivedMult, hpRegenPerSec,
   maxManaBonus, manaRegenMult, manaOnKill,
   // relíquias e canhão
   relicDamageMult, relicCritBonus, relicManaCostMult, relicCooldownMult,
-  relicCastMult, relicRangeMult, relicShieldAmount, reloadMult, cannonRangeMult,
+  relicCastMult, relicRangeMult, relicShieldAmount, reloadMult,
   // movimento
   speedMult, partySpeedAura, turnRateMult, dragReduction, accelMult,
-  stopTimeMult, reverseSpeedMult, weatherResist, mapTravelMult,
+  stopTimeMult, reverseSpeedMult, weatherResist,
   // CC
-  ccDurationMult, slowStrengthMult, wakeSlow,
+  ccDurationMult, slowStrengthMult, wakeSlow, slowOnHit,
   // economia
   lootMult, goldDoubleChance, dobraoDoubleChance, shopPriceMult,
   deathPenaltyMult, inventorySlotBonus,
+  // piratas e espólio
+  pirateCapacityBonus, pirateBattlePowerPct, pirateDefensePct,
+  pirateCasualtyReductionPct, runUpkeepMult, spoilLootPct, piratePriceMult,
   // diversos
   respawnTimeMult, respawnImmunityBonus, visionMult, stealthRangeMult,
   archCooldownMult, dashCooldownMult,

@@ -191,10 +191,16 @@ describe('dano recebido', () => {
   });
 
   it('carapaça de kraken tira dano plano DEPOIS da redução', () => {
-    const p = mk({ def_carapaca: 10 });                       // −20 por acerto
-    expect(fx.applyDamageReduction(p, 100, {})).toBe(80);
+    // O corte é 1% da vida MÁXIMA no talento cheio — num casco de 1000, −10.
+    const p = mk({ def_carapaca: 10 });
+    expect(fx.flatReduction(p)).toBeCloseTo(10, 6);
+    expect(fx.applyDamageReduction(p, 100, {})).toBe(90);
     // Nunca zera o golpe.
     expect(fx.applyDamageReduction(p, 5, {})).toBe(1);
+    // E acompanha o casco: dobrar a vida máxima dobra o corte, que é a razão
+    // de o número ter deixado de ser fixo.
+    const grande = mk({ def_carapaca: 10 }, { hp: 70000, maxHp: 70000 });
+    expect(fx.applyDamageReduction(grande, 10000, {})).toBe(10000 - 700);
   });
 
   it('sentinela acumula até 5 e expira sozinha', () => {
@@ -235,8 +241,8 @@ describe('vida e mana', () => {
   it('regen soma as três fontes conforme o contexto', () => {
     const p = mk({ def_calafate: 10, def_bombeamento: 10, def_reparo: 10 },
       { hp: 300, maxHp: 1000, ...IDLE });
-    // 4 flat + 3% de 1000 (abaixo de 40%) + 10% de 1000 (fora de combate)
-    expect(fx.hpRegenPerSec(p, NOW)).toBeCloseTo(4 + 30 + 100, 6);
+    // 4 flat + 3% de 1000 (abaixo de 40%) + 1% de 1000 (fora de combate)
+    expect(fx.hpRegenPerSec(p, NOW)).toBeCloseTo(4 + 30 + 10, 6);
 
     p.lastCombatTime = NOW;                                   // entrou em combate
     expect(fx.hpRegenPerSec(p, NOW)).toBeCloseTo(4 + 30, 6);

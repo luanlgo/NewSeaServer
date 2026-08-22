@@ -230,6 +230,40 @@ function migrateLegacyTalents(player, legacyMap) {
 }
 
 /**
+ * Devolve os pontos de talentos que SAÍRAM do jogo.
+ *
+ * Quando um talento é aposentado de `constants/talents.js`, o id continua no
+ * `player.talents` de quem o comprou. `aggregateTalentStats` ignora ids que não
+ * estão mais nas árvores, então esses pontos parariam de fazer efeito — mas
+ * continuariam contando em `totalSpent`, encarecendo todas as compras
+ * seguintes. O jogador pagaria para sempre por um bônus que não recebe mais.
+ *
+ * Aqui os pontos voltam como `talentPoints` livres (mesmo desfecho do reset) e
+ * saem do `totalSpent`, para o preço da próxima compra voltar ao lugar certo.
+ *
+ * Idempotente: depois da primeira passada não sobra id órfão.
+ *
+ * @returns {number} pontos devolvidos (0 = nada a fazer)
+ */
+function refundRemovedTalents(player, talentDefs) {
+  const talents = player.talents;
+  if (!talents) return 0;
+
+  let refund = 0;
+  for (const id of Object.keys(talents)) {
+    if (id === 'totalSpent') continue;
+    if (talentDefs[id]) continue;
+    refund += talents[id] || 0;
+    delete talents[id];
+  }
+  if (refund <= 0) return 0;
+
+  talents.totalSpent  = Math.max(0, (talents.totalSpent || 0) - refund);
+  player.talentPoints = (player.talentPoints || 0) + refund;
+  return refund;
+}
+
+/**
  * Valida uma compra de talento.
  * Retorna uma string de erro, ou null se a compra é válida.
  * Não faz nenhum I/O — apenas lê o estado do player e retorna.
@@ -321,15 +355,118 @@ function countTreeSpent(player, talentDefs, tree) {
   return total;
 }
 
+// ── Builds salvas (os 3 slots de árvore) ─────────────────────────────────────
+// Trocar de build já era possível: resetar devolve TODOS os pontos gastos como
+// `talentPoints` livres, e gastar ponto livre não custa moeda. O que faltava era
+// não ter de reconstruir a árvore nó por nó — dezenas de cliques para voltar a
+// uma configuração que o jogador já tinha. Por isso o slot guarda só o mapa de
+// níveis: aplicar é resetar e recolocar, e o preço continua sendo zero, como no
+// reset. Nada aqui abre torneira de moeda.
+
+/** Soma dos níveis de uma build (quantos pontos ela custa). */
+function buildCost(nodes) {
+  let total = 0;
+  for (const v of Object.values(nodes || {})) total += Math.max(0, Math.floor(Number(v) || 0));
+  return total;
+}
+
+/**
+ * A build pode ser aplicada a este jogador? Devolve string de erro ou null.
+ *
+ * Valida o estado FINAL, não o caminho: nó existe, nível dentro do máximo,
+ * pontos suficientes e gate de anel satisfeito pelo próprio conteúdo da build.
+ * Como `applyBuild` recoloca em ordem de anel, um estado final válido nunca
+ * passa por um intermediário inválido.
+ */
+function validateBuild(player, nodes, { talentDefs, ringGate = null }) {
+  if (!nodes || typeof nodes !== 'object') return 'Slot vazio.';
+
+  const limpos = {};
+  for (const [id, lvl] of Object.entries(nodes)) {
+    const n = Math.floor(Number(lvl) || 0);
+    if (n <= 0) continue;
+    const def = talentDefs[id];
+    // Talento que saiu do jogo desde que a build foi salva: ignora em silêncio,
+    // do mesmo jeito que `refundRemovedTalents` faz com a árvore em uso.
+    if (!def) continue;
+    if (n > def.max) return `${def.name} não vai além do nível ${def.max}.`;
+    limpos[id] = n;
+  }
+
+  const custo      = buildCost(limpos);
+  const disponivel = (player.talents?.totalSpent || 0) + (player.talentPoints || 0);
+  if (custo > disponivel) {
+    return `Esta build pede ${custo} pontos e você tem ${disponivel}.`;
+  }
+
+  if (ringGate) {
+    const gastoPorArvore = {};
+    for (const [id, n] of Object.entries(limpos)) {
+      const t = talentDefs[id].tree;
+      gastoPorArvore[t] = (gastoPorArvore[t] || 0) + n;
+    }
+    for (const [id, _n] of Object.entries(limpos)) {
+      const def = talentDefs[id];
+      if (!def.ring) continue;
+      const need = ringGate[def.ring] || 0;
+      if ((gastoPorArvore[def.tree] || 0) < need) {
+        return `${def.name} precisa de ${need} pontos em ${def.tree}.`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Zera a árvore e recoloca a build. Devolve os pontos livres que sobraram.
+ * NÃO valida — chame `validateBuild` antes.
+ */
+function applyBuild(player, nodes, talentDefs) {
+  const disponivel = (player.talents?.totalSpent || 0) + (player.talentPoints || 0);
+
+  if (!player.talents) player.talents = { totalSpent: 0 };
+  for (const key of Object.keys(talentDefs)) player.talents[key] = 0;
+
+  // Ordem de anel: o de dentro paga o gate do de fora.
+  const ids = Object.keys(nodes)
+    .filter(id => talentDefs[id] && Math.floor(Number(nodes[id]) || 0) > 0)
+    .sort((a, b) => (talentDefs[a].ring || 0) - (talentDefs[b].ring || 0));
+
+  let gasto = 0;
+  for (const id of ids) {
+    const n = Math.min(Math.floor(Number(nodes[id])), talentDefs[id].max);
+    player.talents[id] = n;
+    gasto += n;
+  }
+  player.talents.totalSpent = gasto;
+  player.talentPoints       = Math.max(0, disponivel - gasto);
+  return player.talentPoints;
+}
+
+/** Fotografia da árvore em uso, pronta para guardar num slot. */
+function snapshotBuild(player, talentDefs) {
+  const nodes = {};
+  for (const id of Object.keys(talentDefs)) {
+    const n = Math.floor(Number(player.talents?.[id]) || 0);
+    if (n > 0) nodes[id] = n;
+  }
+  return nodes;
+}
+
 module.exports = {
   calcXpRequired,
   getCostTier,
+  buildCost,
+  validateBuild,
+  applyBuild,
+  snapshotBuild,
   aggregateTalentStats,
   sumTalentStat,
   countTreeSpent,
   applyTalentBonuses,
   recalcMaxHp,
   migrateLegacyTalents,
+  refundRemovedTalents,
   validateBuyTalent,
   validateRefundTalent,
   // Curva de retorno decrescente — exportada para o teste e para o gerador do

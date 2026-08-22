@@ -90,7 +90,6 @@ const FOOD_TICK_MS     = 60_000;
 const XP_PER_OFFENSIVE = 8;
 const XP_PER_DEFENSIVE = 10;
 const XP_PER_FOOD_TICK = 0.5;
-const FOOD_PRICES      = { uva: 30 };
 
 function xpForLevel(level) {
   return 100 + (level - 1) * 50; // 100, 150, 200...
@@ -1008,4 +1007,3 @@ module.exports = PetManager;
 module.exports.PET_DEFS   = PET_DEFS;
 module.exports.NAV_DIST   = NAV_DIST;
 module.exports.PET_RANGE  = PET_RANGE;
-module.exports.FOOD_PRICES = FOOD_PRICES;

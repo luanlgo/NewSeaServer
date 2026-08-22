@@ -92,7 +92,10 @@ describe('stats derivados de talento têm uma fonte só', () => {
     // Recalcular no servidor e não mandar dá exatamente a mesma sensação de
     // "o talento não entrou em vigor".
     const blocos = SERVER_JS.split("type:         'talent_update'").slice(1);
-    expect(blocos.length).toBe(3);   // compra, devolução (clique direito) e reset
+    // compra, devolução (clique direito), reset e o `_sendTalentUpdate` que
+    // serve os dois handlers de build salva. A contagem é de propósito: um
+    // ponto de envio novo tem de passar por aqui e provar que leva os campos.
+    expect(blocos.length).toBe(4);
     for (const bloco of blocos) {
       const payload = bloco.slice(0, 600);
       for (const campo of ['maxHp', 'hp', 'maxCannons', 'maxMana', 'mana']) {
