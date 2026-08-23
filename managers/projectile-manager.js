@@ -14,7 +14,8 @@ const {
 const { SKILLS_BY_SOURCE, MONSTER_SKILLS } = require('../constants/monster_skills');
 const { partyRewardMult } = require('./party-manager');
 const { starDropAllowed } = require('../utils/star-gate');
-const { isInvincible, consumeInvincible } = require('../utils/invincibility');
+const { isInvincible } = require('../utils/invincibility');
+const { applyGoldShield } = require('../utils/gold-shield');
 
 // Pool de relíquias de um bicho = os ataques que ele REALMENTE usa.
 //
@@ -668,10 +669,10 @@ class ProjectileManager {
     }
 
     // ── Relic: invincibility (r2) ────────────────────────────────────────────
-    // A bolha apara UM golpe e acaba: os 5 s são a janela para o golpe chegar,
-    // não 5 s de imunidade. Ver utils/invincibility.js.
+    // Dois segundos em que nada entra — inclusive uma salva inteira, que é o
+    // caso em que a versão "apara UM golpe" falhava em silêncio. Ver
+    // utils/invincibility.js.
     if (!isNPC && isInvincible(target, now)) {
-      consumeInvincible(target, now);
       // Avisa o mapa que o escudo absorveu o golpe — a bolha pulsa em branco
       this._broadcastToMap(target.mapLevel || 1, { type: 'shield_block', targetId: target.id });
       return;
@@ -688,17 +689,18 @@ class ProjectileManager {
       return;
     }
 
-    // ── Relic: gold shield (r5) — 30% DR, 10% of blocked gold cost ──────────
+    // ── Relic: Escudo de Ouro (r5) ─────────────────────────────────────────
+    // A conta mora em utils/gold-shield.js — os 30%/10% que estavam escritos
+    // aqui não batiam com os números de constants/relics.js, e havia três
+    // cópias divergindo em silêncio. Ver o cabeçalho do módulo.
     let finalDmg = dmg;
-    if (!isNPC && target.relicGoldShieldActive) {
-      const blocked = Math.round(dmg * 0.30);
-      finalDmg = dmg - blocked;
-      const goldCost = Math.round(blocked * 0.10);
-      if (goldCost > 0) {
-        target.gold = Math.max(0, (target.gold || 0) - goldCost);
-        sendTo(target.ws, { type: 'gold_shield_cost', goldCost, gold: target.gold });
+    if (!isNPC) {
+      const esc = applyGoldShield(target, dmg);
+      finalDmg = esc.damage;
+      if (esc.goldCost > 0) {
+        sendTo(target.ws, { type: 'gold_shield_cost', goldCost: esc.goldCost, gold: target.gold });
         // Agregado: o escudo cobra a cada golpe aparado.
-        this.journal?.accrue(target, 'gold_shield', { gold: -goldCost });
+        this.journal?.accrue(target, 'gold_shield', { gold: -esc.goldCost });
       }
     }
 

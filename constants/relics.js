@@ -24,19 +24,30 @@ const RELIC_DEFS = {
   // mais que qualquer relíquia de dano e tirava a pressão de todo o PvE.
   r1:  { name: 'Âncora Sagrada',    icon: '⚓',  rarity: 'comum',    effect: 'heal_ship',   manaCost: 5, toggle: false, healAmount: 2000, healPct: 0.10,
          petUsable: true, petTarget: 'dono',    petRange: 'curto' },
-  // ── Névoa Espectral: UM golpe, não cinco segundos ─────────────────────────
-  // `duration` deixou de ser tempo de imunidade e passou a ser a JANELA em que
-  // o vulto fica de pé esperando o golpe. O primeiro que ele aparar o desfaz —
-  // ver utils/invincibility.js. Cinco segundos em que literalmente nada te
-  // machuca era resposta boa demais para qualquer coisa: apagava a fase inteira
-  // de um chefe, e no PvP bastava apertar para vencer a troca.
-  r2:  { name: 'Névoa Espectral',   icon: '🌫️',  rarity: 'épico',    effect: 'invincible',  manaCost: 6, toggle: false, duration: 5000,
+  // ── Névoa Espectral: DOIS SEGUNDOS de imunidade, e não um golpe ───────────
+  // `duration` é tempo de imunidade de novo (playtest 2026-08-22). A versão
+  // "apara UM golpe" tinha o problema oposto ao dos 5 s originais: contra uma
+  // salva de canhão a bolha morria no primeiro projétil da rajada e os outros
+  // cinco entravam — na prática ela não fazia nada, e o jogador não tinha como
+  // perceber por quê. Dois segundos são curtos demais para apagar uma fase de
+  // chefe (era a queixa dos 5 s) e longos o bastante para atravessar uma salva
+  // inteira, que é o que a relíquia sempre prometeu.
+  r2:  { name: 'Névoa Espectral',   icon: '🌫️',  rarity: 'épico',    effect: 'invincible',  manaCost: 6, toggle: false, duration: 2000,
          petUsable: true, petTarget: 'dono',    petRange: 'curto' },
   r3:  { name: 'Raio Divino',       icon: '⚡',  rarity: 'raro',     effect: 'lightning',   manaCost: 5, toggle: false, damage: 2000, damagePct: 0.80, targetMouse: true, radius: 45,  castTime: 700,
          petUsable: true, petTarget: 'inimigo', petRange: 'medio' },
   r4:  { name: 'Foguete Naval',     icon: '🚀',  rarity: 'incomum',  effect: 'rocket',      manaCost: 4, toggle: false, damage: 3000, damagePct: 1.10, targetMouse: true, radius: 20,  castTime: 500,
          petUsable: true, petTarget: 'inimigo', petRange: 'longo' },
-  r5:  { name: 'Escudo de Ouro',    icon: '🛡️',  rarity: 'lendário', effect: 'gold_shield', manaCost: 4, toggle: true,  damageReduction: 0.50, goldCostPct: 0.10 },
+  // ── Escudo de Ouro: os números daqui passaram a VALER ────────────────────
+  // Até 2026-08-22 estes dois campos eram decoração: os três caminhos de dano
+  // traziam 0,30 e 0,10 escritos na mão (e um deles — as 34 skills do bestiário
+  // — não tinha escudo nenhum, que era o "não está funcionando" do playtest).
+  // Agora existe utils/gold-shield.js e ele lê ESTES números.
+  //   damageReduction 0,20 — corta 20% do golpe;
+  //   goldCostPct     0,05 — cobra 5% do dano BRUTO em ouro (não do bloqueado).
+  // O custo é do dano cheio de propósito: é o que dá peso à decisão de deixar o
+  // escudo ligado num combate longo, que é a única trava de uma `toggle`.
+  r5:  { name: 'Escudo de Ouro',    icon: '🛡️',  rarity: 'lendário', effect: 'gold_shield', manaCost: 4, toggle: true,  damageReduction: 0.20, goldCostPct: 0.05 },
   r6:  { name: 'Vento Furioso',     icon: '💨',  rarity: 'comum',    effect: 'speed_boost', manaCost: 4, toggle: false, duration: 5000, speedBonus: 0.50,
          petUsable: true, petTarget: 'dono',    petRange: 'curto' },
   // `pullSpeed`: sucção radial em unidades/segundo, POR CIMA da navegação que a
@@ -46,14 +57,36 @@ const RELIC_DEFS = {
   r8:  { name: 'Meteoro',           icon: '☄️',  rarity: 'épico',    effect: 'meteor',      manaCost: 7, toggle: false, damage: 2400, damagePct: 1.30, targetMouse: true, radius: 55,  castTime: 700, count: 1,
          petUsable: true, petTarget: 'inimigo', petRange: 'longo' },
   r9:  { name: 'Teleporte',         icon: '🌀',  rarity: 'raro',     effect: 'teleport',    manaCost: 5, toggle: false, targetMouse: true, maxRange: 150 },
-  r10: { name: 'Aura Mortal',       icon: '🔥',  rarity: 'lendário', effect: 'aura',        manaCost: 8, toggle: false, duration: 5000, range: 100, damage: 200, damagePct: 0.12, tickInterval: 300 },
+  // ── Aura Mortal: o pulso passou a DEIXAR MARCA ───────────────────────────
+  // Um lendário que só pulsava dano em volta do casco lia como uma poça: o
+  // inimigo entrava, levava, saía, e nada tinha acontecido. Agora cada leva
+  // acende uma PILHA de queimadura em quem estiver dentro:
+  //   burnStackMs   quanto cada pilha dura depois que o alvo sai do raio
+  //   burnMaxStacks teto de pilhas (o dano do DoT é pilhas × burnPct)
+  //   burnPct       dano por segundo POR PILHA, em fração da salva
+  //   slowPerStack  slow que cada pilha soma, até slowMaxPct
+  // Ficar perto passa a ser uma dívida que se paga depois de sair, e o alvo vai
+  // ficando mais lento — ou seja, sair fica cada vez mais caro. É a mesma aura,
+  // mas agora ela COBRA por tempo de exposição em vez de por instante.
+  r10: { name: 'Aura Mortal',       icon: '🔥',  rarity: 'lendário', effect: 'aura',        manaCost: 8, toggle: false, duration: 5000, range: 100, damage: 200, damagePct: 0.12, tickInterval: 300,
+         burnStackMs: 4000, burnMaxStacks: 5, burnPct: 0.06, slowPerStack: 0.06, slowMaxPct: 0.40 },
   // CC puro (sem dano): slow instantâneo na zona; quem ficar dentro até o fim leva stun.
-  r11: { name: 'Prisão de Gelo',    icon: '❄️',  rarity: 'raro',     effect: 'ice_zone',    manaCost: 6, toggle: false, targetMouse: true, radius: 40, slowPct: 0.50, zoneMs: 2000, stunMs: 2000 },
+  r11: { name: 'Prisão de Gelo',    icon: '❄️',  rarity: 'raro',     effect: 'ice_zone',    manaCost: 6, toggle: false, targetMouse: true, radius: 55, slowPct: 0.50, zoneMs: 2000, stunMs: 2000 },
   // Mecânica NOVA: bloqueio físico real de movimento (não é dano nem slow/stun via
   // stat) — ver managers/wall-manager.js + utils/collision.js pushOutOfWalls().
   // wallLength/wallThickness em unidades de mundo (mesmas unidades de x/z do jogador).
+  // `zoneMs` 1200 → 300: o muro sobe praticamente NO CLIQUE. Um bloqueio que se
+  // anuncia com mais de um segundo de antecedência não bloqueia ninguém — dava
+  // tempo de sobra para atravessar o retângulo desenhado antes de a pedra
+  // existir, e a relíquia só funcionava contra quem não estava olhando.
+  //
+  // Por que 300 e não 0: o desenho do muro tem um piso de 0,3 s para a pedra
+  // subir (`maxf(zone_s, 0.3)` em spawn_stone_wall, no cliente). Com 0 aqui, o
+  // bloqueio físico passaria a existir 300 ms ANTES de a rocha aparecer na
+  // tela — barco parando contra nada, que é pior do que esperar. O número tem
+  // de casar com o piso do desenho; se aquele mudar, este muda junto.
   r12: { name: 'Muro de Pedra',     icon: '🧱',  rarity: 'raro',     effect: 'stone_wall',  manaCost: 5, toggle: false, targetMouse: true,
-         wallLength: 100, wallThickness: 20, zoneMs: 1200, wallMs: 6000 },
+         wallLength: 100, wallThickness: 20, zoneMs: 300, wallMs: 6000 },
   // Grab (Q do Nautilus): skillshot em linha; 1º inimigo no corredor é puxado até
   // perto do caster + stun curto. Boss leva o dano mas NÃO é puxado.
   r13: { name: 'Arpão do Leviatã',  icon: '🪝',  rarity: 'épico',    effect: 'harpoon',     manaCost: 6, toggle: false, targetMouse: true,

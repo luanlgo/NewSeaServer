@@ -14,7 +14,8 @@
 const { dist2D } = require('../utils/helpers');
 const { ATTACK_DEFS, MAP_DEFS } = require('../constants');
 const { starAttackAllowed } = require('../utils/star-gate');
-const { isInvincible, consumeInvincible } = require('../utils/invincibility');
+const { isInvincible } = require('../utils/invincibility');
+const { applyGoldShield } = require('../utils/gold-shield');
 // Geometria compartilhada com as relíquias do bestiário: o ataque do bicho e a
 // relíquia que ele dropa precisam acertar EXATAMENTE a mesma área.
 const MonsterSkillManager = require('./monster-skill-manager');
@@ -676,9 +677,7 @@ class AttackManager {
       if (this._isHit(p, attack, targetX, targetZ, castOrigin)) {
         // Névoa Espectral: invencível bloqueia também ataques em área
         // (antes só projéteis respeitavam — necessário para a defensiva do pet).
-        // Aparar em área gasta a carga igual: um golpe é um golpe.
         if (isInvincible(p, _hitNow)) {
-          consumeInvincible(p, _hitNow);
           this.addEvent({ type: 'shield_block', targetId: p.id }, mapLevel);
           continue;
         }
@@ -695,14 +694,14 @@ class AttackManager {
         // Aplica debuff de defesa se ativo
         const defDebuff = p.activeDebuffs?.find(d => d.type === 'defense_buff' && d.expiresAt > Date.now());
         if (defDebuff) dmg = Math.round(dmg * (1 + Math.abs(defDebuff.value)));
-        // Escudo de Ouro: 30% DR (mesmo que projectile-manager)
-        if (p.relicGoldShieldActive) {
-          const blocked = Math.round(dmg * 0.30);
-          dmg -= blocked;
-          const goldCost = Math.round(blocked * 0.10);
-          if (goldCost > 0) {
-            p.gold = Math.max(0, (p.gold || 0) - goldCost);
-            this.journal?.accrue(p, 'gold_shield', { gold: -goldCost });
+        // Escudo de Ouro (r5): mesma conta dos outros dois caminhos de dano —
+        // ver utils/gold-shield.js.
+        {
+          const esc = applyGoldShield(p, dmg);
+          dmg = esc.damage;
+          if (esc.goldCost > 0) {
+            this.addEvent({ type: 'gold_shield_cost', targetId: p.id, goldCost: esc.goldCost, gold: p.gold }, mapLevel);
+            this.journal?.accrue(p, 'gold_shield', { gold: -esc.goldCost });
           }
         }
         // ── Carapaça Eriçada (r32): mitiga e DEVOLVE parte do golpe ───────

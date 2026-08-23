@@ -131,7 +131,7 @@ const SHIP_DEFS = {
 
   // ── Navios Elite (comprados na Ilha do Comércio; moeda varia por navio) ─────
   ghost_pirate_ship: {
-    price: 500000,
+    price: 100000,
     currency: 'gold', isElite: true,
     hp: 10000, 
     maxCannons: 40, 

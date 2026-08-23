@@ -3,7 +3,7 @@ const { uid, rand, clamp, dist2D } = require('../utils/helpers');
 const { pushOutOfIslands, pushOutOfWalls } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, NPC_COUNT, MAP_DEFS, WORLD_BOSS_DEF, HIT_RADIUS, difficultyMult } = require('../constants');
 const { bloodMoonFactor } = require('../utils/world-state');
-const { isInvincible, consumeInvincible } = require('../utils/invincibility');
+const { isInvincible } = require('../utils/invincibility');
 const fx = require('../utils/talent-effects');
 
 // ── Equilíbrio de aggro dos NPCs normais (navios piratas / monstros) ─────────
@@ -772,7 +772,7 @@ class NPCManager {
                   let dmg = Math.round((atk.damage || 200) * (npc.dmgMult || 1));
                   // Invencível (Névoa) + defensiva do pet valem aqui também.
                   // A Névoa apara este golpe e se gasta nele.
-                  if (isInvincible(p)) { consumeInvincible(p); continue; }
+                  if (isInvincible(p)) continue;
                   const petMgr = this.projectileManager ? this.projectileManager.petManager : null;
                   if (petMgr) {
                     dmg = petMgr.interceptOwnerDamage(p, dmg);

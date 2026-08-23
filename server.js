@@ -43,6 +43,7 @@ const _resetAttempts    = new Map();     // email → tentativas erradas de cód
 const { sendTo, sendRaw } = require('./utils/helpers');
 const stateBuilder = require('./utils/state-builder');
 const { isInvincible } = require('./utils/invincibility');
+const { applyAuraBurn } = require('./utils/aura-burn');
 // Tradução dos 120 talentos em multiplicadores — ver utils/talent-effects.js.
 const fx = require('./utils/talent-effects');
 
@@ -1804,6 +1805,12 @@ setInterval(() => {
         const aRange  = p.relicAuraRange  || 80;
         const aDamage = Math.round(p.relicAuraDamage * (1 + (p.talentRelicBonus || 0) + (p.skillRelicBonus || 0)));
         const aHits   = [];
+        // Queimadura acumulativa + slow por pilha — ver utils/aura-burn.js. O
+        // `salvo` é a mesma base de dano que a relíquia usa (poder de fogo do
+        // barco), para a queimadura acompanhar o barco em vez de ser um número
+        // solto que envelhece.
+        const aDef   = RELIC_DEFS.r10 || {};
+        const aSalvo = relicDamageFor(p, { damagePct: 1.0 });
 
         projectileManager.npcs.forEach(npc => {
           if (npc.dead) return;
@@ -1815,7 +1822,8 @@ setInterval(() => {
             if (!npc._damageMap) npc._damageMap = new Map();
             npc._damageMap.set(p.id, (npc._damageMap.get(p.id) || 0) + aDamage);
           }
-          aHits.push({ id: npc.id, dmg: aDamage, hp: npc.hp, isNPC: true });
+          const npcStacks = applyAuraBurn(npc, p, aDef, aSalvo, now);
+          aHits.push({ id: npc.id, dmg: aDamage, hp: npc.hp, isNPC: true, stacks: npcStacks });
           if (npc.hp <= 0 && !npc.dead) {
             npc.dead = true;
             if (npc.isBoss) {
@@ -1859,7 +1867,8 @@ setInterval(() => {
           if (Math.hypot(target.x - p.x, target.z - p.z) > aRange) return;
           target.hp = Math.max(0, target.hp - aDamage);
           target.lastCombatTime = now;
-          aHits.push({ id: target.id, dmg: aDamage, hp: target.hp, isNPC: false });
+          const tgtStacks = applyAuraBurn(target, p, aDef, aSalvo, now);
+          aHits.push({ id: target.id, dmg: aDamage, hp: target.hp, isNPC: false, stacks: tgtStacks });
           resolvePlayerDeath(target, p.id);
         });
 
@@ -5432,6 +5441,19 @@ function handleUseRelic(player, msg) {
   if (!relicDef) return;
   const instanceId2 = useInstanceId;
 
+  // ── Relíquia desativada ────────────────────────────────────────────────
+  // Vem antes de TUDO — mana, recarga, mira. Uma relíquia fora de serviço não
+  // pode cobrar nada de quem tentou usá-la, e quem já a tem continua com ela
+  // no inventário (desativar é reversível, apagar do inventário de todo mundo
+  // não é). Ver `relicDisabled` em constants/monster_skills.js.
+  if (relicDef.disabled) {
+    sendTo(player.ws, {
+      type: 'relic_disabled', instanceId: instanceId2,
+      relicId: relicInstance.relicId, name: relicDef.name,
+    });
+    return;
+  }
+
   // Runas miradas: alcance máximo = alcance do canhão. Clampa o ponto-alvo para
   // dentro desse raio (na direção do clique) — todos os handlers abaixo já leem
   // rTx/rTz clampados. Teleporte e arpão têm alcance próprio, ajustado separado.
@@ -6055,7 +6077,9 @@ function handleUseRelic(player, msg) {
     // utils/collision.js (pushOutOfWalls, mesmo _pushOutOfShape das ilhas).
     const wallLen   = relicDef.wallLength    || 100;
     const wallThick = relicDef.wallThickness || 20;
-    const wallZoneMs = relicDef.zoneMs || 1200;
+    // `??` e nao `||`: o muro agora sobe com zoneMs 0 (no clique), e com `||`
+    // o zero caia no default de 1,2 s — a relíquia continuaria se anunciando.
+    const wallZoneMs = relicDef.zoneMs ?? 1200;
     const wallDurMs  = relicDef.wallMs || 6000;
     const wx = rTx != null ? rTx : player.x;
     const wz = rTz != null ? rTz : player.z;

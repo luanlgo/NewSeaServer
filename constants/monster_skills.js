@@ -34,6 +34,20 @@
 // 'all_players_in_range' = trava a posição de CADA inimigo no alcance no cast e
 // resolve a forma uma vez sobre cada uma, até `maxTargets`. Ver os Pilares.
 //
+// ── relicDisabled: a face JOGAVEL sai de cena, a do bicho fica ───────────────
+// Uma skill pode funcionar bem na mao do monstro e nao funcionar na sua: a
+// camera e outra, quem le o telegraph e outro, e algumas `special` nunca
+// chegaram a ser implementadas do lado da reliquia. `relicDisabled: true`
+// desliga SO a reliquia — o bicho continua usando o ataque normalmente.
+//
+// O que a flag faz, em ordem:
+//   • o relicId sai do SKILLS_BY_SOURCE, entao o bicho para de dropa-la;
+//   • `disabled: true` entra no RELIC_DEFS, e handleUseRelic() recusa o uso
+//     ANTES de cobrar mana ou recarga (quem ja tem a reliquia nao a perde nem
+//     gasta nada tentando);
+//   • a UI mostra a moldura apagada e o motivo no tooltip.
+// Ela NAO some do inventario de ninguem: desativar e reversivel, apagar nao.
+//
 // ⭐ = o ataque forte do conjunto (telegraph longo, dano/leitura maiores).
 //     Marcado no dado como `star: true` — NÃO é só enfeite de comentário:
 //       • o BICHO só usa a ⭐ durante a LUA DE SANGUE;
@@ -65,7 +79,12 @@ const MONSTER_SKILLS = {
     // A bile corrói E emperra: cada leva renova um slow de 20%. `slowMs` maior
     // que o intervalo dos ticks mantém o efeito de pé durante a canalização e
     // solta o alvo pouco depois da última leva.
-    relic: { manaCost: 4, length: 70, angle: 55, castMs: 1000,
+    // `turnRate` dentro do `relic`: o cap de giro do JOGADOR e mais solto que o
+    // do bicho (o cone e curto e largo, entao virar depressa nao vira acerto
+    // garantido). Sem cap nenhum o cone SALTAVA para o cursor a cada leva —
+    // e o que fazia o desenho e o dano discordarem para quem estava do outro
+    // lado. 3,0 rad/s ainda deixa o alvo escapar contornando de perto.
+    relic: { manaCost: 4, length: 70, angle: 55, castMs: 1000, turnRate: 3.0,
              ticks: { count: 5, intervalMs: 700, pct: 0.16 },
              cc: { slowPct: 0.20, slowMs: 1500 } },
     npc:   { rangeMin: 20, rangeMax: 110, length: 110, angle: 55, damageMult: 0.8, castTime: 1000, cooldown: 12000, weight: 8,
@@ -90,7 +109,10 @@ const MONSTER_SKILLS = {
     relicId: 'r17', name: 'Fúria da Maré', icon: '🌊', rarity: 'raro', star: true, // ⭐
     vfx: 'crab_tidal_frenzy', source: 'carangueijo', shape: 'circle',
     desc: 'Três ondas concêntricas em sequência. Multi-hit: quem não sair do raio leva as três.',
-    relic: { manaCost: 6, radius: 60, castMs: 2200,
+    // Cast pela METADE (era 2200): 2,2 s de carga para tres ondas que saem em
+    // 0,36 s deixava o alvo sair andando antes da primeira — o telegraph era
+    // mais longo que o golpe inteiro.
+    relic: { manaCost: 6, radius: 60, castMs: 1100,
              ticks: { count: 3, intervalMs: 180, pct: 0.45 } },
     npc:   { rangeMin: 0, rangeMax: 140, radius: 140, damageMult: 1.4, castTime: 2200, cooldown: 25000, weight: 4,
              ticks: { count: 3, intervalMs: 180 } },
@@ -106,7 +128,11 @@ const MONSTER_SKILLS = {
     // NPC: mantém a varredura giratória (sweepTurns), que é a leitura do boss.
     follow: true,
     desc: 'Metralhadora canalizada: o cone segue a sua mira por 3,5 s, batendo sem parar.',
-    relic: { manaCost: 6, length: 60, angle: 45, castMs: 1400, sweepTurns: 1.0,
+    // Mesmo remedio do Sopro: sem cap o cone re-mirava instantaneamente a cada
+    // uma das 20 levas. Um pouco mais lento que o Sopro porque o cone e mais
+    // estreito (45 graus) — a mesma velocidade de giro num cone fino vira
+    // metralhadora teleguiada.
+    relic: { manaCost: 6, length: 60, angle: 45, castMs: 1400, sweepTurns: 1.0, turnRate: 2.6,
              ticks: { count: 20, intervalMs: 160, pct: 0.10 } },
     npc:   { rangeMin: 0, rangeMax: 160, length: 160, angle: 45, damageMult: 0.35, castTime: 1400, cooldown: 16000, weight: 5,
              ticks: { count: 20, intervalMs: 160 } },
@@ -123,7 +149,7 @@ const MONSTER_SKILLS = {
     // ou seja ~58 un no 1,3 s de cast. Com 5 obuses no anel a 62, o cerco fica
     // SELADO até essa distância — varrendo todas as direções, nenhuma escapa a
     // não ser a brecha (a 70 já vazava em 70% dos casos).
-    relic: { manaCost: 6, count: 6, spread: 30, radius: 16, damagePct: 0.40, castMs: 1300 },
+    relic: { manaCost: 6, count: 6, spread: 30, radius: 25, damagePct: 0.40, castMs: 1300 },
     npc:   { rangeMin: 0, rangeMax: 200, count: 6, spread: 62, radius: 38, damageMult: 2.2, castTime: 1100, cooldown: 15000, weight: 5 },
   },
   crab_boss_tentacles: {
@@ -139,7 +165,7 @@ const MONSTER_SKILLS = {
     // em ~54-74% das vezes; quem lê o desenho escapa — pela brecha larga ou
     // costurando entre dois braços. Selar de verdade pediria um 6º tentáculo e
     // raio 36 (medido: 1% de fuga), o que muda a cara da skill.
-    relic: { manaCost: 7, count: 5, spread: 24, radius: 14, damagePct: 0.30, castMs: 1500,
+    relic: { manaCost: 7, count: 5, spread: 24, radius: 23, damagePct: 0.30, castMs: 1500,
              cc: { rootMs: 2500 } },
     npc:   { rangeMin: 0, rangeMax: 170, count: 5, spread: 45, radius: 32, damageMult: 1.0, castTime: 1500, cooldown: 18000, weight: 4,
              cc: { rootMs: 2500 } },
@@ -148,7 +174,7 @@ const MONSTER_SKILLS = {
     relicId: 'r21', name: 'Rugido Dilacerante', icon: '📢', rarity: 'épico', star: true, // ⭐
     vfx: 'crab_boss_roar', source: 'carangueijo_boss', shape: 'ring',
     desc: 'Anel que se expande com o MIOLO SEGURO. Dodge invertido: cole no centro.',
-    relic: { manaCost: 8, radius: 90, safeRadius: 20, damagePct: 1.20, castMs: 1800 },
+    relic: { manaCost: 8, radius: 90, safeRadius: 20, damagePct: 1.20, castMs: 1600 },
     npc:   { rangeMin: 0, rangeMax: 260, radius: 260, safeRadius: 55, damageMult: 4.0, castTime: 1800, cooldown: 20000, weight: 3 },
   },
 
@@ -203,16 +229,40 @@ const MONSTER_SKILLS = {
     // radius (10,2 aqui). Com 12 ele fecha com folga.
     pattern: 'sealed_ring',
     desc: 'Um anel de veneno fecha em volta: o miolo é abrigo. Mas as poças CRESCEM — saia antes de o abrigo sumir.',
+    // ── O veneno passou a EMPERRAR e a GRUDAR ──────────────────────────────
+    // A poça só tirava vida enquanto o alvo estava em cima dela, e sair era de
+    // graça: atravessar a coroa custava um tique e nada mais, então a parede
+    // que a skill promete nunca chegou a ser parede.
+    //   cc.slowPct  35% enquanto o casco estiver na bile — renovado a cada
+    //               leva (ver `soRenovaSlow` no _applyCC), senão o slow morria
+    //               na metade da duração das poças;
+    //   dot         encostou, ficou ENVENENADO: 3 s de dano contínuo que
+    //               continuam correndo fora da poça. É o que faz atravessar
+    //               ser uma decisão em vez de um pedágio.
     relic: { manaCost: 5, count: 12, spread: 55, radius: 17, castMs: 1200, growth: 1.8,
-             ticks: { count: 6, intervalMs: 800, pct: 0.12 } },
+             ticks: { count: 6, intervalMs: 800, pct: 0.12 },
+             cc: { slowPct: 0.35, slowMs: 1200 },
+             dot: { pct: 0.05, tickMs: 1000, durMs: 3000, effect: 'poison' } },
     npc:   { rangeMin: 0, rangeMax: 200, count: 12, spread: 110, radius: 34, damageMult: 0.6, castTime: 1200, cooldown: 30000, weight: 5,
              growth: 1.8, ticks: { count: 6, intervalMs: 800 } },
   },
   wyrm_abyss_coil: {
     relicId: 'r25', name: 'Espiral do Abismo', icon: '🌀', rarity: 'raro', star: true, // ⭐
     vfx: 'wyrm_abyss_coil', source: 'wrim', shape: 'ring',
-    desc: 'O anel fecha (fique FORA), depois o centro entra em erupção (fique DENTRO). Dodge duplo.',
+    // ── `collapse`: as bolas são TANGÍVEIS e varrem para dentro ─────────────
+    // O desenho sempre foi uma espiral de esferas fechando o cerco, e a
+    // mecânica era um anel de dano que se desviava saindo dele. As duas coisas
+    // não conversavam: o jogador via uma parede que se aproximava e a resposta
+    // certa era atravessá-la, o que não faz sentido nenhum olhando a tela.
+    //
+    // Agora a parede empurra: a cada leva, quem estiver além do anel daquele
+    // instante é EMPURRADO para dentro dele (ver _castCollapsingRing). Não dá
+    // para sair pela borda — a saída é sobreviver ao aperto e estar longe do
+    // miolo quando o centro entrar em erupção, que é onde o dano cheio cai.
+    special: 'collapse', burstAtCenter: true,
+    desc: 'As esferas fecham o cerco e EMPURRAM para dentro. No fim o miolo explode — aperte-se, mas não no centro.',
     relic: { manaCost: 7, radius: 95, safeRadius: 22, eruptRadius: 38, damagePct: 1.10, castMs: 2200,
+             collapseTo: 34, phaseCount: 10,
              ticks: { count: 10, intervalMs: 220, pct: 0.10 } },
     npc:   { rangeMin: 0, rangeMax: 230, radius: 230, safeRadius: 60, eruptRadius: 95, damageMult: 3.2, castTime: 2200, cooldown: 20000, weight: 3,
              ticks: { count: 10, intervalMs: 220 } },
@@ -250,7 +300,12 @@ const MONSTER_SKILLS = {
     relicId: 'r28', name: 'Jaula de Patas', icon: '🔒', rarity: 'épico',
     vfx: 'wyrm_boss_leg_cage', source: 'wrim_boss', shape: 'circle', special: 'obstacles',
     desc: 'Ergue uma jaula de patas com UMA brecha. Bloqueio físico real por 3,5 s.',
-    relic: { manaCost: 6, radius: 45, legCount: 8, gapAngle: 55, castMs: 1200, holdMs: 3500,
+    // Raio 60 (era 45) e 11 patas (eram 8): a 45 un a jaula cabia dentro de um
+    // giro do barco e sair dela era andar reto por meio segundo. O numero de
+    // patas sobe JUNTO com o raio — patas fixas num anel maior abrem vaos entre
+    // elas, e a jaula deixaria de ser jaula por outro caminho. A brecha
+    // anunciada (`gapAngle`) continua sendo a unica saida legitima.
+    relic: { manaCost: 6, radius: 60, legCount: 11, gapAngle: 55, castMs: 1200, holdMs: 3500,
              obstacleRadius: 7 },
     npc:   { rangeMin: 0, rangeMax: 110, radius: 110, legCount: 8, gapAngle: 55, damageMult: 0, castTime: 1200, cooldown: 30000, weight: 3,
              holdMs: 3500, obstacleRadius: 12 },
@@ -293,7 +348,11 @@ const MONSTER_SKILLS = {
     // zerava a skill inteira. Era o "não está dando o dano por tick".
     rangeFromCannons: true,
     desc: 'Feixe contínuo que segue a sua mira. Circule mais rápido do que o pescoço vira.',
-    relic: { manaCost: 5, length: 75, width: 24, sweepArc: 80, turnSpeed: 0.9, castMs: 1200,
+    // 1,6 rad/s do lado do jogador contra 0,60 do bicho: quem mira com o mouse
+    // precisa de um feixe que responda, mas nao de um que GRUDE. Sem cap o
+    // feixe saltava para o cursor a cada 120 ms e quem estava sendo varrido via
+    // um raio parado no lugar onde o cast comecou.
+    relic: { manaCost: 5, length: 75, width: 24, sweepArc: 80, turnSpeed: 0.9, castMs: 1200, turnRate: 1.6,
              ticks: { count: 20, intervalMs: 120, pct: 0.10 } },
     npc:   { rangeMin: 0, rangeMax: 190, length: 190, width: 24, sweepArc: 80, turnSpeed: 0.9, damageMult: 0.35, castTime: 1200, cooldown: 18000, weight: 6,
              ticks: { count: 20, intervalMs: 120 } },
@@ -365,6 +424,12 @@ const MONSTER_SKILLS = {
   },
   turtle_boss_broadside: {
     relicId: 'r35', name: 'Salva de Bombordo', icon: '💥', rarity: 'épico',
+    // ⛔ RELIQUIA DESATIVADA (playtest 2026-08-22) — ver `relicDisabled` no topo.
+    // A leitura "ache o RITMO, nao o lugar" nao passa na mao do jogador: os
+    // setores giram em volta do PROPRIO barco e quem lanca nao tem como ler o
+    // desenho de cima. Fica de pe do lado do BICHO, onde a camera de fora
+    // mostra os setores; a versao jogavel volta quando tiver leitura propria.
+    relicDisabled: true,
     vfx: 'turtle_boss_broadside', source: 'tartaruga_boss', shape: 'circle',
     // `atCaster`: a area nasce NO LANCADOR e ACOMPANHA ele a cada leva, em vez
     // de ficar plantada onde o alvo estava no cast. E o que a skill sempre
@@ -384,6 +449,8 @@ const MONSTER_SKILLS = {
   // ═══════════════════════════════════════════════════════════════════════════
   drake_chain_arc: {
     relicId: 'r36', name: 'Descarga em Cadeia', icon: '⚡', rarity: 'incomum',
+    // ⛔ RELIQUIA DESATIVADA (playtest 2026-08-22).
+    relicDisabled: true,
     vfx: 'drake_chain_arc', source: 'cobra', shape: 'chain',
     // `jumpCastMs`: cada pulo é ANUNCIADO antes de bater. A cadeia deixou de ser
     // um estouro instantâneo e virou uma sequência que dá para ler — quem está
@@ -419,6 +486,10 @@ const MONSTER_SKILLS = {
   },
   drake_static_field: {
     relicId: 'r38', name: 'Campo Estático', icon: '🌩️', rarity: 'raro',
+    // ⛔ RELIQUIA DESATIVADA (playtest 2026-08-22). O `special: 'static'` nunca
+    // chegou a existir no motor — o campo resolvia como um circulo comum e a
+    // promessa ("so pune QUEM SE MEXER") nunca foi verdade em lugar nenhum.
+    relicDisabled: true,
     vfx: 'drake_static_field', source: 'cobra', shape: 'circle', special: 'static',
     desc: 'Campo de 4 s que só pune QUEM SE MEXER dentro dele. Não é lugar, é estado.',
     // Raio reduzido à METADE (era 75/150): o campo cobria meia tela e, sendo um
@@ -432,6 +503,11 @@ const MONSTER_SKILLS = {
   },
   drake_lightning_web: {
     relicId: 'r39', name: 'Teia de Raios', icon: '🕸️', rarity: 'épico', star: true, // ⭐
+    // ⛔ RELIQUIA DESATIVADA (playtest 2026-08-22) — marcada para REFAZER.
+    // O `shape: 'circle'` bate o disco inteiro: os seis nos e os feixes entre
+    // eles sao so desenho, nao existe grafo nenhum no acerto. "Leia o grafo e
+    // ache a folga" e uma promessa que o motor nunca cumpriu.
+    relicDisabled: true,
     vfx: 'drake_lightning_web', source: 'cobra', shape: 'circle',
     desc: 'Seis nós ligados por feixes que trocam de par 3 vezes. Leia o grafo e ache a folga.',
     relic: { manaCost: 7, radius: 85, nodeCount: 6, phaseCount: 3, beamWidth: 10, collapseRadius: 22, castMs: 2200,
@@ -451,7 +527,16 @@ const MONSTER_SKILLS = {
     // fecha o caminho — atravessar para trás dela vira a jogada certa.
     special: 'obstacles', wallPerStep: true,
     desc: 'Parede de explosões que avança em 5 passos erguendo pedra a cada uma. Atravesse PARA TRÁS dela.',
-    relic: { manaCost: 6, width: 80, band: 13, stepCount: 5, stepDistance: 20, firstDistance: 22, castMs: 1600,
+    // `castMs` 1600 → 200: a barragem sai NO CLIQUE. Os cinco passos ja levam
+    // 2,2 s para percorrer o corredor, e 1,6 s de carga por cima disso fazia a
+    // skill demorar quatro segundos entre apertar e o ultimo passo cair. O
+    // tempo de leitura continua existindo: e o proprio avanco, passo a passo.
+    //
+    // Por que 200 e nao 0: o cliente tem piso de 0,2 s de telegraph
+    // (`maxf(cast_s, 0.2)` em _apply_monster_params). Com 0 aqui, a primeira
+    // faixa BATERIA 200 ms antes de ser desenhada — dano vindo de lugar
+    // nenhum. O numero casa com o piso do desenho de proposito.
+    relic: { manaCost: 6, width: 80, band: 13, stepCount: 5, stepDistance: 20, firstDistance: 22, castMs: 200,
              holdMs: 1400, obstacleRadius: 9,
              ticks: { count: 5, intervalMs: 550, pct: 0.45 } },
     npc:   { rangeMin: 0, rangeMax: 340, width: 220, band: 34, stepCount: 5, stepDistance: 55, firstDistance: 60, damageMult: 1.4, castTime: 1600, cooldown: 18000, weight: 5,
@@ -515,11 +600,21 @@ const MONSTER_SKILLS = {
     relicId: 'r45', name: 'Ninhada Pútrida', icon: '🥚', rarity: 'raro',
     vfx: 'charnel_brood_hatch', source: 'leviata_boss', shape: 'multi', special: 'brood',
     desc: 'Cinco ovos com 6 s de chocagem. Cada ovo destruído a tempo é uma explosão a menos.',
-    relic: { manaCost: 6, count: 5, spread: 65, radius: 9, damagePct: 0.50, castMs: 1100, hatchMs: 6000 },
+    // `triggerRadius` é BEM maior que o raio de dano (26 contra 9): o ovo tem
+    // de reagir a quem se aproxima, não a quem já passou por cima dele — senão
+    // o pulo aconteceria tarde demais para ser visto, que é metade da leitura.
+    // `radius` subiu de 9 para 16 pelo mesmo motivo do morteiro: 9 un é uma
+    // marcação que só pune quem estiver parado no pixel.
+    relic: { manaCost: 6, count: 5, spread: 65, radius: 16, damagePct: 0.50, castMs: 1100, hatchMs: 6000,
+             triggerRadius: 26, jumpMs: 350 },
     npc:   { rangeMin: 0, rangeMax: 200, count: 5, spread: 180, radius: 22, damageMult: 1.6, castTime: 1100, cooldown: 19000, weight: 4, hatchMs: 6000 },
   },
   charnel_chain_bond: {
     relicId: 'r46', name: 'Grilhões do Ossuário', icon: '⛓️', rarity: 'épico',
+    // ⛔ RELIQUIA DESATIVADA (playtest 2026-08-22). O `special: 'bond'` nunca
+    // foi implementado — nao ha par, nao ha corrente e nao ha sangramento por
+    // esticar. Sobrava um circulo de dano com nome de mecanica.
+    relicDisabled: true,
     vfx: 'charnel_chain_bond', source: 'leviata_boss', shape: 'circle', special: 'bond',
     desc: 'Acorrenta inimigos em pares por 6 s: quem esticar a corrente sangra junto com o par.',
     relic: { manaCost: 7, radius: 55, pairCount: 2, maxLength: 45, castMs: 1200, durationMs: 6000,
@@ -530,8 +625,16 @@ const MONSTER_SKILLS = {
   charnel_funeral_march: {
     relicId: 'r47', name: 'Marcha Fúnebre', icon: '⚰️', rarity: 'lendário', star: true, // ⭐
     vfx: 'charnel_funeral_march', source: 'leviata_boss', shape: 'ring',
-    desc: 'A arena aperta em 4 passos… e no fim ABRE numa explosão central. Aperta junto, sai no fim.',
+    // Mesma família da Espiral (ver lá o porquê de `collapse`): os espinhos que
+    // apertam a arena passaram a ser TANGÍVEIS — quem está fora do anel daquele
+    // passo é empurrado para dentro. E a explosão central, que a descrição
+    // sempre prometeu, existe: o `collapse` resolve o miolo com o dano cheio no
+    // fim do último passo. Antes o `ring` só resolvia a coroa, e o centro — o
+    // clímax do desenho — não batia em nada.
+    special: 'collapse', burstAtCenter: true,
+    desc: 'A arena aperta em 4 passos de espinho e no fim o MIOLO explode. Deixe-se apertar, e saia do centro no fim.',
     relic: { manaCost: 10, radius: 120, finalRadius: 30, collapseRadius: 45, phaseCount: 4, damagePct: 1.60, castMs: 2600,
+             collapseTo: 30,
              ticks: { count: 8, intervalMs: 500, pct: 0.18 } },
     npc:   { rangeMin: 0, rangeMax: 320, radius: 320, finalRadius: 80, collapseRadius: 120, phaseCount: 4, damageMult: 5.0, castTime: 2600, cooldown: 28000, weight: 2,
              ticks: { count: 8, intervalMs: 500 } },
@@ -564,7 +667,14 @@ const MONSTER_SKILLS = {
     //
     // Só UMA vítima por uso, e nunca um boss (mesma convenção do resto: chefe
     // só leva slow). O raio é curto de propósito: quem engole tem de se colar.
-    relic: { manaCost: 6, radius: 32, holdMs: 2000, spitDist: 55, castMs: 900,
+    // `radius` 32 → 58: era a razão de a relíquia "não fazer nada". O jogo
+    // acontece na distância do canhão (80–120 un) e o barco tem raio ~14; para
+    // a bocarra pegar alguém a 32 un era preciso estar praticamente encostado
+    // no casco do bicho, o que quase nunca acontece — e quando não pegava
+    // ninguém a skill terminava em SILÊNCIO, sem dano, sem aviso, sem nada.
+    // 58 continua sendo o alcance mais curto do conjunto (é uma mordida), mas
+    // agora é um alcance que existe.
+    relic: { manaCost: 6, radius: 58, holdMs: 2000, spitDist: 55, castMs: 900,
              ticks: { count: 5, intervalMs: 400, pct: 0.42 } },
     npc:   { rangeMin: 0, rangeMax: 75, radius: 75, holdMs: 2000, spitDist: 95, damageMult: 1.5, castTime: 900, cooldown: 18000, weight: 7,
              ticks: { count: 5, intervalMs: 400 } },
@@ -614,7 +724,11 @@ const MONSTER_SKILLS = {
     follow: true,
     turnRate: 0.45,
     rangeFromCannons: true,
-    relic: { manaCost: 8, length: 120, width: 30, castMs: 1400,
+    // 1,2 rad/s do lado do jogador (0,45 do lado do bicho): a lanca e o feixe
+    // mais longo e grosso do jogo, entao gira mais devagar que o Jato — mas
+    // ainda responde ao mouse. Sem cap ela colava no cursor a cada 200 ms e,
+    // para quem estava do outro lado, ficava congelada no angulo do cast.
+    relic: { manaCost: 8, length: 120, width: 30, castMs: 1400, turnRate: 1.2,
              ticks: { count: 15, intervalMs: 200, pct: 0.20 } },
     npc:   { rangeMin: 0, rangeMax: 240, length: 240, width: 34, damageMult: 0.75, castTime: 1400, cooldown: 24000, weight: 4,
              ticks: { count: 15, intervalMs: 200 } },
@@ -875,12 +989,17 @@ const MONSTER_ATTACK_DEFS = {};
 const STAR_RELIC_IDS = new Set();
 
 for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
-  (SKILLS_BY_SOURCE[s.source] ||= []).push(s.relicId);
+  // Reliquia desativada nao entra no pool de drop do bicho — continuar
+  // sorteando uma recompensa que nao pode ser usada seria pior que nao dropar
+  // nada, porque ela ainda ocuparia a vaga de um drop bom.
+  if (!s.relicDisabled) (SKILLS_BY_SOURCE[s.source] ||= []).push(s.relicId);
   if (s.star) STAR_RELIC_IDS.add(s.relicId);
 
   MONSTER_RELIC_DEFS[s.relicId] = {
     name: s.name, icon: s.icon, rarity: s.rarity,
     effect: 'monster_skill',
+    // Ver `relicDisabled` no cabecalho: so a face jogavel e desligada.
+    disabled: !!s.relicDisabled,
     skill: key, vfx: s.vfx, shape: s.shape, special: s.special || null,
     follow: s.follow || false, dash: s.dash || false,
     wallPerStep: s.wallPerStep || false,
@@ -896,6 +1015,8 @@ for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
     // no topo que ninguém copia some em silêncio e o simulador cai no default.
     expandMs: s.expandMs || null,
     atCaster: !!s.atCaster,
+    // O anel que EMPURRA (Espiral, Marcha) — ver _castCollapsingRing.
+    burstAtCenter: !!s.burstAtCenter,
     travelMs: s.travelMs || null,
     dropIntervalMs: s.dropIntervalMs || null,
     dropWarnMs: s.dropWarnMs || null,

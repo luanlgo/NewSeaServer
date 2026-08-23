@@ -25,7 +25,10 @@ const COPIADAS_DO_TOPO = new Set([
   'relicId', 'name', 'icon', 'rarity', 'star', 'vfx', 'source', 'shape', 'special',
   'follow', 'dash', 'wallPerStep', 'rangeFromCannons', 'pattern', 'gapAngle',
   'expandMs', 'atCaster', 'travelMs', 'dropIntervalMs', 'dropWarnMs', 'turnRate',
-  'targetMode',
+  'targetMode', 'burstAtCenter',
+  // `relicDisabled` chega ao RELIC_DEFS com outro nome (`disabled`) e ao
+  // SKILLS_BY_SOURCE como ausencia — e propagada, so nao homonimamente.
+  'relicDisabled',
   // puramente editoriais: existem para quem lê a tabela, não para os motores
   'desc',
   // os dois lados

@@ -20,6 +20,8 @@
 'use strict';
 
 const { MONSTER_SKILLS } = require('../constants/monster_skills');
+const { isInvincible } = require('../utils/invincibility');
+const { applyGoldShield } = require('../utils/gold-shield');
 
 class MonsterSkillManager {
   /**
@@ -357,6 +359,26 @@ class MonsterSkillManager {
     if (e.phaseUntil && Date.now() < e.phaseUntil) {
       return { id: e.id, hp: e.hp, isNPC: t.isNPC, dmg: 0, phased: true };
     }
+    // ── As defesas do jogador também valem contra as 34 do bestiário ───────
+    // Este caminho de dano nasceu sem nenhuma delas: a Névoa Espectral não
+    // aparava skill de relíquia e o Escudo de Ouro não descontava nada. Como o
+    // bestiário é hoje a maior parte do dano que se leva em PvP, as duas
+    // relíquias defensivas simplesmente "não funcionavam" — a queixa do
+    // playtest. Os outros dois caminhos (tiro e área de bicho) já faziam isto.
+    if (!t.isNPC) {
+      if (isInvincible(e)) {
+        this.ctx.addEvent({ type: 'shield_block', targetId: e.id }, e.mapLevel || 1);
+        return { id: e.id, hp: e.hp, isNPC: false, dmg: 0, blocked: true };
+      }
+      const esc = applyGoldShield(e, dmg);
+      dmg = esc.damage;
+      if (esc.goldCost > 0) {
+        this.ctx.sendTo(e.ws, {
+          type: 'gold_shield_cost', targetId: e.id, goldCost: esc.goldCost, gold: e.gold,
+        });
+      }
+    }
+
     e.hp = Math.max(0, e.hp - dmg);
     if (t.isNPC) {
       e.lastDamageTime = Date.now();
@@ -375,8 +397,19 @@ class MonsterSkillManager {
     return { id: e.id, hp: e.hp, isNPC: t.isNPC, dmg };
   }
 
-  /** Slow/stun/root/pull/push conforme `cc` do def. Bosses não tomam stun/root. */
-  _applyCC(player, t, cc, ox, oz) {
+  /**
+   * Slow/stun/root/pull/push conforme `cc` do def. Bosses não tomam stun/root.
+   *
+   * `soRenovaSlow`: nas levas 2..N de uma canalizada só o SLOW é reaplicado.
+   * Stun, root, puxão e empurrão continuam valendo uma vez por uso — reaplicar
+   * um stun de 0,8 s a cada 160 ms seria stun permanente, e repuxar o alvo para
+   * o centro a cada leva o deixaria colado sem chance de sair.
+   *
+   * O slow, esse sim, precisa renovar: no Sopro Pútrido ele durava 1,5 s dentro
+   * de uma canalização de 3,5 s, então o alvo estava solto na metade final do
+   * golpe que deveria estar emperrando ele.
+   */
+  _applyCC(player, t, cc, ox, oz, soRenovaSlow = false) {
     if (!cc) return;
     const e = t.e;
     const now = Date.now();
@@ -384,6 +417,7 @@ class MonsterSkillManager {
       e.slowMult = Math.min(e.slowMult || 1, 1 - cc.slowPct);   // pior slow, não empilha
       e.slowExpires = now + (cc.slowMs || 2000);
     }
+    if (soRenovaSlow) return;
     // Convenção do projeto: boss só leva slow (ver r11 Prisão de Gelo).
     if (!e.isBoss) {
       if (cc.stunMs) e.stunExpires = Math.max(e.stunExpires || 0, now + cc.stunMs);
@@ -417,7 +451,10 @@ class MonsterSkillManager {
     const { addEvent, relicDamageFor, getMapManagerFor } = this.ctx;
     const skill  = MONSTER_SKILLS[def.skill];
     const shape  = def.shape || 'circle';
-    const castMs = def.castMs || def.castTime || 800;
+    // `??` e não `||`: a Barragem Rolante castea em 0 ms, e com `||` o zero
+    // caía no default de 800 — a skill "instantânea" ganhava 0,8 s de carga do
+    // nada e ninguém conseguia ver de onde vinha.
+    const castMs = def.castMs ?? def.castTime ?? 800;
     const mapLvl = player.mapLevel || 1;
 
     // Alcance colado no canhão (Bote da Bocarra): usar um número fixo fazia o
@@ -534,7 +571,11 @@ class MonsterSkillManager {
         // do servidor.
         travelMs: def.travelMs,
         // Canalizada: o cliente gira o efeito seguindo o cursor.
-        follow: def.follow || false,
+        // `turnRate` vai junto porque é ele que decide QUEM gira o desenho: com
+        // cap, o giro é sempre o que o servidor manda (`relic_skill_aim`), até
+        // para quem lançou — senão o desenho colado no mouse mostraria o feixe
+        // onde ele não está. Ver spawn_monster_skill no cliente.
+        follow: def.follow || false, turnRate: def.turnRate || 0,
         // Dash: o corredor fica PLANTADO onde nasceu (o caster viaja, o
         // desenho não) — sem isto a faixa arrasta junto com o barco.
         dash: def.dash || false,
@@ -575,6 +616,31 @@ class MonsterSkillManager {
       this._castLights(player, def, castMs, effectPayload);
       return;
     }
+    // Espiral do Abismo / Marcha Fúnebre: o anel é PAREDE, não linha de dano.
+    if (def.special === 'collapse') {
+      this._castCollapsingRing(player, def, ox, oz, castMs, effectPayload);
+      return;
+    }
+    // Sonar do Abismo: as ondas são SIMULADAS (correm de 0 até `radius` em
+    // `expandMs`), não resolvidas em 4 levas grossas. Isto só existia do lado
+    // do bicho (_runSonar no attack-manager): na mão do jogador o `band` de 11
+    // un pulava em 4 passos de ~24 un, então 54% do raio nunca era tocado — o
+    // anel passava por cima do alvo sem nada acontecer. Era o "o dano está
+    // esquisito, não parece estar acertando quando devia".
+    if (def.special === 'sonar') {
+      this._runSonar(player, def, ox, oz, castMs, gapFacing, effectPayload);
+      return;
+    }
+    // Sentença do Crânio: as marcas ANDAM com quem foi carimbado.
+    if (def.special === 'mark') {
+      this._castMark(player, def, cx, cz, castMs, pts, effectPayload);
+      return;
+    }
+    // Ninhada Pútrida: ovos que chocam — ou pulam em quem passar perto.
+    if (def.special === 'brood') {
+      this._castBrood(player, def, cx, cz, castMs, pts, effectPayload);
+      return;
+    }
     // Prisão de Terra: só as 4 paredes, dano nenhum.
     if (def.special === 'prison') {
       this._castPrison(player, def, cx, cz, castMs, effectPayload);
@@ -598,7 +664,15 @@ class MonsterSkillManager {
         let tdx = dx, tdz = dz;
         let tox = ox, toz = oz;
         // Area presa ao lancador: re-le a posicao do barco a cada leva.
-        if (def.atCaster) {
+        //
+        // `rays` entra junto com o `atCaster` e NAO e detalhe: a coroa gira em
+        // volta de quem lancou e o cliente ancora o desenho NO BARCO (ver
+        // spawn_monster_skill), entao ela navega junto. O dano, porem, ficava
+        // travado em onde o barco estava no instante do cast — bastava andar
+        // meio segundo para os espinhos rodarem em volta de voce enquanto o
+        // acerto varria um circulo vazio la atras. Era o "a Coroa nao esta
+        // pegando" do playtest, e valia igual para a Salva de Espinhos (r55).
+        if (def.atCaster || shape === 'rays') {
           tox = player.x;
           toz = player.z;
         }
@@ -618,6 +692,41 @@ class MonsterSkillManager {
             tdx = Math.sin(player.rotation || 0);
             tdz = Math.cos(player.rotation || 0);
           }
+
+          // ── Cap de giro, do lado do JOGADOR ─────────────────────────────
+          // O bicho já tinha isto (attack-manager); a relíquia não. Sem cap o
+          // cone SALTAVA para o cursor a cada leva: quem canalizava acertava
+          // sempre, e quem estava do outro lado via um desenho parado no
+          // ângulo em que o cast começou — "para o inimigo ela está parada,
+          // mas quem está usando está mexendo".
+          //
+          // O `_aimAngle` vive no player enquanto o golpe roda; começa na
+          // direção do cast para o primeiro passo sair do telegraph, não de um
+          // ângulo herdado do uso anterior.
+          if (def.turnRate) {
+            if (i === 0 || player._skillAimAngle == null) {
+              player._skillAimAngle = Math.atan2(dz, dx);
+            }
+            const passo = def.turnRate * (step || 160) / 1000;
+            let diff = Math.atan2(tdz, tdx) - player._skillAimAngle;
+            // Normaliza para [-PI, PI]: sem isto o feixe daria a volta pelo
+            // caminho longo quando o cursor cruzasse o -180.
+            diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+            player._skillAimAngle += Math.max(-passo, Math.min(passo, diff));
+            tdx = Math.cos(player._skillAimAngle);
+            tdz = Math.sin(player._skillAimAngle);
+          }
+
+          // ── E o giro vai NO AR ──────────────────────────────────────────
+          // O cliente só sabia re-mirar o cast LOCAL (que segue o próprio
+          // mouse). Para todos os OUTROS — inclusive o alvo — o desenho ficava
+          // congelado na direção do telegraph enquanto o dano varria. É o par
+          // exato do `npc_skill_aim` que o bicho já mandava; o nome muda só
+          // porque o cliente encontra o lançador por casterId e não por npcId.
+          addEvent({
+            type: 'relic_skill_aim', casterId: player.id,
+            x: player.x, z: player.z, dirX: tdx, dirZ: tdz,
+          }, mapLvl);
         }
         // Geometria que ANDA (frente do Sonar, passo da Barragem) le a leva
         // atual daqui — ver inShape().
@@ -726,9 +835,30 @@ class MonsterSkillManager {
       if (shape === 'chain') h.chainIndex = k;
       out.push(h);
       drained += d;
-      // CC só na primeira leva — senão um stun de 0,8 s viraria stun permanente
-      // enquanto os ticks rodam.
-      if (index === 0) this._applyCC(player, t, def.cc, ox, oz);
+      // CC inteiro só na primeira leva; das seguintes, só o slow renova —
+      // ver a nota no _applyCC.
+      this._applyCC(player, t, def.cc, ox, oz, index !== 0);
+      // ── `dot`: o golpe deixa o alvo QUEIMANDO/ENVENENADO ────────────────
+      // Reaproveita o `e.dots` que o jogo inteiro já usa (bala de fogo, bala de
+      // sangue, Óleo Incendiário): o laço `processDots` do server.js tica,
+      // manda o número ao cliente e resolve a morte por veneno com recompensa
+      // e respawn. Um laço próprio aqui teria de repetir tudo isso.
+      //
+      // Renova em vez de empilhar (`src: 'skill'`): seis levas de Pústula são
+      // um veneno que se mantém aceso, não seis venenos em paralelo — que
+      // ticariam em compassos diferentes e viraria uma chuva de números.
+      if (def.dot && def.dot.pct > 0) {
+        const alvo = t.e;
+        if (!alvo.dots) alvo.dots = [];
+        alvo.dots = alvo.dots.filter(x => x.src !== 'skill');
+        alvo.dots.push({
+          dmg:  Math.max(1, Math.round(relicDamageFor(player, { ...def, damagePct: def.dot.pct }))),
+          tick: def.dot.tickMs || 1000,
+          dur:  def.dot.durMs  || 3000,
+          next: Date.now() + (def.dot.tickMs || 1000),
+          ownerId: player.id, effect: def.dot.effect || 'fire', src: 'skill',
+        });
+      }
     });
 
     // ── Coro dos Rostos: SILÊNCIO ────────────────────────────────────────────
@@ -751,12 +881,21 @@ class MonsterSkillManager {
     // morta em PvE, que é onde ela mais vai ser usada.
     if (def.special === 'manaburn') {
       const queima = def.manaBurn || 0;
+      // ── O sorvo BEBE: o que ele queima volta para quem lançou ────────────
+      // "Sorvo" nunca quis dizer "apagar": a criatura cega procura o que faz o
+      // casco brilhar porque ela SE ALIMENTA disso. Queimar a mana do outro e
+      // não ganhar nada fazia a relíquia custar 7 de mana para produzir um
+      // efeito que o lançador não sentia — e num jogo com regeneração de 0,5/s
+      // sete de mana é caro. Agora ela se paga: sorver o bastante devolve o
+      // custo do uso, que é o que fecha a fantasia da skill.
+      let sorvido = 0;
       for (const t of targets) {
         const e = t.e;
         if (!t.isNPC && e.maxMana != null) {
           const antes = e.mana || 0;
           e.mana = Math.max(0, antes - queima);
           const perdeu = antes - e.mana;
+          sorvido += perdeu;
           if (perdeu > 0) {
             this.ctx.sendTo(e.ws, {
               type: 'mana_burn', targetId: e.id, amount: perdeu,
@@ -770,6 +909,22 @@ class MonsterSkillManager {
             const h = this._damage(player, t, extra);
             out.push(h);
           }
+          // Sem mana para beber, a criatura tira do próprio bicho: uma fração
+          // do que ela sorveria de um jogador. Senão a relíquia continuaria
+          // sendo pura despesa em PvE, que é onde ela mais vai ser usada.
+          sorvido += queima * 0.5;
+        }
+      }
+      // Devolve UMA vez por leva, com teto — a soma de seis levas sobre cinco
+      // alvos encheria o copo sozinha e a mana deixaria de ser recurso.
+      if (sorvido > 0 && player.maxMana != null) {
+        const ganho = Math.min(Math.round(sorvido), Math.max(0, player.maxMana - (player.mana || 0)));
+        if (ganho > 0) {
+          player.mana = (player.mana || 0) + ganho;
+          this.ctx.sendTo(player.ws, {
+            type: 'mana_siphon', targetId: player.id, amount: ganho,
+            mana: player.mana, maxMana: player.maxMana,
+          });
         }
       }
     }
@@ -790,6 +945,380 @@ class MonsterSkillManager {
   }
 
   // ── Specials ───────────────────────────────────────────────────────────────
+
+  /**
+   * Espiral do Abismo (r25) e Marcha Fúnebre (r47): o anel é PAREDE.
+   *
+   * ── O problema que isto resolve ───────────────────────────────────────────
+   * As duas desenham a mesma coisa — uma coroa (esferas / espinhos) que fecha
+   * o cerco em passos — e as duas resolviam como um `ring` comum: uma linha de
+   * dano que se desviava SAINDO dela. Ou seja, a resposta certa era atravessar
+   * a parede que a tela mostrava se aproximando. O desenho e a mecânica diziam
+   * coisas opostas, e a queixa do playtest ("não faz sentido com o visual")
+   * era exatamente isso.
+   *
+   * ── O que ele faz ─────────────────────────────────────────────────────────
+   * A cada leva o anel tem um raio (de `radius` até `collapseTo`, em
+   * `phaseCount` passos). Quem estiver ALÉM dele é empurrado para dentro: a
+   * coroa é sólida, e ela varre. Quem já está dentro só leva o tique do
+   * roçar — a punição por estar perto da parede, não por existir.
+   *
+   * No fim, se `burstAtCenter`, o miolo explode com o dano CHEIO num raio de
+   * `collapseRadius`/`eruptRadius`. É o clímax que o desenho sempre teve e que
+   * nenhum dos dois motores chegava a bater — na Marcha Fúnebre a explosão
+   * central estava até na descrição da relíquia.
+   *
+   * A leitura vira: deixe-se apertar (não adianta correr da parede) e escolha
+   * ONDE estar quando o miolo abrir. Duas decisões, nenhuma delas "fuja".
+   *
+   * ── Por que empurrar por posição e não por wallManager ───────────────────
+   * Um anel de obstáculos reais seria uma dúzia de paredes reposicionadas a
+   * cada 220 ms. O wallManager foi feito para retângulos que ficam parados
+   * (Muro de Pedra, Jaula de Patas); mover doze deles dez vezes daria
+   * tranco no `pushOutOfWalls` e o barco pularia. A borda móvel é uma conta só
+   * — e é a mesma família do `cc.pullTo`, que o motor já aplica assim.
+   */
+  _castCollapsingRing(player, def, ox, oz, castMs, effectPayload) {
+    const { addEvent } = this.ctx;
+    const mapLvl = player.mapLevel || 1;
+    const ticks  = def.ticks || { count: 8, intervalMs: 500, pct: 0.2 };
+    const total  = Math.max(1, ticks.count || 8);
+    const step   = ticks.intervalMs || 500;
+    const deR    = def.radius || 100;
+    const ateR   = def.collapseTo || def.finalRadius || def.eruptRadius || 30;
+    const banda  = def.band || Math.max(12, (deR - ateR) / total);
+    const hits   = [];
+
+    for (let i = 0; i < total; i++) {
+      setTimeout(() => {
+        if (player.dead) return;
+        // Raio do anel NESTA leva.
+        //
+        // O aperto acontece em `phaseCount` PASSOS, não numa rampa contínua: é
+        // o que o desenho 2D mostra ("a arena aperta em 4 passos") e é o que dá
+        // à skill o compasso que se lê. As levas de dano são mais frequentes
+        // que os passos — várias levas caem no mesmo raio, e é assim que o
+        // roçar na parede cobra por continuar encostado nela.
+        const passos = Math.max(1, def.phaseCount || total);
+        const passo  = passos === 1 ? 0 : Math.floor((i * passos) / total) / (passos - 1);
+        const raio   = deR + (ateR - deR) * Math.min(1, passo);
+        // Onde a parede estava no passo ANTERIOR. No primeiro passo ela vem de
+        // fora do anel inicial, então o raio de partida é o próprio `deR`.
+        const passoAnt = passos === 1 ? 0 : Math.max(0, Math.floor((i * passos) / total) - 1) / (passos - 1);
+        const raioAnt  = i === 0 ? deR : deR + (ateR - deR) * Math.min(1, passoAnt);
+
+        // ── Quem a coroa alcança nesta leva ─────────────────────────────────
+        // NÃO é uma faixa fina no raio atual: é tudo o que está entre o anel de
+        // agora e onde ele estava no passo anterior — a área que a parede
+        // acabou de VARRER. Com faixa fina, um passo de 30 un sobre uma faixa
+        // de 12 deixava 60% do caminho sem tocar em nada, e quem não é
+        // empurrado (chefe) simplesmente nunca era atingido: a Marcha Fúnebre
+        // não fazia dano nenhum num chefe, que é onde uma lendária mais precisa
+        // fazer. A parede varre o que ela passa.
+        const anelDef = {
+          ...def,
+          radius: Math.max(raioAnt, raio) + banda / 2,
+          safeRadius: Math.max(0, raio - banda / 2),
+        };
+        const batch = this._resolveOnce(player, anelDef, 'ring', ox, oz, 0, 1, null, ticks, i);
+        for (const h of batch) hits.push(h);
+
+        // ── E o empurrão ────────────────────────────────────────────────────
+        // Todo inimigo além do anel é trazido para a borda de dentro. Chefe
+        // fica de fora pela convenção do projeto (chefe não é deslocado), mas
+        // continua levando o tique do roçar como qualquer um.
+        const fora = this._targetsIn(player, { radius: deR + banda * 2 }, 'circle', ox, oz, 0, 1, null);
+        const empurrados = [];
+        for (const t2 of fora) {
+          const e = t2.e;
+          if (e.isBoss) continue;
+          const dx = e.x - ox, dz = e.z - oz;
+          const d  = Math.hypot(dx, dz);
+          if (d <= raio || d < 0.001) continue;
+          e.x = ox + (dx / d) * raio;
+          e.z = oz + (dz / d) * raio;
+          this.ctx.clampToMap(e);
+          empurrados.push({ id: e.id, x: e.x, z: e.z });
+        }
+
+        addEvent({
+          type: 'relic_collapse_step', casterId: player.id, skill: def.skill,
+          vfx: def.vfx, originX: ox, originZ: oz, radius: raio, band: banda,
+          step: i, stepCount: total, pushed: empurrados,
+        }, mapLvl);
+
+        if (batch.length > 0) {
+          addEvent({
+            type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
+            vfx: def.vfx, originX: ox, originZ: oz, points: null, hits: batch,
+            radius: raio, tick: i,
+          }, mapLvl);
+        }
+      }, castMs + i * step);
+    }
+
+    // ── O miolo ────────────────────────────────────────────────────────────
+    if (def.burstAtCenter) {
+      setTimeout(() => {
+        if (player.dead) return;
+        const raio = def.collapseRadius || def.eruptRadius || ateR;
+        // `damagePct` cheio (não o `ticks.pct`): a explosão central é O golpe,
+        // e os tiques do aperto eram o preço de chegar até aqui. Passar `null`
+        // no lugar de `ticks` é o que faz o _resolveOnce usar o dano cheio.
+        const batch = this._resolveOnce(player, { ...def, radius: raio, safeRadius: 0 },
+          'circle', ox, oz, 0, 1, null, null, 0);
+        for (const h of batch) hits.push(h);
+        // Visual: o clarão do miolo abrindo. Sem `hits` — ver a nota acima.
+        addEvent({
+          type: 'relic_collapse_burst', casterId: player.id, skill: def.skill,
+          vfx: def.vfx, originX: ox, originZ: oz, radius: raio,
+        }, mapLvl);
+        // `tick: total` porque o miolo É a última leva de uma sequência de
+        // levas, e o cliente escolhe a apresentação do número pela PRESENÇA
+        // dessa marca. Anunciá-lo sem ela faria a explosão passar por golpe
+        // avulso no meio de um fluxo — ver relic-tick-reporting.test.js.
+        addEvent({
+          type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
+          vfx: def.vfx, originX: ox, originZ: oz, points: null, hits: batch,
+          radius: raio, tick: total,
+        }, mapLvl);
+        const npcHits = hits.filter(h => h.isNPC).length;
+        if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
+      }, castMs + total * step);
+    }
+
+    effectPayload.targetX = ox;
+    effectPayload.targetZ = oz;
+    effectPayload.castMs  = castMs;
+  }
+
+  /**
+   * Sonar do Abismo: as ondas CORREM, em vez de resolverem em N levas grossas.
+   *
+   * Cópia fiel do `_runSonar` do attack-manager, do lado da relíquia — a versão
+   * jogável nunca teve simulador e caía no cálculo de reserva do `inShape`
+   * (`front = radius * (k+1)/n`). Com band 11 sobre raio 95 em 4 levas, a
+   * frente pulava 24 un por vez sobre uma faixa de 11: **mais da metade do raio
+   * nunca era tocada**, e quem via o anel passar por cima não levava nada.
+   *
+   * O passo sai da própria faixa (`expandMs × band / radius`), então a frente
+   * avança exatamente `band` por passo: a varredura fica CONTÍNUA (sem buraco)
+   * e ninguém leva a mesma onda duas vezes — o dano total continua sendo um
+   * por onda, como o desenho promete.
+   */
+  _runSonar(player, def, ox, oz, castMs, gapFacing, effectPayload) {
+    const { addEvent } = this.ctx;
+    const mapLvl = player.mapLevel || 1;
+    const rings  = def.ringCount || (def.ticks && def.ticks.count) || 4;
+    const gapMs  = (def.ticks && def.ticks.intervalMs) || 1200;
+    const expand = def.expandMs || 3200;
+    const radius = def.radius || 95;
+    const band   = def.band || 11;
+    const stepMs = Math.max(60, Math.round((expand * band) / Math.max(radius, 1)));
+    const total  = (rings - 1) * gapMs + expand;
+    const hits   = [];
+
+    const start = Date.now() + castMs;
+    const step = () => {
+      if (player.dead) return;
+      const el = Date.now() - start;
+
+      for (let i = 0; i < rings; i++) {
+        const t = el - i * gapMs;
+        if (t < 0 || t > expand) continue;         // ainda não saiu / já acabou
+        const front = radius * (t / expand);
+        const tickDef = {
+          ...def, shape: 'ring',
+          _frontRadius: front, _ringIndex: i, _gapFacing: gapFacing,
+        };
+        const batch = this._resolveOnce(player, tickDef, 'ring', ox, oz, 0, 1, null, def.ticks, i);
+        if (batch.length === 0) continue;
+        for (const h of batch) hits.push(h);
+        addEvent({
+          type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
+          vfx: def.vfx, originX: ox, originZ: oz, points: null, hits: batch,
+          radius: front, tick: i,
+        }, mapLvl);
+      }
+
+      if (el >= total) {
+        const npcHits = hits.filter(h => h.isNPC).length;
+        if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
+        return;
+      }
+      setTimeout(step, stepMs);
+    };
+    setTimeout(step, castMs);
+
+    effectPayload.targetX = ox;
+    effectPayload.targetZ = oz;
+    effectPayload.castMs  = castMs;
+  }
+
+  /**
+   * Sentença do Crânio: carimba N inimigos e a marca ANDA COM ELES.
+   *
+   * O `special: 'mark'` estava no dado desde que a skill nasceu e nunca teve
+   * implementação: a relíquia caía na resolução `multi` genérica, ou seja
+   * explodia NA HORA em pontos sorteados em volta do cursor — quase nunca em
+   * cima de alguém. Era o "não está dando o dano", e a marca também nunca
+   * andava, porque não havia marca nenhuma.
+   *
+   * Agora o carimbo é numa PESSOA: o alvo leva a explosão onde estiver quando o
+   * pavio queimar, e a única defesa é se afastar dos outros — porque a explosão
+   * ainda é uma área, e dois marcados juntos somam.
+   */
+  _castMark(player, def, cx, cz, castMs, pts, effectPayload) {
+    const { addEvent } = this.ctx;
+    const mapLvl = player.mapLevel || 1;
+    const fuse   = def.fuseMs || 4000;
+    const raio   = def.radius || 22;
+
+    setTimeout(() => {
+      if (player.dead) return;
+
+      // Os candidatos são os inimigos dentro do `spread` do cursor, os mais
+      // próximos primeiro — carimbar quem está do outro lado do mapa faria a
+      // mira não querer dizer nada.
+      const alcance = { ...def, radius: def.spread || 60 };
+      const alvos = this._targetsIn(player, alcance, 'circle', cx, cz, 0, 1, null)
+        .sort((a, b) => Math.hypot(a.e.x - cx, a.e.z - cz) - Math.hypot(b.e.x - cx, b.e.z - cz))
+        .slice(0, def.count || 3);
+
+      if (alvos.length === 0) return;
+
+      for (const t of alvos) {
+        addEvent({
+          type: 'relic_mark_set', casterId: player.id, skill: def.skill,
+          vfx: def.vfx, targetId: t.e.id, isNPC: t.isNPC,
+          fuseMs: fuse, radius: raio,
+        }, mapLvl);
+      }
+
+      setTimeout(() => {
+        if (player.dead) return;
+        const hits = [];
+        for (const t of alvos) {
+          const e = t.e;
+          if (e.dead) continue;
+          // A explosão acontece ONDE O ALVO ESTÁ — é a marca que andou com ele.
+          // E é uma ÁREA de verdade: quem estiver junto do marcado também leva.
+          const batch = this._resolveOnce(player, def, 'circle', e.x, e.z, 0, 1, null, null, 0);
+          for (const h of batch) hits.push(h);
+          addEvent({
+            type: 'relic_mark_burst', casterId: player.id, skill: def.skill,
+            vfx: def.vfx, targetId: e.id, x: e.x, z: e.z, radius: raio,
+          }, mapLvl);
+          // Golpe avulso (sem `tick`): número cheio, que é o que o pavio de
+          // 4 s promete. Sem este anúncio o dano saía e a tela ficava muda.
+          addEvent({
+            type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
+            vfx: def.vfx, originX: e.x, originZ: e.z, points: null,
+            hits: batch, radius: raio,
+          }, mapLvl);
+        }
+        const npcHits = hits.filter(h => h.isNPC).length;
+        if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
+      }, fuse);
+    }, castMs);
+
+    effectPayload.targetX = cx;
+    effectPayload.targetZ = cz;
+    effectPayload.castMs  = castMs;
+  }
+
+  /**
+   * Ninhada Pútrida: ovos que chocam sozinhos — ou PULAM em quem passar perto.
+   *
+   * Mesma história do `mark`: o `special: 'brood'` nunca existiu no motor, e a
+   * skill resolvia como um `multi` instantâneo. Não havia ovo, não havia
+   * chocagem, e o dano saía no cast em pontos sorteados.
+   *
+   * O ovo é uma ameaça PACIENTE: fica no lugar, e quem chegar a `triggerRadius`
+   * dele o faz pular. Isso dá à skill uma leitura que nenhuma outra tem — ela
+   * transforma um pedaço do mar em terreno que o inimigo tem de contornar, e
+   * quem não contorna decide a hora da própria explosão.
+   */
+  _castBrood(player, def, cx, cz, castMs, pts, effectPayload) {
+    const { addEvent } = this.ctx;
+    const mapLvl  = player.mapLevel || 1;
+    const hatch   = def.hatchMs || 6000;
+    const raio    = def.radius || 9;
+    const gatilho = def.triggerRadius || 26;
+    const puloMs  = def.jumpMs || 350;
+    const POLL_MS = 150;
+
+    setTimeout(() => {
+      if (player.dead) return;
+      const ovos = (pts || MonsterSkillManager.scatter(def.count || 5, def.spread || 65, def))
+        .map((pt, i) => ({ id: player.id + '_' + Date.now() + '_' + i, x: cx + pt.x, z: cz + pt.z, vivo: true }));
+
+      addEvent({
+        type: 'relic_brood_lay', casterId: player.id, skill: def.skill, vfx: def.vfx,
+        eggs: ovos.map(o => ({ id: o.id, x: o.x, z: o.z })),
+        radius: raio, hatchMs: hatch, triggerRadius: gatilho,
+      }, mapLvl);
+
+      const hits = [];
+      const estourar = (ovo, ex, ez) => {
+        const batch = this._resolveOnce(player, def, 'circle', ex, ez, 0, 1, null, null, 0);
+        for (const h of batch) hits.push(h);
+        addEvent({
+          type: 'relic_brood_burst', casterId: player.id, skill: def.skill, vfx: def.vfx,
+          eggId: ovo.id, x: ex, z: ez, radius: raio,
+        }, mapLvl);
+        addEvent({
+          type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
+          vfx: def.vfx, originX: ex, originZ: ez, points: null,
+          hits: batch, radius: raio,
+        }, mapLvl);
+      };
+
+      const nascidoEm = Date.now();
+      const vigiar = () => {
+        if (player.dead) return;
+        const restam = ovos.filter(o => o.vivo);
+
+        for (const ovo of restam) {
+          // O ovo procura quem chegou perto DELE — o raio de gatilho é bem
+          // maior que o de dano, senão o pulo aconteceria depois de o alvo já
+          // ter passado por cima e a mecânica não teria como ser vista.
+          const perto = this._targetsIn(player, { radius: gatilho }, 'circle', ovo.x, ovo.z, 0, 1, null);
+          if (perto.length === 0) continue;
+          perto.sort((a, b) => Math.hypot(a.e.x - ovo.x, a.e.z - ovo.z) - Math.hypot(b.e.x - ovo.x, b.e.z - ovo.z));
+          const presa = perto[0].e;
+          ovo.vivo = false;                         // reservado: não pula duas vezes
+          addEvent({
+            type: 'relic_brood_jump', casterId: player.id, skill: def.skill, vfx: def.vfx,
+            eggId: ovo.id, targetId: presa.id, x: presa.x, z: presa.z, jumpMs: puloMs,
+          }, mapLvl);
+          // O ovo estoura onde o alvo estiver quando ele CHEGAR, não onde ele
+          // estava quando pulou — o pulo persegue.
+          setTimeout(() => {
+            estourar(ovo, presa.dead ? ovo.x : presa.x, presa.dead ? ovo.z : presa.z);
+          }, puloMs);
+        }
+
+        if (Date.now() - nascidoEm >= hatch) {
+          // Fim da chocagem: o que sobrou estoura no lugar.
+          for (const ovo of ovos) {
+            if (!ovo.vivo) continue;
+            ovo.vivo = false;
+            estourar(ovo, ovo.x, ovo.z);
+          }
+          const npcHits = hits.filter(h => h.isNPC).length;
+          if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
+          return;
+        }
+        setTimeout(vigiar, POLL_MS);
+      };
+      setTimeout(vigiar, POLL_MS);
+    }, castMs);
+
+    effectPayload.targetX = cx;
+    effectPayload.targetZ = cz;
+    effectPayload.castMs  = castMs;
+  }
 
   /**
    * Bocarra Torácica: ENGOLE uma vítima. Ela é presa (mesmo `stunExpires` que o
@@ -815,17 +1344,25 @@ class MonsterSkillManager {
       if (player.dead) return;
       // A presa é a mais PRÓXIMA dentro do raio — a bocarra é curta, então quem
       // está colado é quem entra.
-      const dentro = this._targetsIn(player, def, 'circle', player.x, player.z, 0, 1, null)
-        .filter(t => !t.e.isBoss);
+      //
+      // Chefe entra na lista: ele não é ENGOLIDO (a convenção do projeto é que
+      // boss só leva slow), mas leva as cinco levas de dano igual. Filtrá-lo
+      // fora daqui fazia a relíquia não ter efeito NENHUM contra chefe — o
+      // alvo em que uma épica de mapa 10 mais precisa ter efeito.
+      const dentro = this._targetsIn(player, def, 'circle', player.x, player.z, 0, 1, null);
       if (dentro.length === 0) return;
       dentro.sort((a, b) =>
         Math.hypot(a.e.x - player.x, a.e.z - player.z) -
         Math.hypot(b.e.x - player.x, b.e.z - player.z));
-      const presa = dentro[0];
+      // Prefere quem PODE ser engolido; só cai no chefe se não houver mais nada.
+      const presa = dentro.find(t => !t.e.isBoss) || dentro[0];
       const e = presa.e;
+      const engolivel = !e.isBoss;
       const fim = Date.now() + hold;
-      e.stunExpires   = Math.max(e.stunExpires || 0, fim);
-      e._swallowedBy  = player.id;
+      if (engolivel) {
+        e.stunExpires  = Math.max(e.stunExpires || 0, fim);
+        e._swallowedBy = player.id;
+      }
 
       addEvent({
         type: 'relic_effect', casterId: player.id, effect: 'swallow',
@@ -837,8 +1374,10 @@ class MonsterSkillManager {
         setTimeout(() => {
           if (player.dead || e.dead) return;
           // Cola a presa no lançador — é isto que faz "engolido" e não "parado".
-          e.x = player.x;
-          e.z = player.z;
+          if (engolivel) {
+            e.x = player.x;
+            e.z = player.z;
+          }
           const dmg = relicDamageFor(player,
             { ...def, damagePct: (ticks && ticks.pct != null) ? ticks.pct : def.damagePct });
           const h = this._damage(player, presa, dmg);
@@ -854,15 +1393,17 @@ class MonsterSkillManager {
       // Cuspida: sair da bocarra NÃO te devolve onde você entrou.
       setTimeout(() => {
         if (e.dead) return;
-        const proa = player.rotation || 0;
-        e.x = player.x - Math.sin(proa) * spit;
-        e.z = player.z - Math.cos(proa) * spit;
-        this.ctx.clampToMap(e);
-        delete e._swallowedBy;
-        addEvent({
-          type: 'relic_effect', casterId: player.id, effect: 'spit_out',
-          targetId: e.id, x: e.x, z: e.z,
-        }, mapLvl);
+        if (engolivel) {
+          const proa = player.rotation || 0;
+          e.x = player.x - Math.sin(proa) * spit;
+          e.z = player.z - Math.cos(proa) * spit;
+          this.ctx.clampToMap(e);
+          delete e._swallowedBy;
+          addEvent({
+            type: 'relic_effect', casterId: player.id, effect: 'spit_out',
+            targetId: e.id, x: e.x, z: e.z,
+          }, mapLvl);
+        }
         const npcHits = hits.filter(h => h.isNPC).length;
         if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
       }, hold);
@@ -1413,25 +1954,16 @@ class MonsterSkillManager {
     }
 
     // Jaula = anel de patas com UMA brecha; Naufrágios = destroços espalhados.
-    let spots;
-    if (def.legCount) {
-      const gap = (def.gapAngle || 55) * Math.PI / 180;
-      const gapCenter = Math.random() * Math.PI * 2;
-      spots = [];
-      for (let i = 0; i < def.legCount; i++) {
-        const a = (i / def.legCount) * Math.PI * 2;
-        // Pula as patas que cairiam dentro da brecha — é por ela que se escapa.
-        // Distância angular pelo caminho curto. NÃO usar `%` sobre um valor que
-        // pode ser negativo: o módulo de JS preserva o sinal, e a jaula fechava
-        // inteira (sem brecha, prendendo pra sempre).
-        let diff = Math.abs(a - gapCenter) % (Math.PI * 2);
-        if (diff > Math.PI) diff = Math.PI * 2 - diff;
-        if (diff < gap / 2) continue;
-        spots.push({ x: Math.cos(a) * (def.radius || 45), z: Math.sin(a) * (def.radius || 45) });
-      }
-    } else {
-      spots = pts || MonsterSkillManager.scatter(def.count || 6, def.spread || 75, def);
-    }
+    //
+    // As patas vêm PRONTAS do cast() — ele já sorteou o `gapFacing`, montou os
+    // pontos com cageSpots() e os mandou no broadcast. Sortear uma segunda
+    // brecha aqui (o que este bloco fazia) punha PEDRA em cima do lugar
+    // desenhado como saída e deixava um vão aberto onde o desenho mostrava
+    // pata: quem lia a jaula certa batia num muro invisível. É o mesmo erro
+    // que o comentário do cast() diz não cometer, cometido logo abaixo dele.
+    const spots = pts && pts.length
+      ? pts
+      : MonsterSkillManager.scatter(def.count || 6, def.spread || 75, def);
 
     setTimeout(() => {
       spots.forEach((p, i) => {

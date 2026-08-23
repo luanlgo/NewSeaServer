@@ -32,7 +32,7 @@ MAP_DEFS[1] = {
     // ele só revida depois de levar dano, e volta a dormir quando o agressor
     // morre. Mesma regra que o boss deste mapa já usava.
     retaliateOnly: true,
-    count:        6,
+    count:        10,
     baseHp:       100,
     baseDamage:   8,
     fireInterval: 3000,
@@ -119,7 +119,7 @@ MAP_DEFS[2] = {
   npc: {
     // Tutorial (ver mapa 1): só revida, e esquece o agressor quando ele morre.
     retaliateOnly: true,
-    count:        9,
+    count:        15,
     baseHp:       1500,
     baseDamage:   300,
     fireInterval: 3000,
@@ -199,7 +199,7 @@ MAP_DEFS[3] = {
   size:         MAP_SIZE * 3,
   sideMap: [{sul: 2, left: 4, norte: 10}],
   npc: {
-    count:        15,
+    count:        20,
     baseHp:       10000,
     baseDamage:   1200,
     fireInterval: 3200,
