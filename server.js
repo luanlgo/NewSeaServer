@@ -770,14 +770,41 @@ const allNpcs = new Proxy({}, {
 });
 
 // 4. Boss managers (one per map zone)
+//
+// ── Por que existe um wireBossManager ────────────────────────────────────────
+// Um BossManager não nasce só aqui: os mapas 3+ criam o deles em
+// ensureRegularManager, e os mapas 1 e 2 são DESTRUÍDOS depois de 5 min vazios
+// (ver "Limpeza de mapas vazios") e recriados quando alguém volta. Cada um
+// desses lugares plugava as dependências na mão, e nenhum lembrava do
+// `journal` — como o boss-manager chama `this.journal?.ledger(...)`, o chefe
+// morria em silêncio e a aba Diário nunca via a linha. Mesma história com
+// `_onBossKill`, que é quem conta a missão diária de chefes.
+//
+// Agora existe UM lugar que sabe do que um BossManager precisa, e todo ponto
+// de criação passa por ele.
 let   bossManager  = new BossManager(wss, players, npcs, 1); // let — pode ser recriado
 let   bossManager2 = new BossManager(wss, players, null, 2); // let — pode ser recriado
 // bossManager3 alias mantido para compatibilidade com código legado (usado via projectileManager.bossManagers)
 let   bossManager3 = null;
-bossManager.partyManager  = partyManager;
-bossManager2.partyManager = partyManager;
-bossManager.journal       = journalManager;
-bossManager2.journal      = journalManager;
+
+/**
+ * Liga um BossManager recém-criado a tudo que ele precisa para pagar o chefe
+ * por completo: grupo, extrato do Diário e as missões diárias de chefe.
+ * Chamar em TODO ponto que faz `new BossManager(...)`.
+ * @param {object} boss BossManager recém-criado
+ * @returns {object} o mesmo manager, para encadear na criação
+ */
+function wireBossManager(boss) {
+  if (!boss) return boss;
+  boss.partyManager  = partyManager;
+  boss.journal       = journalManager;
+  boss._onBossKill   = (killer)      => progressDailyMission(killer,      'bossKills',   1);
+  boss._onBossAssist = (participant) => progressDailyMission(participant, 'bossAssists', 1);
+  return boss;
+}
+
+wireBossManager(bossManager);
+wireBossManager(bossManager2);
 
 // 5. Wire everything into projectileManager
 projectileManager.npcs          = allNpcs;
@@ -847,7 +874,7 @@ function maybeGrantTutorialRelic(killer) {
   sendTo(killer.ws, { type: 'currency_update', gold: killer.gold, dobroes: killer.dobroes || 0 });
 }
 
-function _setupMissionCallbacks(pmgr, bmgr, bmgr2) {
+function _setupMissionCallbacks(pmgr) {
   // Centro e raio de detecção da ilha mercado (mapa 3) para missão marketDefense
   const _marketCenter = MAP_DEFS[3]?.market?.center || { x: 0, z: 0 };
   const _marketRadius = (MAP_DEFS[3]?.market?.securyRadius || 300) * 2;
@@ -897,13 +924,11 @@ function _setupMissionCallbacks(pmgr, bmgr, bmgr2) {
     progressDailyMission(shooter, 'worldBossDamage', dmg);
   };
 
-  // ── Boss regular morto ─────────────────────────────────────────────────────
-  const bossCb       = (killer)      => progressDailyMission(killer,      'bossKills',   1);
-  const bossAssistCb = (participant) => progressDailyMission(participant, 'bossAssists', 1);
-  if (bmgr)  { bmgr._onBossKill  = bossCb; bmgr._onBossAssist  = bossAssistCb; }
-  if (bmgr2) { bmgr2._onBossKill = bossCb; bmgr2._onBossAssist = bossAssistCb; }
+  // ── Boss regular morto ────────────────────────────────────────────────────
+  // Mora em `wireBossManager`, junto do `journal` e do `partyManager`: um
+  // BossManager recriado precisa dos três e antes só recebia um.
 }
-_setupMissionCallbacks(projectileManager, bossManager, bossManager2);
+_setupMissionCallbacks(projectileManager);
 
 // Registra bossManagers iniciais no projectileManager dinâmico
 projectileManager.bossManagers.set(1, bossManager);
@@ -2433,10 +2458,8 @@ function ensureRegularManager(level) {
   const mapDef = MAP_DEFS[level] || {};
   let boss = null;
   if (mapDef.boss) {
-    boss = new BossManager(wss, players, npc.npcs, level);
+    boss = wireBossManager(new BossManager(wss, players, npc.npcs, level));
     boss.destroyed = false;
-    boss._onBossKill   = (killer)      => progressDailyMission(killer,      'bossKills',   1);
-    boss._onBossAssist = (participant) => progressDailyMission(participant, 'bossAssists', 1);
 
     // Mapa 6 — boss com respawn por timer, não por kills
     if (level === 6) {
@@ -2469,7 +2492,6 @@ function ensureRegularManager(level) {
 
   // Registra no bossManagers dinâmico do projectileManager
   if (boss) {
-    boss.partyManager = partyManager;
     projectileManager.bossManagers.set(level, boss);
     // Aliases legados para compatibilidade
     if (level === 2) { projectileManager.bossManager2 = boss; }
@@ -2497,9 +2519,8 @@ function ensureManagersForMap(level) {
       npcManager = new NPCManager(projectileManager, MAP_DEFS, 1, attackManager);
       npcManager.destroyed = false;
       npcManager.wallManager = wallManager;
-      bossManager = new BossManager(wss, players, npcManager.npcs, 1);
+      bossManager = wireBossManager(new BossManager(wss, players, npcManager.npcs, 1));
       bossManager.destroyed = false;
-      bossManager.partyManager = partyManager;
       projectileManager.bossManager = bossManager;
       projectileManager.bossManagers.set(1, bossManager);
       _rewireProjectileManager();
@@ -2510,9 +2531,8 @@ function ensureManagersForMap(level) {
       npcManager2 = new NPCManager(projectileManager, MAP_DEFS, 2, attackManager);
       npcManager2.destroyed = false;
       npcManager2.wallManager = wallManager;
-      bossManager2 = new BossManager(wss, players, npcManager2.npcs, 2);
+      bossManager2 = wireBossManager(new BossManager(wss, players, npcManager2.npcs, 2));
       bossManager2.destroyed = false;
-      bossManager2.partyManager = partyManager;
       projectileManager.bossManager2 = bossManager2;
       projectileManager.bossManagers.set(2, bossManager2);
       _rewireProjectileManager();
@@ -4617,13 +4637,24 @@ function handleBuyAfkTime(player, msg) {
 }
 
 // ── Chat ─────────────────────────────────────────────────────────────────────
-// Três canais: 'global' (todo mundo online), 'map' (mesmo oceano) e 'party'
-// (grupo, em qualquer mapa). O alcance de 'party' usa partyManager.areAllies()
-// em vez de ler as estruturas internas do manager — é a mesma checagem que a
-// bala de cura já usa, e não depende do formato interno das parties.
+// Quatro canais: 'global' (todo mundo online), 'map' (mesmo oceano), 'party'
+// (grupo, em qualquer mapa) e 'say' (balão em cima do barco, para quem está
+// perto). O alcance de 'party' usa partyManager.areAllies() em vez de ler as
+// estruturas internas do manager — é a mesma checagem que a bala de cura já
+// usa, e não depende do formato interno das parties.
 const CHAT_MAX_LEN     = 200;
 const CHAT_MIN_GAP_MS  = 700;   // anti-flood: 1 mensagem a cada 0,7 s por jogador
-const CHAT_CHANNELS    = ['global', 'map', 'party'];
+const CHAT_CHANNELS    = ['global', 'map', 'party', 'say'];
+// 'say' vira BALÃO flutuando sobre o barco (player.gd:show_chat_bubble), e por
+// isso tem regras próprias:
+//  • texto curto — 200 caracteres em cima de um barco tapam a tela de quem passa;
+//  • alcance curto — mandar para quem não enxerga o barco não vira balão nenhum.
+// 180 é o MENOR vision_range possível no cliente (canhão c1: range 80 + 100, ver
+// fog_range.gd): assim o barco que fala está sempre dentro da névoa de quem
+// recebe, seja qual for o canhão dele. Ainda fica bem além do alcance de combate
+// (o melhor canhão atira a 120) — dá para conversar sem estar trocando tiro.
+const CHAT_SAY_MAX_LEN = 80;
+const CHAT_SAY_RANGE   = 180;
 
 function handleChatSend(player, msg) {
   const channel = CHAT_CHANNELS.includes(msg.channel) ? msg.channel : 'map';
@@ -4631,7 +4662,9 @@ function handleChatSend(player, msg) {
   let text = typeof msg.text === 'string' ? msg.text.trim() : '';
   if (!text) return;
   // Remove quebras de linha e controles — o cliente renderiza em label única.
-  text = text.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, CHAT_MAX_LEN);
+  // O balão tem limite próprio: cabe menos texto em cima de um barco.
+  const maxLen = channel === 'say' ? CHAT_SAY_MAX_LEN : CHAT_MAX_LEN;
+  text = text.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, maxLen);
   if (!text) return;
 
   const now = Date.now();
@@ -4656,6 +4689,12 @@ function handleChatSend(player, msg) {
     if (channel === 'map'   && (p.mapLevel || 1) !== mapLvl) return;
     if (channel === 'party' && p.id !== player.id
         && !(partyManager && partyManager.areAllies(player.id, p.id))) return;
+    if (channel === 'say') {
+      if ((p.mapLevel || 1) !== mapLvl) return;
+      const dx = (p.x || 0) - (player.x || 0);
+      const dz = (p.z || 0) - (player.z || 0);
+      if (dx * dx + dz * dz > CHAT_SAY_RANGE * CHAT_SAY_RANGE) return;
+    }
     p.ws.send(out);
   });
 }

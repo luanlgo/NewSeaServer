@@ -143,16 +143,21 @@ class BossManager {
     return boss;
   }
 
-  _processPlayerReward(playerId, damage, boss, totalDamage) {
-    if (!this.players) return; // BossManager já foi destruído (race com projectile flush)
-    const player = this.players.get(playerId);
-    if (!player) {
-      console.warn(`[boss-debug] _processPlayerReward: player ${playerId} not found`);
-      return;
-    }
-
-    const bossDef = (MAP_DEFS[this.zoneLevel] || MAP_DEFS[1]).boss || {};
-    const rarities = bossDef.rarities || [];
+  /**
+   * Sorteia o BOLO do chefe: quanto ele paga no total, antes de repartir.
+   *
+   * Tem de ser chamado UMA vez por morte. Antes cada jogador refazia este
+   * sorteio dentro do próprio pagamento, e como dobraoMin/dobraoMax chegam a
+   * 10.000–20.000 nos mapas altos, dois capitães com exatamente o mesmo dano
+   * levavam valores que diferiam pelo dobro — e nem a soma do que saiu batia
+   * com o total anunciado no `boss_dead`. O acaso continua (o intervalo é de
+   * propósito), mas agora é UM acaso, o mesmo para todo mundo naquela luta.
+   *
+   * @returns {{totalDrops:number, totalXp:number, bossXp:number, rarityDef:object}}
+   */
+  _rollPot(boss) {
+    const bossDef   = (MAP_DEFS[this.zoneLevel] || MAP_DEFS[1]).boss || {};
+    const rarities  = bossDef.rarities || [];
     const rarityDef = rarities.find(r => r.id === boss.rarity) || {
       rewardMult: 1,
       label: 'Normal',
@@ -164,12 +169,33 @@ class BossManager {
     const baseDrops = Math.floor(rand(dobraoMin, dobraoMax + 1));
     // Recompensa escala pela METADE da dificuldade do boss (difficultyRewardMult).
     const diffScale = difficultyRewardMult((boss.diffMult || 1) / (boss.bloodMult || 1)) * (boss.bloodMult || 1);
-    const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * diffScale);
 
     // XP de mapa do boss — proporcional ao dano, escala por raridade × dificuldade.
     // Fonte: MAP_DEFS[n].boss.xpPerKill; sem essa propriedade o boss não dá XP.
-    const bossXp  = bossDef.xpPerKill || 0;
-    const totalXp = Math.round(bossXp * (rarityDef.rewardMult || 1) * diffScale);
+    const bossXp = bossDef.xpPerKill || 0;
+
+    return {
+      totalDrops: Math.round(baseDrops * rarityDef.rewardMult * diffScale),
+      totalXp:    Math.round(bossXp * (rarityDef.rewardMult || 1) * diffScale),
+      bossXp,
+      rarityDef,
+    };
+  }
+
+  /**
+   * Paga a parte de UM agressor. `pot` é o bolo já sorteado (ver _rollPot);
+   * sem ele o método sorteia o seu, o que só acontece se alguém chamar de fora
+   * do fluxo de onBossDead.
+   */
+  _processPlayerReward(playerId, damage, boss, totalDamage, pot = null) {
+    if (!this.players) return; // BossManager já foi destruído (race com projectile flush)
+    const player = this.players.get(playerId);
+    if (!player) {
+      console.warn(`[boss-debug] _processPlayerReward: player ${playerId} not found`);
+      return;
+    }
+
+    const { totalDrops, totalXp, bossXp } = pot || this._rollPot(boss);
 
     const share = damage / totalDamage;
     let drops    = Math.max(1, Math.round(totalDrops * share));
@@ -283,19 +309,25 @@ class BossManager {
   /**
    * Distribui recompensas proporcionalmente ao dano causado por cada jogador.
    * O matador recebe o crédito total se ninguém mais contribuiu.
+   *
+   * ── O bolo é sorteado aqui, uma vez ────────────────────────────────────────
+   * `_rollPot` roda UMA vez por morte e o mesmo resultado desce para todos os
+   * agressores. Cada um sorteando o seu era o que fazia dois capitães com o
+   * mesmo dano levarem valores diferentes do mesmo chefe.
+   *
+   * ── E é dividido só entre quem ainda está no jogo ──────────────────────────
+   * Quem bateu no chefe e caiu da partida antes de ele morrer continuava no
+   * DENOMINADOR: a parte dele não era paga (o `_processPlayerReward` não acha o
+   * jogador e volta) mas seguia encolhendo a de todo mundo. Morrer não tira
+   * ninguém daqui — o jogador morto continua na sala e recebe normalmente; o
+   * que tira é sair do jogo.
    */
   onBossDead(boss, killerId) {
     if (!this.players) return; // BossManager já foi destruído
     this.bossAlive = false;
-    const bossDef    = (MAP_DEFS[this.zoneLevel] || MAP_DEFS[1]).boss || {};
-    const rarities   = bossDef.rarities || [];
-    const rarityDef  = rarities.find(r => r.id === boss.rarity) || { rewardMult: 1, label: 'Normal', color: '#aaa' };
-    const dobraoMin  = boss._dobraoMin || bossDef.dobraoMin || 5;
-    const dobraoMax  = boss._dobraoMax || bossDef.dobraoMax || 10;
-    const baseDrops  = Math.floor(rand(dobraoMin, dobraoMax + 1));
-    // Escala a recompensa pela METADE da dificuldade do boss (difficultyRewardMult).
-    const diffScale  = difficultyRewardMult((boss.diffMult || 1) / (boss.bloodMult || 1)) * (boss.bloodMult || 1);
-    const totalDrops = Math.round(baseDrops * rarityDef.rewardMult * diffScale);
+
+    const pot = this._rollPot(boss);
+    const totalDrops = pot.totalDrops;
 
     // ── Calcular share de cada jogador pelo dano causado ─────────────────────
     const dmgMap = boss._damageMap || new Map();
@@ -304,14 +336,18 @@ class BossManager {
       dmgMap.set(killerId, 1);
     }
 
-    const totalDmg = Math.max(1, [...dmgMap.values()].reduce((a, b) => a + b, 0));
-    for (const [playerId, dmg] of dmgMap.entries()) {
-      this._processPlayerReward(playerId, dmg, boss, totalDmg);
+    let contribs = [...dmgMap.entries()].filter(([pid]) => this.players.has(pid));
+    // Todos os agressores saíram entre o último tiro e a morte: o matador leva.
+    if (contribs.length === 0) contribs = [[killerId, 1]];
+
+    const totalDmg = Math.max(1, contribs.reduce((soma, [, dmg]) => soma + dmg, 0));
+    for (const [playerId, dmg] of contribs) {
+      this._processPlayerReward(playerId, dmg, boss, totalDmg, pot);
     }
 
     // Callback bossAssists: todos os participantes (antes de limpar o damageMap)
     if (this._onBossAssist && this.players) {
-      for (const [participantId] of dmgMap.entries()) {
+      for (const [participantId] of contribs) {
         const participant = this.players.get(participantId);
         if (participant) this._onBossAssist(participant);
       }
