@@ -1,25 +1,25 @@
 {
-    "version":  "0.1.24",
-    "date":  "2026-08-22",
+    "version":  "0.1.25",
+    "date":  "2026-08-23",
     "changelog":  [
-                      "[v0.1.24] - 2026-08-22",
+                      "[v0.1.25] - 2026-08-22",
+                      "fix(chefes,chat): um bolo so por chefe, e o canal de balao",
+                      "fix(reliquias,bestiario): a leva do playtest de 2026-08-22",
+                      "release: v0.1.24",
                       "feat(espolio,piratas,diario,leilao): a leva acumulada do servidor",
                       "balance(talentos): degraus de custo mais suaves no comeco da arvore",
                       "release: v0.1.23",
                       "fix(publicar): parar de injetar a URL no config.gd do jogo",
                       "release: v0.1.22",
                       "build: apontar BUILD_DIR para as builds fora do repositorio",
-                      "feat(arauto,talentos): mini-chefe do mapa 11 e rebalanceamento",
-                      "feat(bestiario,pets,talentos): levas anteriores ainda sem commit",
-                      "release: v0.1.21",
-                      "feat(reliquias,bichos): sucção da Corneta e skills de monstro"
+                      "feat(arauto,talentos): mini-chefe do mapa 11 e rebalanceamento"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.24/SeaOfCode.exe",
-                      "sha256":  "a1d25e33815f47f9a642d972a74193a17cd93676f2aa9f6935c80e9bd627f29d",
-                      "size":  805120448
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.25/SeaOfCode.exe",
+                      "sha256":  "e54648332bc1c9aa6b23abe94b66ad3f32294a5d99794fb231e2e6b0702c9390",
+                      "size":  805138496
                   }
               ]
 }
