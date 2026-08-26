@@ -133,7 +133,7 @@ const SHIP_DEFS = {
   ghost_pirate_ship: {
     price: 100000,
     currency: 'gold', isElite: true,
-    hp: 10000, 
+    hp: 20000, 
     maxCannons: 40, 
     sails: 3,
     speedMult: 1.0, 

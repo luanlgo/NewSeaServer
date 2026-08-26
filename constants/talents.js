@@ -169,8 +169,8 @@ const TREE_DEFESA = [
   // ── anel 0 ──
   { id: 'def_cascoferro', icon: '❤', stat: 'max_hp_flat',            perLevel: 250, unit: 'flat',   wired: true,
     name: 'Casco de Ferro',         desc: '+250 de vida máxima por nível.' },
-  { id: 'def_armadura',   icon: '🛡', stat: 'damage_reduction_pct',   perLevel: 1.5, unit: 'pct',    wired: true,
-    name: 'Armadura Grossa',        desc: '+1,5% de redução de dano por nível.' },
+  { id: 'def_armadura',   icon: '🛡', stat: 'damage_reduction_pct',   perLevel: 0.5, unit: 'pct',    wired: true,
+    name: 'Armadura Grossa',        desc: '+0,5% de redução de dano por nível.' },
   { id: 'def_calafate',   icon: '🪵', stat: 'hp_regen_flat',          perLevel: 0.4, unit: 'flat', wired: true,
     name: 'Calafate',               desc: '+0,4 de vida regenerada por segundo, por nível.' },
   { id: 'def_leme',       icon: '🎡', stat: 'turn_speed_pct',         perLevel: 2,   unit: 'pct', wired: true,
@@ -181,18 +181,18 @@ const TREE_DEFESA = [
     name: 'Casco Reforçado',        desc: '+2% da vida base do navio por nível.' },
   { id: 'def_esquiva',      icon: '🤸', stat: 'dodge_chance',         perLevel: 1,   unit: 'chance', wired: true,
     name: 'Manobra Evasiva',        desc: '+1% de chance de desviar de um tiro, por nível.' },
-  { id: 'def_escudoguerra', icon: '🐲', stat: 'reduction_vs_npc_pct', perLevel: 1.5, unit: 'pct', wired: true,
-    name: 'Escudo de Guerra',       desc: '+1,5% de redução de dano de criaturas por nível.' },
-  { id: 'def_couraca',      icon: '⚔', stat: 'reduction_vs_player_pct', perLevel: 1.5, unit: 'pct', wired: true,
-    name: 'Couraça Corsária',       desc: '+1,5% de redução de dano de jogadores por nível.' },
+  { id: 'def_escudoguerra', icon: '🐲', stat: 'reduction_vs_npc_pct', perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Escudo de Guerra',       desc: '+0,5% de redução de dano de criaturas por nível.' },
+  { id: 'def_couraca',      icon: '⚔', stat: 'reduction_vs_player_pct', perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Couraça Corsária',       desc: '+0,5% de redução de dano de jogadores por nível.' },
   { id: 'def_cascoliso',    icon: '🧽', stat: 'drag_reduction_pct',   perLevel: 2,   unit: 'pct', wired: true,
     name: 'Casco Liso',             desc: '−2% de arrasto na água por nível (mantém a velocidade nas curvas).' },
 
   // ── anel 2 ──
-  { id: 'def_anteparo',     icon: '🧱', stat: 'reduction_aoe_pct',    perLevel: 2,   unit: 'pct',
-    name: 'Anteparo',               desc: '+2% de redução de dano em área por nível.' },
-  { id: 'def_wardsalgada',  icon: '🔯', stat: 'reduction_relic_pct',  perLevel: 2,   unit: 'pct',
-    name: 'Ward Salgada',           desc: '+2% de redução de dano de relíquias por nível.' },
+  { id: 'def_anteparo',     icon: '🧱', stat: 'reduction_aoe_pct',    perLevel: 0.5,   unit: 'pct',
+    name: 'Anteparo',               desc: '+0,5% de redução de dano em área por nível.' },
+  { id: 'def_wardsalgada',  icon: '🔯', stat: 'reduction_relic_pct',  perLevel: 0.5,   unit: 'pct',
+    name: 'Ward Salgada',           desc: '+0,5% de redução de dano de relíquias por nível.' },
   { id: 'def_vontade',      icon: '🪢', stat: 'cc_resist_pct',        perLevel: 2.5, unit: 'redpct', wired: true,
     name: 'Vontade de Ferro',       desc: '−2,5% na duração de atordoamentos e lentidões, por nível.' },
   // 0,1% por nível (era 1%): a 1% o nó cheio devolvia 10% da vida máxima POR
@@ -212,12 +212,12 @@ const TREE_DEFESA = [
     name: 'Casco de Espinhos',      desc: 'Devolve 1% do dano recebido ao atacante, por nível.' },
   { id: 'def_segundofolego', icon: '🫁', stat: 'second_wind_pct',     perLevel: 2,   unit: 'pct', wired: true,
     name: 'Segundo Fôlego',         desc: 'Cura 2% da vida máxima por nível ao cair abaixo de 25% (1 vez por minuto).' },
-  { id: 'def_ancoraviva',    icon: '⚓', stat: 'reduction_still_pct', perLevel: 2,   unit: 'pct', wired: true,
-    name: 'Âncora Viva',            desc: '+2% de redução de dano enquanto parado, por nível.' },
+  { id: 'def_ancoraviva',    icon: '⚓', stat: 'reduction_still_pct', perLevel: 0.5,   unit: 'pct', wired: true,
+    name: 'Âncora Viva',            desc: '+0,5% de redução de dano enquanto parado, por nível.' },
   { id: 'def_tregua',        icon: '🏳', stat: 'respawn_immunity_ms', perLevel: 200, unit: 'flat',
     name: 'Trégua',                 desc: '+200ms de invulnerabilidade após renascer, por nível.' },
-  { id: 'def_vigia',         icon: '👀', stat: 'crit_taken_reduction', perLevel: 3,  unit: 'pct', wired: true,
-    name: 'Vigia',                  desc: '+3% de redução do dano crítico recebido, por nível.' },
+  { id: 'def_vigia',         icon: '👀', stat: 'crit_taken_reduction', perLevel: 0.5,  unit: 'pct', wired: true,
+    name: 'Vigia',                  desc: '+0,5% de redução do dano crítico recebido, por nível.' },
   { id: 'def_fuga',          icon: '🏃', stat: 'speed_low_hp_pct',    perLevel: 0.5, unit: 'pct', wired: true,
     name: 'Fuga Estratégica',       desc: '+0,5% de velocidade com a vida abaixo de 30%, por nível.' },
   { id: 'def_ancoragem',     icon: '🪝', stat: 'stop_time_pct',       perLevel: 3,   unit: 'redpct', wired: true,
@@ -230,8 +230,8 @@ const TREE_DEFESA = [
     name: 'Barreira Arcana',        desc: 'Usar uma relíquia concede um escudo de 1% da vida máxima por nível.' },
   { id: 'def_moral',        icon: '🎖', stat: 'reduction_per_ally_pct', perLevel: 0.5, unit: 'pct', wired: true,
     name: 'Moral de Ferro',         desc: '+0,5% de redução de dano por aliado do grupo por perto, por nível.' },
-  { id: 'def_lobodomar',    icon: '🌑', stat: 'reduction_solo_pct',   perLevel: 2,   unit: 'pct', wired: true,
-    name: 'Lobo do Mar',            desc: '+2% de redução de dano quando navega sem grupo, por nível.' },
+  { id: 'def_lobodomar',    icon: '🌑', stat: 'reduction_solo_pct',   perLevel: 0.5,   unit: 'pct', wired: true,
+    name: 'Lobo do Mar',            desc: '+0,5% de redução de dano quando navega sem grupo, por nível.' },
   { id: 'def_recuperacao',  icon: '💚', stat: 'healing_received_pct', perLevel: 3,   unit: 'pct', wired: true,
     name: 'Recuperação',            desc: '+3% de cura recebida por nível.' },
   { id: 'def_teimosia',     icon: '🗿', stat: 'death_save_chance',    perLevel: 1,   unit: 'chance', wired: true,
@@ -242,8 +242,8 @@ const TREE_DEFESA = [
     name: 'Marcha à Ré',            desc: '+0,5% de velocidade de ré por nível.' },
 
   // ── anel 5 ──
-  { id: 'def_fortaleza',      icon: '🏰', stat: 'damage_reduction_pct_2', perLevel: 1, unit: 'pct', wired: true,
-    name: 'Fortaleza Flutuante',    desc: '+1% de redução de dano por nível.' },
+  { id: 'def_fortaleza',      icon: '🏰', stat: 'damage_reduction_pct_2', perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Fortaleza Flutuante',    desc: '+0,5% de redução de dano por nível.' },
   // ── Absorção: mana PLANA por golpe, não fração do dano ────────────────────
   // "1% do dano recebido vira mana" foi escrito quando dano e mana moravam na
   // mesma ordem de grandeza. Hoje um golpe tira dezenas de milhares e a barra
@@ -267,10 +267,10 @@ const TREE_DEFESA = [
   // contra uma salva de dez bolas pequenas, corta dez vezes.
   { id: 'def_carapaca',       icon: '🐚', stat: 'flat_reduction_pct', perLevel: 0.1, unit: 'redpct', wired: true,
     name: 'Carapaça de Kraken',     desc: '−0,1% da SUA vida máxima de dano por acerto recebido, por nível.' },
-  { id: 'def_maresia',        icon: '🌫', stat: 'dot_reduction_pct',  perLevel: 3,   unit: 'pct',
-    name: 'Maresia Purificadora',   desc: '+3% de redução de dano contínuo (veneno, fogo) por nível.' },
-  { id: 'def_sentinela',      icon: '🔔', stat: 'reduction_after_hit_pct', perLevel: 1, unit: 'pct', wired: true,
-    name: 'Sentinela',              desc: 'Cada golpe recebido dá +1% de redução por nível durante 5s (acumula 5x).' },
+  { id: 'def_maresia',        icon: '🌫', stat: 'dot_reduction_pct',  perLevel: 0.5,   unit: 'pct',
+    name: 'Maresia Purificadora',   desc: '+0,5% de redução de dano contínuo (veneno, fogo) por nível.' },
+  { id: 'def_sentinela',      icon: '🔔', stat: 'reduction_after_hit_pct', perLevel: 0.5, unit: 'pct', wired: true,
+    name: 'Sentinela',              desc: 'Cada golpe recebido dá +0,5% de redução por nível durante 5s (acumula 5x).' },
   { id: 'def_sombra',         icon: '🌚', stat: 'stealth_range_pct',  perLevel: 2,   unit: 'redpct', wired: true,
     name: 'Sombra do Mar',          desc: '−2% no alcance em que as criaturas te percebem, por nível.' },
   { id: 'def_retorno',        icon: '🔄', stat: 'respawn_time_pct',   perLevel: 3,   unit: 'redpct',
@@ -278,7 +278,7 @@ const TREE_DEFESA = [
   { id: 'def_espiritovento',  icon: '🌟', stat: 'wind_spirit_pct',    perLevel: 2,   unit: 'pct', wired: true,
     name: 'Espírito do Vento',      desc: '+2% de velocidade e +1% de esquiva por nível.' },
   { id: 'def_coracaoabissal', icon: '💙', stat: 'abyssal_heart_pct',  perLevel: 3,   unit: 'pct', wired: true,
-    name: 'Coração do Abismo',      desc: '+3% de vida máxima e +1% de redução de dano por nível.' },
+    name: 'Coração do Abismo',      desc: '+3% de vida máxima e +0,5% de redução de dano por nível.' },
 ];
 
 // ── RECURSO ───────────────────────────────────────────────────────────────────
@@ -314,8 +314,25 @@ const TREE_RECURSO = [
   // munição): prometiam percentual sobre drops que o jogo nunca teve, e não
   // havia sistema no horizonte para ligá-los. No lugar entra a tripulação de
   // piratas, que é onde a árvore de Recurso passa a decidir uma briga.
-  { id: 'res_pescador',   icon: '🎣', stat: 'fishing_yield_pct',      perLevel: 5,   unit: 'pct',
-    name: 'Pescador Experiente',    desc: '+5% no resultado da pesca por nível.' },
+  // Saiu daqui o "Pescador Experiente": prometia percentual sobre uma pesca que
+  // o jogo não tem, como os quatro de ofício acima. No lugar entra a lamparina,
+  // que é o oposto — um sistema que já existe e que o jogador sente toda noite.
+  //
+  // O bônus vale DUAS VEZES, nos dois lados do mesmo problema de enxergar à
+  // noite: soma no alcance da lamparina (omni_range) e no raio de clareira que
+  // abre a névoa em volta do casco. Com TALENT_MAX = 10 e perLevel 10, o nó
+  // cheio dá +100 em cada um — a clareira sai de 0 a 100, de propósito.
+  //
+  // ATENÇÃO: este é o único talento cujo efeito NÃO vive no servidor. Lamparina
+  // é um OmniLight3D e a clareira é um uniform de shader, ambos no cliente
+  // (NewSeaGodot) — alcance de luz e densidade de névoa são decisão de render,
+  // não de simulação, e mandar o servidor opinar não mudaria nada no jogo. O
+  // servidor faz a parte dele: agrega o stat em player.tal e envia. Quem soma
+  // nos dois é main.gd, via Player.set_vision_bonus(). Ver a nota em
+  // utils/__tests__/talent-callsites.test.js sobre por que ele conta como
+  // ligado mesmo sem call-site em server.js/managers.
+  { id: 'res_lamparina',  icon: '🏮', stat: 'vision_boost_flat',      perLevel: 10,  unit: 'flat', wired: true,
+    name: 'Lamparina Reforçada',    desc: '+10 de alcance da lamparina e +10 de clareira na névoa, por nível.' },
   { id: 'res_alistamento', icon: '👥', stat: 'pirate_capacity_flat',  perLevel: 1,   unit: 'flat', wired: true,
     name: 'Alistamento',            desc: '+1 de capacidade de porão para piratas, por nível.' },
   { id: 'res_abordagem',   icon: '⚔', stat: 'pirate_power_pct',      perLevel: 2,   unit: 'pct', wired: true,

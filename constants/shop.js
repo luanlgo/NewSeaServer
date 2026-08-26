@@ -64,14 +64,36 @@ const SHOP = {
   // ── Loja Geral (Ilha do Comércio) ─────────────────────────────────────────
   // Itens de consumo, vendidos por quantidade livre. A lista é o único lugar a
   // tocar para colocar um item novo na prateleira: o handler `buy_general_item`
-  // valida contra ela e credita em `player.inventory[id]`, sem caso especial
-  // por item. `onBuy` é o gancho opcional de quem precisa reagir à compra
-  // (reativar o pet, reativar a tripulação).
+  // valida contra ela e credita sozinho, sem caso especial por item.
+  //
+  // Dois campos opcionais:
+  //   onBuy     gancho de quem precisa reagir à compra (reativar o pet,
+  //             reativar a tripulação).
+  //   resource  ONDE o item é guardado. Sem ele o estoque vai para
+  //             `player.inventory[id]`, que é onde moram os consumíveis. Com
+  //             ele vai para `player[id]` — os recursos de ofício (chapa, pó,
+  //             pólvora) são COLUNA do jogador no banco (iron_plates, gold_dust,
+  //             gunpowder), não linha de inventário, porque já existiam antes da
+  //             loja: a Mesa de Exploração e as masmorras os creditam assim, e
+  //             uma segunda contagem dentro do inventário seria um estoque
+  //             paralelo que nenhuma das duas enxergaria.
   gerais: [
     { id: 'uva',        name: 'Comida de Pet', icon: '🍇', price: 30,        currency: 'gold',
       desc: 'Uvas para o seu mascote. Sem comida o pet fica inativo.',  onBuy: 'pet' },
     { id: RUN_ITEM_ID,  name: 'RUN',           icon: '🍾', price: RUN_PRICE, currency: 'gold',
       desc: 'A bebida que mantém os piratas prontos para abordar. Sem RUN a tripulação não luta.', onBuy: 'pirates' },
+
+    // Recursos de ofício. Até agora só saíam da Mesa de Exploração e das
+    // masmorras bônus — quem precisava de dez chapas para um upgrade dependia
+    // do sorteio. O balcão é a torneira previsível: cara o bastante para a
+    // exploração continuar valendo a pena, disponível o bastante para o upgrade
+    // não ficar refém do dado.
+    { id: 'ironPlates', name: 'Chapas de Ferro', icon: '⚙',  price: 1000, currency: 'gold', resource: true,
+      desc: 'Ferro batido para reforçar casco e canhão.' },
+    { id: 'goldDust',   name: 'Pó de Ouro',      icon: '✨', price: 500,  currency: 'gold', resource: true,
+      desc: 'O que sobra do ouro fundido. Serve de liga fina nas oficinas.' },
+    { id: 'gunpowder',  name: 'Pólvora',         icon: '💣', price: 1000, currency: 'gold', resource: true,
+      desc: 'Carga seca para as salvas. Sem ela o canhão é enfeite.' },
   ],
 
   // geraisMap: lookup O(1) para o handler buy_general_item

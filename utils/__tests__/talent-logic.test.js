@@ -231,10 +231,10 @@ describe('applyTalentBonuses', () => {
     expect(player.talentManaRegenBonus).toBe(0);
   });
 
-  it('Armadura Grossa nível 4 → 6% de redução (0.06)', () => {
+  it('Armadura Grossa nível 4 → 2% de redução (0.02)', () => {
     const player = { talents: { def_armadura: 4 } };
     applyTalentBonuses(player, TALENT_DEFS);
-    expect(player.talentDefenseBonus).toBeCloseTo(0.06); // 4 × 1,5 / 100
+    expect(player.talentDefenseBonus).toBeCloseTo(0.02); // 4 × 0,5 / 100
   });
 
   it('Artilharia Pesada nível 5 → 10% de dano extra (0.10)', () => {

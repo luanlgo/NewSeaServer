@@ -38,7 +38,7 @@ const BONUS_NPC_DEFS = {
     cannonCount:    2,       // projéteis por salva do NPC inimigo
     fireInterval:   3000,
     shipDropId:     'colossal_ghost_pirate_galleon',
-    shipDropChance: 1, //0.03
+    shipDropChance: 0.03,
     stats: {
       hpMin:     70000, hpMax:     80000,
       cannonMin: 60,    cannonMax: 70,     // slots do NAVIO DROPADO (não do NPC)
@@ -62,7 +62,7 @@ const BONUS_NPC_DEFS = {
     cannonCount:    2,
     fireInterval:   2800,
     shipDropId:     'massive_imperial_warship',
-    shipDropChance: 1, //0.02
+    shipDropChance: 0.02,
     stats: {
       hpMin:     80000, hpMax:     90000,
       cannonMin: 70,    cannonMax: 80,     // slots do NAVIO DROPADO
@@ -86,7 +86,7 @@ const BONUS_NPC_DEFS = {
     cannonCount:    2,
     fireInterval:   2500,
     shipDropId:     'gigantic_mechanical_pirate_ship',
-    shipDropChance: 1, //0.01
+    shipDropChance: 0.01,
     stats: {
       hpMin:     90000, hpMax:    100000,
       cannonMin: 80,    cannonMax: 90,    // slots do NAVIO DROPADO
@@ -105,9 +105,13 @@ const WAVE_REWARD_BASE = {
   dobroes:    3000,    // 500× referência (mapa-2 dá ~6/kill)
   gold:       20000,   // ≈500× mapa-1 (35 avg × 500 ≈ 17.500, arredondado)
   ironPlates: 500,
-  goldDust:   100,
+  goldDust:   200,
   gunpowder:  800,
   xp:         3000,
+  // Fragmentos: 100 = 100 explorações na Mesa. A própria corrida já solta
+  // 20–40 (1 por barco abatido), então este é o bônus de CONCLUIR, não o
+  // pagamento pelo trabalho — por isso vale algumas vezes o que se catou.
+  mapFragments: 100,
 };
 const WAVE_REWARD_MULT = 1.5;  // +50% por tier (mapa 2 = 1.5×, mapa 3 = 2.25×)
 
@@ -157,6 +161,38 @@ const BONUS_DUNGEON_DEFS = {
   },
 };
 
+// ── WAVES ──────────────────────────────────────────────────────────────────
+// Quantas levas cada masmorra tem. A ÚLTIMA é o CHEFE — as anteriores são levas
+// de NPCs comuns, no `count` que o mapa já define (MAP_DEFS[7..9].npc.count).
+// Então `bonus_map_1: 5` = 4 levas de barcos + o chefe na quinta.
+const DUNGEON_WAVES = {
+  bonus_map_1: 5,
+  bonus_map_2: 7,
+  bonus_map_3: 9,
+};
+
+// Crescimento de status por leva, COMPOSTO. Mexer aqui é o botão de dificuldade
+// da masmorra inteira: vale para a vida e o dano dos NPCs comuns e do chefe.
+//
+// Onde isso chega na última leva:
+//   masmorra 1 (5) → 1,05^4 = 1,22×
+//   masmorra 2 (7) → 1,05^6 = 1,34×
+//   masmorra 3 (9) → 1,05^8 = 1,48×
+const WAVE_STAT_GROWTH = 0.05;
+
+/**
+ * Multiplicador de status da leva `wave` (1-based). A primeira leva é 1,00× —
+ * o crescimento conta a partir da segunda.
+ */
+function waveStatMult(wave) {
+  return Math.pow(1 + WAVE_STAT_GROWTH, Math.max(0, (wave || 1) - 1));
+}
+
+/** Quantas levas a masmorra tem (1 = só o chefe, para id desconhecido). */
+function dungeonWaveCount(dungeonId) {
+  return DUNGEON_WAVES[dungeonId] || 1;
+}
+
 // ── SHIP STAT ROLL ─────────────────────────────────────────────────────────
 // Stats rolled with Math.pow(random, 3): clusters near minimum, max stats extremely rare.
 
@@ -199,6 +235,10 @@ function rollBonusShip(npcDef) {
 module.exports = {
   BONUS_NPC_DEFS,
   BONUS_DUNGEON_DEFS,
+  DUNGEON_WAVES,
+  WAVE_STAT_GROWTH,
+  waveStatMult,
+  dungeonWaveCount,
   WAVE_REWARD_BASE,
   WAVE_REWARD_MULT,
   computeWaveRewards,

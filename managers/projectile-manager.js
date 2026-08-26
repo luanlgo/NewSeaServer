@@ -1,5 +1,5 @@
 // managers/projectile-manager.js
-const { projUid, dist2D, broadcast, sendTo, guardFrame } = require('../utils/helpers');
+const { projUid, dist2D, broadcast, sendTo, guardFrame, noteKillGold } = require('../utils/helpers');
 const { calcProjectileDamage, calcKillGold, calcKillXp } = require('../utils/combat-calc');
 const fx = require('../utils/talent-effects');
 const status = require('../utils/talent-status');
@@ -775,11 +775,16 @@ class ProjectileManager {
         status.noteHit(shooter2, 'slow_on_hit_pct', now);
       }
     }
-    if (ammo.dotDmg > 0) {
+    if (ammo.dotPct > 0) {
       const effect = proj.ammoType === 'bala_sangue' ? 'bleed' : 'fire';
       if (!target.dots) target.dots = [];
+      // O tique é uma FRAÇÃO do golpe que acendeu o efeito, não um número fixo.
+      // Fixo envelhece: 2 de dano por tique decide a briga no mapa 1 e some no
+      // 11, onde um acerto passa dos milhares. Piso de 1 para o efeito nunca
+      // virar cosmético contra alvo de vida alta e dano baixo.
+      const tiqueDmg = Math.max(1, Math.round(finalDmg * ammo.dotPct / 100));
       target.dots.push({
-        dmg: ammo.dotDmg, tick: ammo.dotTick, dur: ammo.dotDur,
+        dmg: tiqueDmg, tick: ammo.dotTick, dur: ammo.dotDur,
         next: now + ammo.dotTick, ownerId: proj.ownerId, effect,
       });
     }
@@ -819,7 +824,7 @@ class ProjectileManager {
     batch.totalDmg += dmg;
     if (proj.isCrit) batch.hasCrit = true;
     if (ammo.slow > 0 || talSlowHit) batch.effects.add('slow');
-    if (ammo.dotDmg > 0) batch.effects.add(proj.ammoType === 'bala_sangue' ? 'bleed' : 'fire');
+    if (ammo.dotPct > 0) batch.effects.add(proj.ammoType === 'bala_sangue' ? 'bleed' : 'fire');
     // Accumulate stun — single roll per salvo in _flushHitBatch (not per projectile)
     if (ammo.stunChance > 0) {
       batch.stunChance = Math.max(batch.stunChance, ammo.stunChance);
@@ -829,6 +834,17 @@ class ProjectileManager {
 
     // Track last damage time for NPC/boss regen cooldown
     target.lastDamageTime = now;
+
+    // ── Ilhas de guilda: torre e barco da coleta ───────────────────────────
+    // Os dois contam dano, e nenhum dos dois conta do jeito do chefe: a torre
+    // credita a GUILDA de quem atirou (a conquista é da irmandade) e o barco
+    // credita o NOME do jogador (que sobrevive à morte dele, e o evento é PvP
+    // total). Por isso o registro é delegado a cada manager em vez de reusar o
+    // `_damageMap` daqui.
+    if (isNPC && !proj.ownerIsNPC && shooter2 && finalDmg > 0) {
+      if (target.isTower)   this.islandManager?.recordTowerDamage(target, shooter2, finalDmg);
+      if (target.isTaxBoat) this.taxBoatManager?.recordDamage(target, shooter2, finalDmg);
+    }
 
     // ── Track per-player damage on bosses com limite de tamanho ──
     if (isNPC && target.isBoss && !proj.ownerIsNPC && shooter2) {
@@ -982,10 +998,15 @@ class ProjectileManager {
 
       killer.gold  += memberGold;
       killer.mapXp  = (killer.mapXp || 0) + memberXp;
+      // O cofre da guilda leva uma fatia do ouro de abate, do mesmo jeito que
+      // leva a do XP — e pelos mesmos membros, um por um. Ver noteKillGold em
+      // utils/helpers.js e GuildManager._creditGold.
+      noteKillGold(killer, memberGold);
 
       for (const m of partyMembers) {
         m.gold       = (m.gold       || 0) + memberGold;
         m.mapXp      = (m.mapXp      || 0) + memberXp;
+        noteKillGold(m, memberGold);
         m.mapFragments = (m.mapFragments || 0) + memberFrags;
         if (m.ws?.readyState === 1) {
           sendTo(m.ws, { type: 'currency_update', gold: m.gold, dobroes: m.dobroes, mapFragments: m.mapFragments });
@@ -1127,7 +1148,22 @@ class ProjectileManager {
         const killer = !proj.ownerIsNPC ? this.players.get(proj.ownerId) : null;
 
         if (isNPC) {
-          if (target.isDungeonBoss) {
+          // Torre e barco da coleta morrem por um caminho PRÓPRIO. Sem este
+          // ramo eles cairiam no "Regular NPC kill" logo abaixo: pagariam ouro
+          // e XP de caçada, contariam para o chefe do mapa e chamariam
+          // respawnScaled num manager que não os conhece. Nada disso daria erro
+          // — só pagaria espólio errado em silêncio.
+          if (target.isTower) {
+            this._broadcastToMap(target.mapLevel || 1,
+              { type: 'entity_dead', id: targetId, isNPC: true, isTower: true, killerId: proj.ownerId });
+            this.npcs.delete(targetId);
+            this.islandManager?.onTowerDestroyed(target, killer);
+          } else if (target.isTaxBoat) {
+            this._broadcastToMap(target.mapLevel || 1,
+              { type: 'entity_dead', id: targetId, isNPC: true, isTaxBoat: true, killerId: proj.ownerId });
+            this.npcs.delete(targetId);
+            this.taxBoatManager?.onBoatSunk(target);
+          } else if (target.isDungeonBoss) {
             // Dungeon Boss: chama handleDungeonComplete no servidor
             this._broadcastToMap(target.mapLevel || 1, { type: 'entity_dead', id: targetId, isNPC: true, killerId: proj.ownerId, goldDrop: 0 });
             this.npcs.delete(targetId);

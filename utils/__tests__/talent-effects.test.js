@@ -140,10 +140,10 @@ describe('dano recebido', () => {
   });
 
   it('armadura grossa reduz e a perfuração do atacante come a redução', () => {
-    const alvo = mk({ def_armadura: 10 });                    // 15% de redução
-    expect(fx.applyDamageReduction(alvo, 100, {})).toBe(85);
-    // atk_perfurante 10 = ignora 15% da defesa → DR efetiva 12,75%
-    expect(fx.applyDamageReduction(alvo, 100, { pen: 0.15 })).toBe(87);
+    const alvo = mk({ def_armadura: 10 });                    // 5% de redução
+    expect(fx.applyDamageReduction(alvo, 100, {})).toBe(95);
+    // atk_perfurante 10 = ignora 15% da defesa → DR efetiva 4,25%
+    expect(fx.applyDamageReduction(alvo, 100, { pen: 0.15 })).toBe(96);
   });
 
   it('a redução tem teto — não dá para ficar imortal com 1200 pontos', () => {
@@ -157,8 +157,8 @@ describe('dano recebido', () => {
   });
 
   it('lobo do mar e moral de ferro são excludentes', () => {
-    const p = mk({ def_lobodomar: 10, def_moral: 10 });       // 20% solo | 5% por aliado
-    expect(fx.damageReduction(p, { inParty: false })).toBeCloseTo(0.20, 6);
+    const p = mk({ def_lobodomar: 10, def_moral: 10 });       // 5% solo | 5% por aliado
+    expect(fx.damageReduction(p, { inParty: false })).toBeCloseTo(0.05, 6);
     expect(fx.damageReduction(p, { inParty: true, allyCount: 2 })).toBeCloseTo(0.10, 6);
   });
 
@@ -184,10 +184,15 @@ describe('dano recebido', () => {
     const tanque = mk(DEFESA, meta);
     const comKraken = mk({ ...DEFESA, atk_furiakraken: 10 }, meta);
 
-    // O tanque puro bate no teto...
-    expect(fx.damageReduction(tanque, ctx)).toBeCloseTo(fx.MAX_DR, 6);
-    // ...e mesmo assim o Kraken cobra os 12 pontos inteiros.
-    expect(fx.damageReduction(comKraken, ctx)).toBeCloseTo(fx.MAX_DR - 0.12, 6);
+    // Desde que cada talento de redução passou a valer no máximo 5%, nem a
+    // árvore de Defesa inteira alcança o MAX_DR (chega a ~55% neste cenário,
+    // 75% no teto teórico com todos os contextos ligados de uma vez). O teto
+    // virou rede de segurança e não corta mais nada na prática.
+    const drTanque = fx.damageReduction(tanque, ctx);
+    expect(drTanque).toBeLessThanOrEqual(fx.MAX_DR);
+    // O que este teste guarda continua de pé: os 12 pontos do Kraken saem
+    // INTEIROS, com ou sem o teto mordendo.
+    expect(fx.damageReduction(comKraken, ctx)).toBeCloseTo(drTanque - 0.12, 6);
   });
 
   it('carapaça de kraken tira dano plano DEPOIS da redução', () => {
@@ -204,10 +209,12 @@ describe('dano recebido', () => {
   });
 
   it('sentinela acumula até 5 e expira sozinha', () => {
-    const p = mk({ def_sentinela: 10 });                      // +10% por pilha
+    const p = mk({ def_sentinela: 10 });                      // +5% por pilha
     for (let i = 0; i < 9; i++) fx.onHitTaken(p, NOW);
     expect(p._sentinelStacks).toBe(fx.SENTINEL_MAX_STACKS);
-    expect(fx.damageReduction(p, {})).toBeCloseTo(0.50, 6);
+    // 5 pilhas × 5% — é o único talento de redução que passa dos 5% somando
+    // com ele mesmo, porque o teto de 5% é POR PILHA.
+    expect(fx.damageReduction(p, {})).toBeCloseTo(0.25, 6);
     fx.tickCombatState(p, NOW + 6000);
     expect(p._sentinelStacks).toBe(0);
   });
@@ -259,9 +266,9 @@ describe('vida e mana', () => {
   });
 
   it('coração do abismo dá vida E redução', () => {
-    const p = mk({ def_coracaoabissal: 10 });                 // +30% vida, +10% DR
+    const p = mk({ def_coracaoabissal: 10 });                 // +30% vida, +5% DR
     expect(fx.maxHpPctBonus(p)).toBeCloseTo(0.30, 6);
-    expect(fx.damageReduction(p, {})).toBeCloseTo(0.10, 6);
+    expect(fx.damageReduction(p, {})).toBeCloseTo(0.05, 6);
   });
 });
 

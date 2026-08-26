@@ -80,6 +80,13 @@ describe('Artilharia Pesada — efeito real no combate', () => {
 
 // ── TALENTO DE DEFESA ─────────────────────────────────────────────────────────
 
+// A redução por nível sai do próprio TALENT_DEFS. Estes testes já quebraram em
+// bloco quando a Armadura caiu de 1,5%/nível para 0,5%, e o que eles provam é a
+// CONTA (dano × (1 − redução)), não o número de balanceamento da vez.
+const PL_ARM = TALENT_DEFS.def_armadura.perLevel;
+/** Dano de 100 depois da Armadura Grossa no nível `n`. */
+const comArmadura = (base, n) => Math.round(base * (1 - (PL_ARM * n) / 100));
+
 describe('Armadura Grossa — efeito real no combate', () => {
   it('sem talento de defesa: talentDef = 1.0 (sem redução)', () => {
     const defender = { talents: { def_armadura: 0 } };
@@ -89,28 +96,28 @@ describe('Armadura Grossa — efeito real no combate', () => {
     expect(calcProjectileDamage({ baseDmg: 100, talentDef })).toBe(100);
   });
 
-  it('nível 2 (−3%): 100 → 97', () => {
+  it(`nível 2 (−${PL_ARM * 2}%): 100 → ${comArmadura(100, 2)}`, () => {
     const defender = { talents: { def_armadura: 2 } };
     applyTalentBonuses(defender, TALENT_DEFS);
 
     const talentDef = 1 - defender.talentDefenseBonus;
-    expect(calcProjectileDamage({ baseDmg: 100, talentDef })).toBe(97);
+    expect(calcProjectileDamage({ baseDmg: 100, talentDef })).toBe(comArmadura(100, 2));
   });
 
-  it('nível 6 (−9%): 100 → 91', () => {
+  it(`nível 6 (−${PL_ARM * 6}%): 100 → ${comArmadura(100, 6)}`, () => {
     const defender = { talents: { def_armadura: 6 } };
     applyTalentBonuses(defender, TALENT_DEFS);
 
     const talentDef = 1 - defender.talentDefenseBonus;
-    expect(calcProjectileDamage({ baseDmg: 100, talentDef })).toBe(91);
+    expect(calcProjectileDamage({ baseDmg: 100, talentDef })).toBe(comArmadura(100, 6));
   });
 
-  it('nível máximo 10 (−15%): 100 → 85', () => {
+  it(`nível máximo 10 (−${PL_ARM * 10}%): 100 → ${comArmadura(100, 10)}`, () => {
     const defender = { talents: { def_armadura: 10 } };
     applyTalentBonuses(defender, TALENT_DEFS);
 
     const talentDef = 1 - defender.talentDefenseBonus;
-    expect(calcProjectileDamage({ baseDmg: 100, talentDef })).toBe(85);
+    expect(calcProjectileDamage({ baseDmg: 100, talentDef })).toBe(comArmadura(100, 10));
   });
 
   it('dano recebido diminui progressivamente com cada nível de defesa', () => {
@@ -137,7 +144,7 @@ describe('Confronto — atacante com Artilharia vs defensor com Armadura', () =>
     applyTalentBonuses(defender, TALENT_DEFS);
 
     const talentDmg = 1 + attacker.talentDamageBonus;  // 1.10
-    const talentDef = 1 - defender.talentDefenseBonus; // 0.85
+    const talentDef = 1 - defender.talentDefenseBonus; // 1 − Armadura 10
 
     const dmgComTalentosAmbos = calcProjectileDamage({ baseDmg: 100, talentDmg, talentDef });
     const dmgSoAtacante       = calcProjectileDamage({ baseDmg: 100, talentDmg });
@@ -145,17 +152,15 @@ describe('Confronto — atacante com Artilharia vs defensor com Armadura', () =>
 
     expect(dmgComTalentosAmbos).toBeLessThan(dmgSoAtacante);
     expect(dmgSoDefensor).toBeLessThan(100);
-    // 100 × 1.10 × 0.85 = 93,5 → 94
-    expect(dmgComTalentosAmbos).toBe(Math.round(100 * 1.10 * 0.85));
+    expect(dmgComTalentosAmbos).toBe(Math.round(100 * 1.10 * (1 - PL_ARM * 10 / 100)));
   });
 
   it('atacante sem talento vs defensor com Armadura 6', () => {
     const defender = { talents: { def_armadura: 6 } };
     applyTalentBonuses(defender, TALENT_DEFS);
 
-    const talentDef = 1 - defender.talentDefenseBonus; // 0.91
-    // 50 × 0,91 = 45,5 → 46
-    expect(calcProjectileDamage({ baseDmg: 50, talentDef })).toBe(Math.round(50 * 0.91));
+    const talentDef = 1 - defender.talentDefenseBonus; // 1 − Armadura 6
+    expect(calcProjectileDamage({ baseDmg: 50, talentDef })).toBe(comArmadura(50, 6));
   });
 });
 

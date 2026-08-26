@@ -89,6 +89,19 @@ const SRC = {
   EXPLORATION:   'exploration',
   GOLD_SHIELD:   'gold_shield',
   GOLD_STOLEN:   'gold_stolen',
+  // Guilda — três fontes porque as três contam histórias diferentes: fundar é
+  // um gasto único e enorme, doar é escolha, e a taxa é cobrada sem perguntar.
+  // Juntá-las esconderia justamente a linha que o membro vai procurar quando
+  // notar que o ouro sumiu sozinho de madrugada.
+  GUILD_CREATE:  'guild_create',
+  GUILD_DONATE:  'guild_donate',
+  GUILD_TAX:     'guild_tax',
+  // Ilhas — o imposto que se PAGA na praça e as duas formas de RECEBER da
+  // coleta. Separadas porque contam histórias opostas: uma é o pedágio que a
+  // guilda dona cobrou de você, a outra é o dinheiro que você tomou dela.
+  ISLAND_TAX:     'island_tax',      // pagou imposto no Farol/Mercado/Banco
+  ISLAND_COLLECT: 'island_collect',  // coleta chegou: quinhão de membro
+  ISLAND_RAID:    'island_raid',     // coleta afundada: quinhão de saqueador
 };
 
 /** Teto de entradas devolvidas de uma vez ao cliente. */

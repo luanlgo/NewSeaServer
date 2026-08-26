@@ -41,8 +41,8 @@ MAP_DEFS[1] = {
     sailColor:    0xcc3333,
     flagColor:    0xcc2222,
     xpPerKill:    12,
-    goldMin:      60,
-    goldMax:      80,
+    goldMin:      120,
+    goldMax:      160,
     dobraoChance: 0,
     dobraoMin:    0,
     dobraoMax:    0,
@@ -69,8 +69,8 @@ MAP_DEFS[1] = {
     regenDelay:    20000,
     killsToSpawn: 50,
     xpPerKill:    200,
-    dobraoMin:   50,
-    dobraoMax:   100,
+    dobraoMin:   150,
+    dobraoMax:   300,
     hullColor:   0x1a0505,
     sailColor:   0x220000,
     model:       '/models/monster/carangueijo_boss.glb',
@@ -128,8 +128,8 @@ MAP_DEFS[2] = {
     sailColor:    0x553399,
     flagColor:    0x442288,
     xpPerKill:    22,
-    goldMin:      200,
-    goldMax:      300,
+    goldMin:      400,
+    goldMax:      600,
     dobraoChance: 1,
     dobraoMin:    1,
     dobraoMax:    2,
@@ -155,8 +155,8 @@ MAP_DEFS[2] = {
     regenDelay:    20000,
     killsToSpawn: 50,
     xpPerKill:    300,
-    dobraoMin:   150,
-    dobraoMax:   200,
+    dobraoMin:   450,
+    dobraoMax:   600,
     hullColor:   0x050510,
     sailColor:   0x330033,
     model:       '/models/monster/cobra_boss.glb',
@@ -208,8 +208,8 @@ MAP_DEFS[3] = {
     sailColor:    0x88cc66,
     flagColor:    0x66aa44,
     xpPerKill:    30,
-    goldMin:      400,
-    goldMax:      600,
+    goldMin:      800,
+    goldMax:      1200,
     dobraoChance: 1,
     dobraoMin:    2,
     dobraoMax:    5,
@@ -229,8 +229,8 @@ MAP_DEFS[3] = {
     regenDelay:    20000,
     killsToSpawn:  100,
     xpPerKill:     1000,
-    dobraoMin:     500,
-    dobraoMax:     700,
+    dobraoMin:     1500,
+    dobraoMax:     2100,
     hullColor:     0x553311,
     sailColor:     0x996633,
     model:       '/models/monster/tartaruga_boss.glb',
@@ -378,8 +378,8 @@ MAP_DEFS[4] = {
     sailColor:    0x88cc66,
     flagColor:    0x66aa44,
     xpPerKill:    106,
-    goldMin:      2000,
-    goldMax:      4000,
+    goldMin:      4000,
+    goldMax:      8000,
     dobraoChance: 1,
     dobraoMin:    300,
     dobraoMax:    400,
@@ -495,8 +495,8 @@ MAP_DEFS[6] = {
     regenDelay:    20000,
     killsToSpawn:  0,
     respawnDelay:  3600000, // 1 hora em ms após ser morta
-    dobraoMin:     10000,
-    dobraoMax:     20000,
+    dobraoMin:     30000,
+    dobraoMax:     60000,
     hullColor:     0x553311,
     sailColor:     0x996633,
     model:       '/models/monster/leviata_boss.glb',
@@ -562,19 +562,19 @@ MAP_DEFS[7] = {
   npc: {
     count:           5,
     noNpcRespawn:    true,
-    baseHp:          200,
-    baseDamage:      12,
+    baseHp:          10000,
+    baseDamage:      1200,
     fireInterval:    3000,
     cannonCount:     2,
-    cannonRange:     155,
+    cannonRange:     120,
     usesCannons:     true,
     names:           ['Corsário Náufrago'],
     hullColor:       0x3a1a0a,
     sailColor:       0x884422,
     flagColor:       0x662211,
-    xpPerKill:       20,
-    goldMin:         50,
-    goldMax:         80,
+    xpPerKill:       200,
+    goldMin:         1000,
+    goldMax:         1500,
     model:           '/models/ships/sloop.glb',
     scale:           3.3,
     yOffset:         7.8,
@@ -620,19 +620,19 @@ MAP_DEFS[8] = {
   npc: {
     count:           5,
     noNpcRespawn:    true,
-    baseHp:          500,
-    baseDamage:      25,
-    fireInterval:    3500,
+    baseHp:          25000,
+    baseDamage:      2500,
+    fireInterval:    3000,
     cannonCount:     4,
-    cannonRange:     165,
+    cannonRange:     120,
     usesCannons:     true,
     names:           ['Guarda da Fortaleza'],
     hullColor:       0x1a0a0a,
     sailColor:       0x220033,
     flagColor:       0x110022,
-    xpPerKill:       40,
-    goldMin:         100,
-    goldMax:         160,
+    xpPerKill:       400,
+    goldMin:         2000,
+    goldMax:         3200,
     model:           '/models/ships/brigantine.glb',
     scale:           0.5,
     yOffset:         3.7,
@@ -711,19 +711,19 @@ MAP_DEFS[9] = {
   npc: {
     count:           5,
     noNpcRespawn:    true,
-    baseHp:          1200,
-    baseDamage:      60,
-    fireInterval:    4000,
+    baseHp:          40000,
+    baseDamage:      3500,
+    fireInterval:    3000,
     cannonCount:     6,
-    cannonRange:     175,
+    cannonRange:     120,
     usesCannons:     true,
     names:           ['Capitão Afundado'],
     hullColor:       0x050a08,
     sailColor:       0x0a2a14,
     flagColor:       0x05150a,
-    xpPerKill:       80,
-    goldMin:         200,
-    goldMax:         350,
+    xpPerKill:       800,
+    goldMin:         4000,
+    goldMax:         5000,
     model:           '/models/ships/galleon.glb',
     scale:           2.2,
     yOffset:         4.6,
@@ -795,8 +795,8 @@ MAP_DEFS[10] = {
     sailColor:    0xd4a017,
     flagColor:    0xb8860b,
     xpPerKill:    500,
-    goldMin:      5000,
-    goldMax:      10000,
+    goldMin:      10000,
+    goldMax:      20000,
     dobraoChance: 1,
     dobraoMin:    500,
     dobraoMax:    1000,
@@ -823,8 +823,8 @@ MAP_DEFS[10] = {
     regenPerSec:   500,
     regenDelay:    20000,
     killsToSpawn:  100,
-    dobraoMin:     5000,
-    dobraoMax:     10000,
+    dobraoMin:     15000,
+    dobraoMax:     30000,
     hullColor:     0x3a2008,
     sailColor:     0xd4a017,
     model:       '/models/monster/mimic_boss_chest.glb',
@@ -875,7 +875,14 @@ MAP_DEFS[11] = {
   xpRequired:  0,
   xpToAdvance: null,
   size:        MAP_SIZE * 6,
-  sideMap:     [{sul: [6, 10]}],   // array = borda dividida: x<0 → 6, x≥0 → 10
+  // Sul dividido ao meio (x<0 → 6, x≥0 → 10) e NORTE dividido em TRÊS: as
+  // ilhas das guildas ficam lado a lado, e o terço da borda por onde se sai
+  // é o que decide em qual delas se chega (ver resolveBorderTarget).
+  // A borda NORTE é reescrita logo abaixo, a partir de _ILHAS_OESTE_LESTE: a
+  // ordem dos três destinos tem de ser exatamente a mesma que decide quem é
+  // vizinho de quem lá em cima, e mantê-la à mão nos dois lugares é o tipo de
+  // divergência que ninguém percebe até sair pelo terço errado.
+  sideMap:     [{sul: [6, 10], norte: []}],
 
   // Floresta submersa nas laterais — COLISÃO REAL (empurra barcos e NPCs, dá
   // pra desviar). Visual no cliente (RUINS_DEFS[11] em main.gd), posições
@@ -1092,8 +1099,8 @@ MAP_DEFS[11] = {
     sailColor:    0x662288,
     flagColor:    0x441166,
     xpPerKill:    1200,
-    goldMin:      20000,
-    goldMax:      30000,
+    goldMin:      40000,
+    goldMax:      60000,
     dobraoChance: 1,
     dobraoMin:    10000,
     dobraoMax:    25000,
@@ -1137,6 +1144,109 @@ MAP_DEFS[11] = {
   },
   healingZones: [],  // zona vermelha: sem cura de graça
 };
+
+// ── Mapas 12, 13 e 14: as Ilhas das Guildas ───────────────────────────────────
+//
+// Três mapas lado a lado ao NORTE do Mar dos Renegados (11), gerados pelo laço
+// abaixo em vez de copiados três vezes. Eles são o mesmo mapa três vezes: o que
+// muda entre um e outro é o NOME e qual praça a ilha governa — e essas duas
+// coisas moram em constants/islands.js, que é quem manda no sistema.
+//
+// Escrever à mão daria três blocos de sessenta linhas onde só duas mudam, e a
+// primeira vez que alguém ajustasse o raio da ilha ajustaria em dois dos três.
+//
+// A borda SUL dos três volta para o 11. A borda norte do 11 aponta para os três
+// (array de 3 destinos — ver resolveBorderTarget no server.js): quem sai pelo
+// terço oeste chega no 12, pelo do meio no 13, pelo leste no 14. É o que põe as
+// ilhas "lado a lado" de verdade no mapa-múndi, e não em três becos separados.
+//
+// pvpZone 'red': guerra de ilha é PvP total, e a morte aqui larga espólio como
+// no Mar dos Renegados. Conquistar uma ilha tem de custar alguma coisa.
+const { ISLAND_DEFS, TOWER_SLOTS, towerSlotPos, TOWER_RING_RADIUS,
+        islandNpcDef } = require('./islands');
+
+// ── As três, de oeste para leste ─────────────────────────────────────────────
+// Esta ordem decide DUAS coisas que precisam concordar: em qual ilha se chega
+// saindo pelo terço oeste/meio/leste da borda norte do 11, e quem é vizinho de
+// quem. Por isso ela é derivada UMA vez e usada nos dois lugares — a borda do
+// 11 é reescrita logo abaixo a partir dela, em vez de trazer [12,13,14] na mão.
+const _ILHAS_OESTE_LESTE = Object.values(ISLAND_DEFS).sort((a, b) => a.id - b.id);
+
+for (const [_i, def] of _ILHAS_OESTE_LESTE.entries()) {
+  // ── Navegar ENTRE as ilhas ────────────────────────────────────────────────
+  // Sul volta sempre para o Mar dos Renegados; leste e oeste levam à ilha
+  // vizinha. Sem os lados, cada ilha era um beco: para ir da primeira à
+  // segunda o jogador tinha de descer ao 11, atravessar a borda norte inteira
+  // e subir de novo pelo terço certo.
+  const _lados = { sul: 11 };
+  if (_i > 0) _lados.left = _ILHAS_OESTE_LESTE[_i - 1].mapLevel;
+  if (_i < _ILHAS_OESTE_LESTE.length - 1) _lados.right = _ILHAS_OESTE_LESTE[_i + 1].mapLevel;
+
+  MAP_DEFS[def.mapLevel] = {
+    name:        def.name,
+    weather:     'storm',
+    pvpZone:     'red',
+    hasShop:     false,
+    xpRequired:  0,
+    xpToAdvance: null,
+    size:        MAP_SIZE * 2,
+    sideMap:     [_lados],
+
+    // ── A patrulha da ilha ────────────────────────────────────────────────
+    // Um navio por ilha, sempre o mesmo casco (ver islandNpcDef em
+    // constants/islands.js). A ilha nasceu sem fauna nenhuma pelo argumento de
+    // não tirar o foco da guerra de ilha, e o que se viu no mar foi o oposto:
+    // fora da investida, o mapa é grande e completamente vazio. A patrulha dá
+    // o que fazer no caminho até o costão sem competir com a torre — ela é
+    // fauna comum, paga ouro e XP, e não conta um grama para a conquista.
+    //
+    // A torre continua sendo outra coisa: não dá ouro, não renasce por abate e
+    // não conta para chefe (por isso ela NÃO entra aqui, e sim no
+    // island-manager).
+    npc:  islandNpcDef(def.id),
+    boss: null,
+
+    // A ilha conquistável. `guildIsland` é lido pelo island-manager (torres,
+    // conquista) e pelo cliente (desenho + medalhão de gerência). O
+    // `islandRadius` + `center` fazem a colisão física entrar de graça no
+    // pushOutOfIslands, como em qualquer outra ilha do jogo.
+    guildIsland: {
+      islandId:     def.id,
+      center:       { x: 0, z: 0 },
+      islandRadius: 80,
+      // Raio em que o medalhão de gerência aparece para quem é da guilda dona.
+      // Maior que o costão de propósito: o barco não sobe na ilha, ele encosta.
+      manageRadius: 150,
+      // Anel das torres, para o cliente desenhar as bases mesmo com a torre
+      // caída (o slot vazio precisa aparecer — é onde se constrói).
+      towerRingRadius: TOWER_RING_RADIUS,
+      towerSlots:      Array.from({ length: TOWER_SLOTS }, (_, i) => towerSlotPos(i)),
+      // Sem `model`: o pedido é forma geométrica temporária, e o cliente desenha
+      // a ilha por procedimento (ver _spawn_guild_island em main.gd). Quando a
+      // arte chegar, basta apontar `model` para o .glb e nada mais muda.
+    },
+
+    visual: {
+      bgColor:          0x0a0e18,
+      fogColor:         0x2a3548,
+      fogDensity:       0.0016,
+      ambientColor:     0x9aa8c0,
+      ambientIntensity: 0.50,
+      sunColor:         0xc8b088,
+      sunIntensity:     1.2,
+      ocean1:           0x16283f,
+      ocean2:           0x0a1524,
+      hasMoon:          true,
+      hasDenseNebula:   true,
+    },
+  };
+}
+
+// A borda norte do Mar dos Renegados: um terço por ilha, na MESMA ordem que
+// decidiu os vizinhos acima. Ver resolveBorderTarget no server.js — quem sai
+// pelo terço oeste chega na primeira, pelo do meio na segunda, pelo leste na
+// terceira.
+MAP_DEFS[11].sideMap[0].norte = _ILHAS_OESTE_LESTE.map(i => i.mapLevel);
 
 // Passagens antigas (ruína ancient_stone_arch) — pontos de teleporte entre mapas.
 // x/z = posição no mundo da arcada (mesma do RUINS_DEFS do cliente em main.gd).

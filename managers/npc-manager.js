@@ -75,17 +75,40 @@ class NPCManager {
   }
 
   /**
+   * Uma LEVA da masmorra bônus: o mesmo `count` do mapa, com os status
+   * multiplicados por `statMult` (ver WAVE_STAT_GROWTH em bonus_dungeons.js).
+   *
+   * Separado do spawnAll porque ele é chamado no construtor, quando ainda não
+   * existe leva nenhuma — a leva 1 nasce de lá com multiplicador 1,00×.
+   */
+  spawnWave(statMult = 1) {
+    const npcDef = (this.mapDefs[this.zoneLevel] || {}).npc || {};
+    if (npcDef === null) return 0;
+    const count = npcDef.count || NPC_COUNT;
+    for (let i = 0; i < count; i++) this.spawn(this.zoneLevel, statMult);
+    this._initialNpcCount = this.npcs.size;
+    return count;
+  }
+
+  /**
    * Spawns a single NPC from an explicit def (used for dungeon bosses).
    * The NPC is marked noRespawn=true and isDungeonBoss=true.
+   *
+   * `statMult` é o crescimento da última leva da masmorra. Ele multiplica a
+   * INSTÂNCIA que nasce aqui e mais nada: o navio que o chefe dropa é rolado
+   * por rollBonusShip() direto do `npcDef.stats`, que esta função só LÊ. Foi
+   * pedido explicitamente que a leva dificulte a masmorra sem inflar o prêmio,
+   * e é esta separação que garante isso — mutar `npcDef` (objeto de módulo,
+   * compartilhado) contaminaria o drop de todas as sessões seguintes.
    */
-  spawnWithDef(npcDef, mapLevel, x, z) {
+  spawnWithDef(npcDef, mapLevel, x, z, statMult = 1) {
     const id = uid();
-    const avgHp     = Math.round((npcDef.stats.hpMin     + npcDef.stats.hpMax)     / 2);
+    const avgHp     = Math.round((npcDef.stats.hpMin     + npcDef.stats.hpMax)     / 2 * statMult);
     // cannonMin/Max = quantidade de canhões disparados por salva
     const avgCannon = Math.round((npcDef.stats.cannonMin + npcDef.stats.cannonMax) / 2);
     // dmgMin/Max = dano por projétil individual (fallback para cannonMin/Max se não definido)
     const avgDmg    = Math.round(((npcDef.stats.dmgMin ?? npcDef.stats.cannonMin) +
-                                   (npcDef.stats.dmgMax ?? npcDef.stats.cannonMax)) / 2);
+                                   (npcDef.stats.dmgMax ?? npcDef.stats.cannonMax)) / 2 * statMult);
     const mapDef    = this.mapDefs[mapLevel] || {};
     const mapSize   = mapDef.size || 1000;
     const npc = {
@@ -146,7 +169,7 @@ class NPCManager {
     return npc;
   }
 
-  spawn(mapLevel) {
+  spawn(mapLevel, statMult = 1) {
     const id = uid();
     const lvl = mapLevel || 1;
     const mapDef = this.mapDefs[lvl] || {};
@@ -163,7 +186,10 @@ class NPCManager {
     const names = Array.isArray(npcDef.names) ? npcDef.names
                 : (npcDef.names ? [npcDef.names] : ['Corsair']);
     const baseName = names[Math.floor(Math.random() * names.length)];
-    const baseHp = npcDef.baseHp || MAX_HP;
+    // O multiplicador entra no BASE, não no valor final: o rescale de
+    // dificuldade recalcula `maxHp` a partir de `baseHp` (× diffMult), então
+    // aplicar no final seria perdido no primeiro reajuste de dificuldade.
+    const baseHp = Math.round((npcDef.baseHp || MAX_HP) * statMult);
     
     const mapSize = (mapDef && mapDef.size);
     // spawnAt: ponto fixo de nascimento (ex.: arauto dentro da arena do mapa 11)
@@ -198,8 +224,8 @@ class NPCManager {
       dots: [], // ← Será limpo periodicamente
       cannonCount: 1,
       ammoType: 'bala_ferro',
-      cannonDmg: npcDef.baseDamage || 0,
-      baseDmg:   npcDef.baseDamage || 0,
+      cannonDmg: Math.round((npcDef.baseDamage || 0) * statMult),
+      baseDmg:   Math.round((npcDef.baseDamage || 0) * statMult),
       hitRadius: npcDef.hitRadius || HIT_RADIUS,
       spawnX,                                      // home do leash
       spawnZ,
@@ -427,6 +453,10 @@ class NPCManager {
       // Navios de frota (evento) têm stats fixos por mapa — nunca re-escalam.
       const noRecentDamage = !npc.lastDamageTime || (now - npc.lastDamageTime > 20000);
       if (nearest && nearest.id !== npc.targetId && noRecentDamage && !npc.isBoss && !npc.isFleetShip) {
+        // Na masmorra bônus a dificuldade escala o inimigo IGUAL aos outros
+        // mapas — e ainda multiplica o prêmio no fim (sendBonusDungeonComplete).
+        // As duas escalas se somam à da leva: no Abismo, leva 15 no Extremo dá
+        // ~1,98× × 10× sobre a vida base. É deliberado.
         const diffIdx  = nearest.difficulty || 0;
         // Lua de Sangue multiplica os atributos POR CIMA da dificuldade do alvo.
         // O fator fica guardado no NPC (bloodMult) porque a recompensa precisa
@@ -978,8 +1008,9 @@ class NPCManager {
       isFleetShip: n.isFleetShip || false,
       // Dificuldade em que ESTE bicho está escalado — o cliente pinta o nome
       // com a cor dela (mesma paleta do botão/cartas de dificuldade).
-      // Navio de frota tem stats fixos por mapa e nunca re-escala: -1 = sem
-      // dificuldade, e o cliente deixa o nome branco em vez de mentir "fácil".
+      // Navio de frota escala pelo Tier do caçado, não pela dificuldade, e
+      // nunca re-escala: -1 = sem dificuldade, e o cliente deixa o nome branco
+      // em vez de mentir "fácil".
       diffIdx: n.isFleetShip ? -1 : (n.diffIdx || 0),
       rarity: n.rarity || null,
       mapLevel: n.mapLevel || 1,

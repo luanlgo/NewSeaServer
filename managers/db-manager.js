@@ -262,6 +262,8 @@ class DBManager {
     await this._ensureAuctionsTable();
     await this._ensureMailTable();
     await this._ensureJournalTables();
+    await this._ensureGuildTables();
+    await this._ensureIslandTables();
 
     console.log('💾 MySQL ready');
   }
@@ -600,6 +602,426 @@ class DBManager {
     } catch (err) {
       console.error('[DB] Error taking auction deliveries:', err);
       return [];
+    }
+  }
+
+  // ── Guildas ────────────────────────────────────────────────────────────────
+  //
+  // Três tabelas, e a divisão importa:
+  //
+  //   `guilds`               a irmandade em si — cofre, nível, skills, taxa.
+  //   `guild_members`        quem pertence a quê. A CHAVE PRIMÁRIA é o nome do
+  //                          jogador, e é ela que garante "uma guilda por
+  //                          pirata" no banco, e não só na memória do manager.
+  //   `guild_applications`   pedidos de entrada pendentes.
+  //
+  // Por que a filiação NÃO é uma coluna em `players`: a linha do jogador é
+  // reescrita inteira pelo batchSave a cada 15s a partir de uma cópia em
+  // memória. Foi exatamente isso que apagou os navios raros uma vez (ver
+  // `rare_ships` no topo deste arquivo). Filiação, contribuição e cofre da
+  // guilda são escritos SÓ por aqui, num caminho que ninguém sobrescreve em
+  // lote — nenhuma corrida possível entre o cofre e o autosave do jogador.
+  async _ensureGuildTables() {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS guilds (
+        id           VARCHAR(64)  PRIMARY KEY,
+        name         VARCHAR(64)  NOT NULL,
+        tag          VARCHAR(16)  NOT NULL,
+        flag         VARCHAR(128) NOT NULL DEFAULT '',
+        leader_name  VARCHAR(255) NOT NULL,
+        gold         BIGINT       NOT NULL DEFAULT 0,
+        dobroes      BIGINT       NOT NULL DEFAULT 0,
+        level        INT          NOT NULL DEFAULT 1,
+        xp           BIGINT       NOT NULL DEFAULT 0,
+        tax_pct      FLOAT        NOT NULL DEFAULT 0,
+        skills       JSON,
+        island       JSON,
+        next_tax_at  BIGINT       NOT NULL DEFAULT 0,
+        created_at   BIGINT       NOT NULL,
+        UNIQUE KEY uq_guild_name (name),
+        UNIQUE KEY uq_guild_tag  (tag)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS guild_members (
+        player_name  VARCHAR(255) PRIMARY KEY,
+        guild_id     VARCHAR(64)  NOT NULL,
+        role         VARCHAR(16)  NOT NULL DEFAULT 'member',
+        contrib_gold BIGINT       NOT NULL DEFAULT 0,
+        contrib_dobroes BIGINT    NOT NULL DEFAULT 0,
+        contrib_xp   BIGINT       NOT NULL DEFAULT 0,
+        joined_at    BIGINT       NOT NULL,
+        INDEX idx_gmember_guild (guild_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
+    // Migração para quem já rodou uma versão anterior destas tabelas.
+    // 1060 = coluna duplicada, que é o caso normal daqui em diante.
+    for (const sql of [
+      'ALTER TABLE guild_members ADD COLUMN contrib_dobroes BIGINT NOT NULL DEFAULT 0',
+    ]) {
+      try { await pool.query(sql); }
+      catch (err) { if (err.errno !== 1060) console.error('[DB] guilds migration:', err.message); }
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS guild_applications (
+        guild_id    VARCHAR(64)  NOT NULL,
+        player_name VARCHAR(255) NOT NULL,
+        created_at  BIGINT       NOT NULL,
+        PRIMARY KEY (guild_id, player_name),
+        INDEX idx_gapp_player (player_name)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+  }
+
+  /** Carrega TODAS as guildas com seus membros e pedidos. Chamado uma vez no boot. */
+  async loadGuilds() {
+    const [gRows] = await pool.query('SELECT * FROM guilds');
+    const [mRows] = await pool.query('SELECT * FROM guild_members');
+    const [aRows] = await pool.query('SELECT * FROM guild_applications');
+
+    const guilds = new Map();
+    for (const r of gRows) {
+      guilds.set(r.id, {
+        id:         r.id,
+        name:       r.name,
+        tag:        r.tag,
+        flag:       r.flag || '',
+        leaderName: r.leader_name,
+        gold:       Number(r.gold    || 0),
+        dobroes:    Number(r.dobroes || 0),
+        level:      Number(r.level   || 1),
+        xp:         Number(r.xp      || 0),
+        taxPct:     Number(r.tax_pct || 0),
+        skills:     r.skills || {},
+        island:     r.island || null,
+        nextTaxAt:  Number(r.next_tax_at || 0),
+        createdAt:  Number(r.created_at  || 0),
+        members:      new Map(),   // playerName → { role, contribGold, contribXp, joinedAt }
+        applications: new Map(),   // playerName → createdAt
+      });
+    }
+
+    // Membro cuja guilda sumiu é lixo de uma remoção interrompida: some junto,
+    // senão o jogador fica preso a um id que não existe e não consegue entrar
+    // em guilda nenhuma para sempre.
+    const orphanMembers = [];
+    for (const r of mRows) {
+      const g = guilds.get(r.guild_id);
+      if (!g) { orphanMembers.push(r.player_name); continue; }
+      g.members.set(r.player_name, {
+        role:        r.role || 'member',
+        contribGold:    Number(r.contrib_gold    || 0),
+        contribDobroes: Number(r.contrib_dobroes || 0),
+        contribXp:      Number(r.contrib_xp      || 0),
+        joinedAt:    Number(r.joined_at    || 0),
+      });
+    }
+    if (orphanMembers.length) {
+      await pool.query('DELETE FROM guild_members WHERE player_name IN (?)', [orphanMembers]);
+      console.warn(`[Guilda] ${orphanMembers.length} filiacao(oes) orfa(s) removida(s)`);
+    }
+
+    for (const r of aRows) {
+      const g = guilds.get(r.guild_id);
+      if (g) g.applications.set(r.player_name, Number(r.created_at || 0));
+    }
+
+    return guilds;
+  }
+
+  /** Grava a guilda inteira (menos membros e pedidos, que têm caminho próprio). */
+  async upsertGuild(g) {
+    try {
+      await pool.query(
+        `INSERT INTO guilds
+           (id, name, tag, flag, leader_name, gold, dobroes, level, xp,
+            tax_pct, skills, island, next_tax_at, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+           name        = VALUES(name),
+           tag         = VALUES(tag),
+           flag        = VALUES(flag),
+           leader_name = VALUES(leader_name),
+           gold        = VALUES(gold),
+           dobroes     = VALUES(dobroes),
+           level       = VALUES(level),
+           xp          = VALUES(xp),
+           tax_pct     = VALUES(tax_pct),
+           skills      = VALUES(skills),
+           island      = VALUES(island),
+           next_tax_at = VALUES(next_tax_at)`,
+        [
+          g.id, g.name, g.tag, g.flag || '', g.leaderName,
+          Math.round(g.gold || 0), Math.round(g.dobroes || 0),
+          g.level || 1, Math.round(g.xp || 0),
+          g.taxPct || 0,
+          JSON.stringify(g.skills || {}),
+          g.island ? JSON.stringify(g.island) : null,
+          Math.round(g.nextTaxAt || 0),
+          Math.round(g.createdAt || Date.now()),
+        ]
+      );
+      return true;
+    } catch (err) {
+      // 1062 = chave duplicada (nome ou tag já existe). O manager traduz isso
+      // em recado ao jogador, então não é erro de servidor.
+      if (err.errno === 1062) return false;
+      console.error('[DB] Erro ao salvar guilda:', err.message);
+      return false;
+    }
+  }
+
+  async deleteGuild(guildId) {
+    try {
+      await pool.query('DELETE FROM guild_members      WHERE guild_id=?', [guildId]);
+      await pool.query('DELETE FROM guild_applications WHERE guild_id=?', [guildId]);
+      await pool.query('DELETE FROM guilds             WHERE id=?',       [guildId]);
+    } catch (err) {
+      console.error('[DB] Erro ao apagar guilda:', err.message);
+    }
+  }
+
+  async upsertGuildMember(guildId, playerName, m) {
+    try {
+      await pool.query(
+        `INSERT INTO guild_members
+           (player_name, guild_id, role, contrib_gold, contrib_dobroes, contrib_xp, joined_at)
+         VALUES (?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+           guild_id        = VALUES(guild_id),
+           role            = VALUES(role),
+           contrib_gold    = VALUES(contrib_gold),
+           contrib_dobroes = VALUES(contrib_dobroes),
+           contrib_xp      = VALUES(contrib_xp)`,
+        [playerName, guildId, m.role || 'member',
+         Math.round(m.contribGold || 0), Math.round(m.contribDobroes || 0),
+         Math.round(m.contribXp || 0),
+         Math.round(m.joinedAt || Date.now())]
+      );
+    } catch (err) {
+      console.error('[DB] Erro ao salvar membro de guilda:', err.message);
+    }
+  }
+
+  async removeGuildMember(playerName) {
+    try {
+      await pool.query('DELETE FROM guild_members WHERE player_name=?', [playerName]);
+    } catch (err) {
+      console.error('[DB] Erro ao remover membro de guilda:', err.message);
+    }
+  }
+
+  async addGuildApplication(guildId, playerName) {
+    try {
+      await pool.query(
+        'INSERT IGNORE INTO guild_applications (guild_id, player_name, created_at) VALUES (?,?,?)',
+        [guildId, playerName, Date.now()]
+      );
+    } catch (err) {
+      console.error('[DB] Erro ao salvar pedido de guilda:', err.message);
+    }
+  }
+
+  /**
+   * XP e abates de uma lista de jogadores, por NOME. O líder precisa disto para
+   * julgar um pedido de entrada: quem está online tem o número na memória do
+   * servidor, quem não está só existe no banco — e um pedido de quem está
+   * offline é a regra, não a exceção.
+   *
+   * Uma consulta só para a lista inteira (IN (...)): a alternativa era um
+   * SELECT por candidato, e o líder que abre a aba com dez pedidos pagaria dez
+   * viagens ao banco por abertura.
+   *
+   * @returns {Map<string, {xp:number, npcKills:number, mapLevel:number}>}
+   */
+  async getPlayerProgress(names = []) {
+    const lista = [...new Set(names.map(String))].filter(Boolean);
+    const out = new Map();
+    if (!lista.length) return out;
+    try {
+      const marks = lista.map(() => '?').join(',');
+      const [rows] = await pool.query(
+        `SELECT name, map_xp, npc_kills, map_level FROM players WHERE name IN (${marks})`,
+        lista
+      );
+      for (const r of rows) {
+        out.set(r.name, {
+          xp:       Number(r.map_xp     || 0),
+          npcKills: Number(r.npc_kills  || 0),
+          mapLevel: Number(r.map_level  || 1),
+        });
+      }
+    } catch (err) {
+      console.error('[DB] Erro ao ler progresso de jogadores:', err.message);
+    }
+    return out;
+  }
+
+  async removeGuildApplication(guildId, playerName) {
+    try {
+      await pool.query('DELETE FROM guild_applications WHERE guild_id=? AND player_name=?',
+        [guildId, playerName]);
+    } catch (err) {
+      console.error('[DB] Erro ao remover pedido de guilda:', err.message);
+    }
+  }
+
+  /**
+   * Ouro na conta de um jogador OFFLINE. A taxa diária precisa disto: o ouro de
+   * quem está online mora na memória do servidor, mas o de quem não está só
+   * existe no banco.
+   */
+  async getPlayerGold(name) {
+    try {
+      const [rows] = await pool.query('SELECT gold FROM players WHERE name=?', [name]);
+      return rows.length ? Number(rows[0].gold || 0) : null;
+    } catch (err) {
+      console.error('[DB] Erro ao ler ouro de jogador:', err.message);
+      return null;
+    }
+  }
+
+  /**
+   * Debita ouro de um jogador OFFLINE direto no banco. GREATEST(...,0) impede
+   * saldo negativo mesmo se algo mudar entre a leitura e a escrita, e o
+   * `affectedRows` diz se a linha existia.
+   *
+   * NUNCA usar para jogador online: a linha dele é reescrita inteira pelo
+   * autosave a partir da memória, e a subtração seria desfeita 15 segundos
+   * depois sem deixar rastro.
+   */
+  async debitOfflineGold(name, amount) {
+    const amt = Math.max(0, Math.round(amount || 0));
+    if (!amt) return 0;
+    try {
+      const [res] = await pool.query(
+        'UPDATE players SET gold = GREATEST(0, gold - ?) WHERE name=?', [amt, name]
+      );
+      return res.affectedRows ? amt : 0;
+    } catch (err) {
+      console.error('[DB] Erro ao cobrar taxa de guilda:', err.message);
+      return 0;
+    }
+  }
+
+  // ── Ilhas das guildas ──────────────────────────────────────────────────────
+  //
+  // UMA linha por ilha, e as três nascem no boot se não existirem. A tabela é
+  // pequena e escrita a cada mudança de estado (torre caiu, ilha trocou de dono,
+  // imposto entrou) — não há caminho em lote nenhum tocando nela, então não há
+  // a corrida que já apagou `rare_ships` uma vez (ver o topo deste arquivo).
+  //
+  // `towers` e `damage_rank` são JSON de propósito: os cinco slots e o ranking
+  // de dano são lidos e escritos SEMPRE inteiros, nunca por dentro. Normalizar
+  // daria duas tabelas filhas e cinco UPDATEs por salva de torre para ganhar
+  // consultas que ninguém faz.
+  //
+  // O imposto (`tax_pot`) é BIGINT: uma semana de 25% sobre a economia de um
+  // servidor cheio passa folgado do teto do INT.
+  async _ensureIslandTables() {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS islands (
+        id               INT          PRIMARY KEY,
+        map_level        INT          NOT NULL,
+        state            VARCHAR(16)  NOT NULL DEFAULT 'neutral',
+        owner_guild_id   VARCHAR(64)  DEFAULT NULL,
+        owner_since      BIGINT       NOT NULL DEFAULT 0,
+        grace_until      BIGINT       NOT NULL DEFAULT 0,
+        conquered_week   VARCHAR(16)  DEFAULT NULL,
+        tax_pot          BIGINT       NOT NULL DEFAULT 0,
+        next_event_at    BIGINT       NOT NULL DEFAULT 0,
+        last_event_week  VARCHAR(16)  DEFAULT NULL,
+        towers           JSON,
+        damage_rank      JSON,
+        updated_at       BIGINT       NOT NULL DEFAULT 0
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+  }
+
+  /** Carrega as três ilhas. Devolve Map id → linha já desserializada. */
+  async loadIslands() {
+    const [rows] = await pool.query('SELECT * FROM islands');
+    const out = new Map();
+    for (const r of rows) {
+      out.set(Number(r.id), {
+        id:            Number(r.id),
+        mapLevel:      Number(r.map_level),
+        state:         r.state || 'neutral',
+        ownerGuildId:  r.owner_guild_id || null,
+        ownerSince:    Number(r.owner_since   || 0),
+        graceUntil:    Number(r.grace_until   || 0),
+        conqueredWeek: r.conquered_week || null,
+        taxPot:        Number(r.tax_pot       || 0),
+        nextEventAt:   Number(r.next_event_at || 0),
+        lastEventWeek: r.last_event_week || null,
+        towers:        Array.isArray(r.towers) ? r.towers : [],
+        damageRank:    (r.damage_rank && typeof r.damage_rank === 'object') ? r.damage_rank : {},
+      });
+    }
+    return out;
+  }
+
+  /** Grava UMA ilha inteira. Chamado a cada mudança de estado. */
+  async upsertIsland(i) {
+    try {
+      await pool.query(
+        `INSERT INTO islands
+           (id, map_level, state, owner_guild_id, owner_since, grace_until,
+            conquered_week, tax_pot, next_event_at, last_event_week,
+            towers, damage_rank, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+           map_level       = VALUES(map_level),
+           state           = VALUES(state),
+           owner_guild_id  = VALUES(owner_guild_id),
+           owner_since     = VALUES(owner_since),
+           grace_until     = VALUES(grace_until),
+           conquered_week  = VALUES(conquered_week),
+           tax_pot         = VALUES(tax_pot),
+           next_event_at   = VALUES(next_event_at),
+           last_event_week = VALUES(last_event_week),
+           towers          = VALUES(towers),
+           damage_rank     = VALUES(damage_rank),
+           updated_at      = VALUES(updated_at)`,
+        [
+          i.id, i.mapLevel, i.state, i.ownerGuildId || null,
+          Math.round(i.ownerSince  || 0), Math.round(i.graceUntil || 0),
+          i.conqueredWeek || null,
+          Math.round(i.taxPot      || 0),
+          Math.round(i.nextEventAt || 0),
+          i.lastEventWeek || null,
+          JSON.stringify(i.towers     || []),
+          JSON.stringify(i.damageRank || {}),
+          Date.now(),
+        ]
+      );
+    } catch (err) {
+      console.error('[DB] Erro ao salvar ilha:', err.message);
+    }
+  }
+
+  /**
+   * Credita ouro a um jogador OFFLINE. O espólio da coleta é dividido entre
+   * quem participou, e participar não obriga ninguém a ficar online até o fim —
+   * inclusive porque durante o evento morrer é comum.
+   *
+   * O par do `debitOfflineGold` (guildas). Mesma regra dura: NUNCA usar em
+   * jogador online, cuja linha é reescrita pelo autosave a partir da memória.
+   */
+  async creditOfflineGold(name, amount) {
+    const amt = Math.max(0, Math.round(amount || 0));
+    if (!amt) return 0;
+    try {
+      const [res] = await pool.query(
+        'UPDATE players SET gold = gold + ? WHERE name=?', [amt, name]
+      );
+      return res.affectedRows ? amt : 0;
+    } catch (err) {
+      console.error('[DB] Erro ao creditar espólio da coleta:', err.message);
+      return 0;
     }
   }
 

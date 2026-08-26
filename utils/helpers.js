@@ -35,6 +35,27 @@ function guardFrame(str, hint) {
 module.exports = {
   guardFrame,
 
+  /**
+   * Marca ouro GANHO EM ABATE para a varredura da guilda.
+   *
+   * O cofre da guilda recebe uma fatia do ouro que os membros caçam, do mesmo
+   * jeito que recebe a fatia do XP (ver GUILD_GOLD_SHARE em constants/guilds.js).
+   * Só que ouro, ao contrário de XP, SOBE E DESCE: `player.gold` é saldo, não
+   * ganho, e amostrá-lo daria crédito a quem sacou do banco e nada a quem
+   * gastou tudo. Este acumulador é a fonte monotônica que faltava — quem paga
+   * ouro de abate soma aqui, e o GuildManager LÊ E ZERA na varredura.
+   *
+   * Um contador solto em vez de uma chamada ao GuildManager de propósito: o
+   * projectile-manager e os managers de chefe não precisam conhecer guilda
+   * nenhuma para pagar um abate, e um jogador sem guilda só faz um número
+   * crescer e ser descartado.
+   */
+  noteKillGold: (player, gold) => {
+    const g = Math.round(Number(gold) || 0);
+    if (!player || g <= 0) return;
+    player._killGold = (player._killGold || 0) + g;
+  },
+
   uid: () => nextId++,
   projUid: () => nextProjId++,
   

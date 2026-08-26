@@ -245,9 +245,11 @@ function damageReduction(target, ctx = {}, procs = null) {
   if (ctx.inParty) dr += _pc(target, 'reduction_per_ally_pct', procs) * (ctx.allyCount || 0);
   else             dr += _pc(target, 'reduction_solo_pct', procs);
 
-  // Coração do Abismo: a metade de redução é 1/3 do total declarado (+3% vida
-  // por nível, +1% de redução).
-  dr += _p(target, 'abyssal_heart_pct') / 3;
+  // Coração do Abismo: o `perLevel` do talento é o bônus de VIDA (+3%/nível); a
+  // redução sai dividindo. Era /3 (+1%/nível, 10% no talento cheio) e passou a
+  // /6 para caber no teto de 5% por talento — mexer no perLevel teria levado o
+  // bônus de vida junto, que não é o que se quis cortar.
+  dr += _p(target, 'abyssal_heart_pct') / 6;
 
   // Sentinela: cada golpe recebido nos últimos 5s soma uma pilha.
   dr += _p(target, 'reduction_after_hit_pct') * (target._sentinelStacks || 0);
@@ -539,12 +541,40 @@ function wakeSlow(player) {
 const _ABYSSAL = new Set(['gold', 'dobrao', 'xp']);
 
 /**
+ * Bônus das skills da GUILDA que afetam espólio. Carimbado em
+ * `player._guildBonus` pelo managers/guild-manager.js — aqui só se lê.
+ *
+ * Mora dentro do lootMult porque é o funil por onde ouro, dobrão e XP de TODA
+ * fonte já passam (abate a tiro, abate por DoT, chefe de mapa, boss mundial).
+ * Pendurar a multiplicação em cada local de recompensa seria repetir o erro que
+ * já deixou talento sem efeito em silêncio.
+ *
+ * Soma com os talentos em vez de multiplicar: percentuais da mesma família
+ * somam neste jogo (ver o comentário do calcKillGold no projectile-manager).
+ * XP de chefe recebe o mesmo bônus de XP — ele já é XP.
+ */
+const _GUILD_KEY = {
+  gold:    'gold_pct',
+  dobrao:  'dobrao_pct',
+  xp:      'xp_pct',
+  xp_boss: 'xp_pct',
+};
+function _guildLootAdd(player, kind) {
+  const key = _GUILD_KEY[kind];
+  if (!key) return 0;
+  return Math.max(0, Number(player?._guildBonus?.[key] || 0));
+}
+
+/**
  * Multiplicador de um tipo de ganho.
  * @param {string} kind gold|dobrao|xp|xp_boss|rare|relic_drop|wreck|fishing|
  *                      mission|bounty|pet_food|party_loot
  */
 function lootMult(player, kind) {
-  if (!player || !player.tal) return 1.0;
+  // Sem talentos ainda pode haver guilda — o retorno seco de 1.0 que morava
+  // aqui apagava o bônus da irmandade de quem nunca comprou um talento.
+  if (!player) return 1.0;
+  if (!player.tal) return 1 + _guildLootAdd(player, kind);
   const KEY = {
     gold:         'gold_drop_pct',
     dobrao:       'dobrao_drop_pct',
@@ -565,6 +595,7 @@ function lootMult(player, kind) {
   if (_ABYSSAL.has(kind)) add += _p(player, 'abyssal_treasure_pct');
   // XP de chefe recebe também o bônus geral de XP.
   if (kind === 'xp_boss') add += _p(player, 'xp_drop_pct') + _p(player, 'abyssal_treasure_pct');
+  add += _guildLootAdd(player, kind);
   return Math.max(0, 1 + add);
 }
 
@@ -681,6 +712,22 @@ function stealthRangeMult(player) {
   return Math.max(0.20, 1 - _p(player, 'stealth_range_pct'));
 }
 
+/**
+ * Unidades EXTRA de visão do barco (res_lamparina). O MESMO número é somado
+ * duas vezes no cliente: no alcance da lamparina e no raio de clareira que abre
+ * a névoa em volta do casco. Nó cheio (nível 10) = +100 em cada.
+ *
+ * Diferente de todo o resto deste arquivo, ninguém no servidor chama isto:
+ * lamparina é um OmniLight3D e a clareira é um uniform de shader, ambos coisa
+ * de render. A função existe mesmo assim por duas razões — dar ao stat o mesmo
+ * leitor nomeado que os outros 119 têm (o índice de talent-callsites.test.js
+ * exige isso), e deixar o valor pronto caso algum dia o servidor precise dele,
+ * por exemplo para decidir o que a névoa deixa você enxergar de verdade.
+ */
+function visionBoostBonus(player) {
+  return _f(player, 'vision_boost_flat');
+}
+
 /** Multiplicador da recarga das passagens antigas (res_passagem). */
 function archCooldownMult(player) {
   return Math.max(0.10, 1 - _p(player, 'arch_cooldown_pct'));
@@ -791,7 +838,7 @@ module.exports = {
   pirateCasualtyReductionPct, runUpkeepMult, spoilLootPct, piratePriceMult,
   // diversos
   respawnTimeMult, respawnImmunityBonus, visionMult, stealthRangeMult,
-  archCooldownMult, dashCooldownMult,
+  archCooldownMult, dashCooldownMult, visionBoostBonus,
   // estado
   onHitDealt, onKill, onHitTaken, onRelicUsed, onMoveStart,
   tickCombatState, consumeOpener,

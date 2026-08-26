@@ -162,6 +162,10 @@ const SONDAS = {
   // Almirante), e a força de abordagem soma outros dois (Mestre de Abordagem +
   // a outra metade do Almirante) — por isso o Almirante tem duas sondas.
   res_saqueador:     { sobe: p => fx.spoilLootPct(p) },
+  // O efeito da lamparina é aplicado no cliente (ver EFEITO_NO_CLIENTE em
+  // talent-callsites.test.js), mas o valor que o cliente consome sai daqui —
+  // então a sonda vale: prova que investir o ponto aumenta o número enviado.
+  res_lamparina:     { sobe: p => fx.visionBoostBonus(p) },
   res_alistamento:   { sobe: p => fx.pirateCapacityBonus(p, 20) },
   res_abordagem:     { sobe: p => fx.pirateBattlePowerPct(p) },
   res_disciplina:    { sobe: p => fx.pirateCasualtyReductionPct(p) },
@@ -225,8 +229,10 @@ describe('cobertura das sondas', () => {
   it('o número de ligados bate com o que o painel promete', () => {
     // Se este número mudar sem querer, alguém ligou ou desligou um talento sem
     // reparar — e o painel passa a mentir na etiqueta "efeito não aplicado".
-    expect(LIGADOS.length).toBe(96);
-    expect(Object.values(TALENT_DEFS).filter(d => !d.wired).length).toBe(24);
+    // 97 desde que o "Pescador Experiente" (fishing_yield_pct, sem sistema de
+    // pesca no jogo) deu lugar à "Lamparina Reforçada", que é ligada.
+    expect(LIGADOS.length).toBe(97);
+    expect(Object.values(TALENT_DEFS).filter(d => !d.wired).length).toBe(23);
   });
 });
 

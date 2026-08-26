@@ -9,7 +9,7 @@ const FRAGMENT_DROP_BOSS = {        // fragmentos por boss morto (por raridade)
   infernal: 25,
 };
 const FRAGMENT_EXPLORE_COST          = 1;   // fragmentos gastos por exploração
-const FRAGMENT_EXPLORE_FALLBACK_COST = 500; // dobrões gastos se sem fragmentos
+const FRAGMENT_EXPLORE_FALLBACK_COST = 100; // dobrões gastos se sem fragmentos
 
 // ── EXPLORATION_REWARDS — tabela de recompensas da Mesa de Exploração ─────────
 // type: 'ammo'     → id = chave de AMMO_DEFS, qty = quantidade

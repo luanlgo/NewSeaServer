@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ── Constantes (inline para isolar dos módulos CommonJS) ──────────────────────
 
 const FRAGMENT_EXPLORE_COST          = 1;
-const FRAGMENT_EXPLORE_FALLBACK_COST = 500;
+const FRAGMENT_EXPLORE_FALLBACK_COST = 100;
 
 const EXPLORATION_REWARDS = [
   { type: 'ammo',     id: 'bala_perfurante', qty: 10,  weight: 22 },
@@ -115,16 +115,27 @@ function withReward(rewardIndex, fn) {
 // ── 1. Cálculo de custo ───────────────────────────────────────────────────────
 
 describe('custo da exploração', () => {
+  // O `withReward(0, ...)` trava o sorteio na bala perfurante. Sem ele estes
+  // dois testes eram INTERMITENTES: `mapFragments` também é uma das recompensas
+  // da tabela (peso 5), então de vez em quando a exploração devolvia fragmento
+  // e o saldo final não batia com o gasto — a falha acusava o custo, que estava
+  // certo, e não o prêmio, que era o que tinha variado.
   it('usa fragmentos primeiro', () => {
-    const p = makePlayer(5, 0);
-    const r = exploreMap(p, 3);
-    expect(r.timesFrags).toBe(3);
-    expect(r.timesDobroes).toBe(0);
-    expect(p.mapFragments).toBe(2);
+    withReward(0, () => {
+      const p = makePlayer(5, 0);
+      const r = exploreMap(p, 3);
+      expect(r.timesFrags).toBe(3);
+      expect(r.timesDobroes).toBe(0);
+      expect(p.mapFragments).toBe(2);
+    });
   });
 
+  // Os três testes abaixo derivam o dinheiro de FRAGMENT_EXPLORE_FALLBACK_COST
+  // em vez de escrever o valor na mão: eles já quebraram uma vez quando o custo
+  // caiu de 500 para 100, e o que se quer provar aqui é a REGRA (fragmento
+  // primeiro, dobrão para o resto), não o preço da vez.
   it('usa dobrões quando sem fragmentos', () => {
-    const p = makePlayer(0, 1500);
+    const p = makePlayer(0, 3 * FRAGMENT_EXPLORE_FALLBACK_COST);
     const r = exploreMap(p, 3);
     expect(r.timesFrags).toBe(0);
     expect(r.timesDobroes).toBe(3);
@@ -132,12 +143,14 @@ describe('custo da exploração', () => {
   });
 
   it('usa fragmentos primeiro e dobrões para o restante', () => {
-    const p = makePlayer(2, 1000);
-    const r = exploreMap(p, 4);
-    expect(r.timesFrags).toBe(2);
-    expect(r.timesDobroes).toBe(2);
-    expect(p.mapFragments).toBe(0);
-    expect(p.dobroes).toBe(0);
+    withReward(0, () => {
+      const p = makePlayer(2, 2 * FRAGMENT_EXPLORE_FALLBACK_COST);
+      const r = exploreMap(p, 4);
+      expect(r.timesFrags).toBe(2);
+      expect(r.timesDobroes).toBe(2);
+      expect(p.mapFragments).toBe(0);
+      expect(p.dobroes).toBe(0);
+    });
   });
 
   it('retorna null quando sem fragmentos nem dobrões', () => {
@@ -146,7 +159,7 @@ describe('custo da exploração', () => {
   });
 
   it('retorna null quando dobrões insuficientes para 1 exploração', () => {
-    const p = makePlayer(0, 499);
+    const p = makePlayer(0, FRAGMENT_EXPLORE_FALLBACK_COST - 1);
     expect(exploreMap(p, 1)).toBeNull();
   });
 

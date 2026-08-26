@@ -16,6 +16,8 @@ const bonusDungeons = require('./bonus_dungeons');
 const difficulty    = require('./difficulty');
 const missions      = require('./missions');
 const fleetEvent    = require('./fleet_event');
+const guilds        = require('./guilds');
+const islands       = require('./islands');
 
 module.exports = {
   // Engine
@@ -59,4 +61,10 @@ module.exports = {
 
   // Evento Frota de Caçadores
   ...fleetEvent,
+
+  // Guildas
+  ...guilds,
+
+  // Ilhas de guilda (torres, conquista, imposto)
+  ...islands,
 };

@@ -40,7 +40,11 @@ const _resetAttempts    = new Map();     // email → tentativas erradas de cód
 // ─── Map Definitions ─────────────────────────────────────────────────────────
 // Each map defines NPC base stats, XP requirements, and visual hints for the client
 
-const { sendTo, sendRaw } = require('./utils/helpers');
+// `uid` é o mesmo contador que dá id a jogador e NPC. As torres e o barco da
+// coleta são entidades do mundo como qualquer outra e precisam vir da MESMA
+// sequência — dois contadores independentes acabariam entregando o mesmo id a
+// uma torre e a um barco, e o cliente guarda entidade por id.
+const { sendTo, sendRaw, uid } = require('./utils/helpers');
 const stateBuilder = require('./utils/state-builder');
 const { isInvincible } = require('./utils/invincibility');
 const { applyAuraBurn } = require('./utils/aura-burn');
@@ -187,6 +191,9 @@ const {
   isDifficultyUnlocked,
   DAILY_MISSIONS,
   DAILY_MISSION_COUNT,
+  // Ilhas de guilda — `ACTION_VENUE` é a lista explícita do que é taxável.
+  ACTION_VENUE,
+  ISLAND_BY_MAP,
 } = require('./constants');
 const {
   calcXpRequired:       _calcXpRequired,
@@ -203,7 +210,8 @@ const {
 const fxTal = require('./utils/talent-effects');
 const { calcMaxCannons: _calcMaxCannons, trimCannons: _trimCannons } = require('./utils/combat-calc');
 const worldState = require('./utils/world-state');
-const { BONUS_DUNGEON_DEFS, BONUS_NPC_DEFS, rollBonusShip } = require('./constants/bonus_dungeons');
+const { BONUS_DUNGEON_DEFS, BONUS_NPC_DEFS, rollBonusShip,
+        waveStatMult, dungeonWaveCount } = require('./constants/bonus_dungeons');
 
 // helper to compute map size per-level (default fallback)
 function getMapSize(level) {
@@ -454,6 +462,9 @@ const JournalManager = require('./managers/journal-manager');
 const PirateManager  = require('./managers/pirate-manager');
 const SpoilManager   = require('./managers/spoil-manager');
 const AuctionManager = require('./managers/auction-manager');
+const GuildManager   = require('./managers/guild-manager');
+const IslandManager  = require('./managers/island-manager');
+const TaxBoatManager = require('./managers/tax-boat-manager');
 const JOURNAL_KINDS  = JournalManager.KINDS;
 const JOURNAL_SRC    = JournalManager.SRC;
 const journalManager = new JournalManager(db);
@@ -463,6 +474,54 @@ const spoilManager   = new SpoilManager(sendTo, addEvent, players, db, journalMa
 // depende do banco — até lá a vitrine responde vazia, e é por isso que ele é
 // aguardado antes do log de "DB pronto".
 const auctionManager = new AuctionManager(sendTo, players, db, journalManager, JOURNAL_SRC);
+// As guildas também só ficam de pé depois do `init()` — e por um motivo mais
+// duro que o do leilão: até ele terminar, `guildOf()` responde null para todo
+// mundo, e um jogador que logasse nessa janela veria a tela de "fundar guilda"
+// tendo uma. Por isso é aguardado no boot, antes do "DB pronto".
+const guildManager   = new GuildManager(sendTo, players, db, journalManager, JOURNAL_SRC);
+// Subir a skill de casco muda a vida máxima de quem está online agora. O
+// manager não conhece talento nem navio: ele avisa, e quem sabe recalcular
+// é o servidor (refreshTalentDerived já é o caminho único desses derivados).
+// ── Ilhas de guilda ─────────────────────────────────────────────────────────
+// A ordem importa: o IslandManager depende do GuildManager (quem domina o quê)
+// e o TaxBoatManager depende dos dois. Os três só ficam de pé depois do
+// `init()` no boot — antes disso o mapa da ilha existe sem torre nenhuma, e o
+// primeiro a chegar conquistaria uma ilha vazia sem dar um tiro.
+const islandManager  = new IslandManager(sendTo, addEvent, players, db,
+                                         guildManager, journalManager, JOURNAL_SRC);
+const taxBoatManager = new TaxBoatManager(sendTo, addEvent, players, db,
+                                          islandManager, guildManager,
+                                          journalManager, JOURNAL_SRC, MAP_DEFS);
+islandManager.taxBoat      = taxBoatManager;
+islandManager.partyManager = partyManager;
+// O caminho de volta: a ficha da guilda mostra a ilha que ela domina, e quem
+// sabe quem domina o quê é o IslandManager. Injetado (e não passado ao
+// construtor) porque o IslandManager nasce DEPOIS do GuildManager — ele depende
+// dele.
+guildManager.islands  = islandManager;
+// Torre e barco da coleta entram no MESMO registro de NPCs dos pets selvagens
+// (`extraNpcs`). É o que lhes dá, de graça, colisão de projétil, AOI e placa
+// de vida — sem duplicar nada disso em dois managers novos.
+for (const _mgr of [islandManager, taxBoatManager]) {
+  _mgr.uid              = uid;
+  _mgr.registerEntity   = (id, ent) => { extraNpcs.set(id, ent); };
+  _mgr.unregisterEntity = (id)      => { extraNpcs.delete(id); };
+}
+// A torre não sabe o que uma morte desencadeia (espólio, ruína, respawn) —
+// ela avisa, e o caminho único do servidor resolve. Mesmo contrato do
+// projectileManager.onPlayerKilled.
+islandManager.onPlayerKilled = resolvePlayerDeath;
+projectileManager.islandManager  = islandManager;
+projectileManager.taxBoatManager = taxBoatManager;
+
+guildManager.onMemberStatsChanged = (p, notify = true) => {
+  refreshTalentDerived(p);
+  if (!notify) return;   // login: o payload do init já leva o maxHp novo
+  // `inventory_update` é o recado que o cliente já sabe ler para "sua vida
+  // máxima mudou" (é o mesmo do upgrade de casco na ilha). Sem os outros campos
+  // ele não zera nada: o handler do cliente usa o valor atual como padrão.
+  sendTo(p.ws, { type: 'inventory_update', hp: p.hp, maxHp: p.maxHp });
+};
 projectileManager.journal = journalManager;
 attackManager.journal     = journalManager;
 wreckManager.journal      = journalManager;
@@ -572,11 +631,16 @@ function resolvePlayerDeath(victim, killerId = null) {
   victim.dead        = true;
   victim.isPeaceful  = false;   // sai do modo pesca ao morrer
 
+  // Quem matou. Resolvido ANTES do naufrágio: só a morte para JOGADOR larga
+  // destroço, e quem decide isso é o wreck-manager (ver o cabeçalho dele).
+  const killer = (killerId === null || killerId === undefined) ? null : players.get(killerId);
+
   // Zona vermelha: perde 10% do ouro no local. Em zona de espólio esse ouro vai
   // para o destroço de 1h (que exige vencer uma abordagem para saquear); nas
   // demais, para a ruína de 10s de sempre. A porcentagem é a mesma nos dois —
   // quem a calcula continua sendo o wreck-manager.
-  wreckManager.onPlayerDeath(victim, (v, loss) => spoilManager.onPlayerDeath(v, loss));
+  wreckManager.onPlayerDeath(victim, killer,
+    (v, loss) => spoilManager.onPlayerDeath(v, loss));
   // Tela de morte. urgent=true porque esperar o flush do buffer (~48 ms) para
   // avisar quem acabou de afundar é exatamente o tipo de atraso que o jogador lê
   // como travamento.
@@ -586,7 +650,6 @@ function resolvePlayerDeath(victim, killerId = null) {
   }, victim.mapLevel || 1, true);
 
   // Morte por NPC/ambiente não credita nada
-  const killer = (killerId === null || killerId === undefined) ? null : players.get(killerId);
   if (!killer || killer.id === victim.id) return true;
   _creditPvpKill(killer, victim);
   return true;
@@ -814,6 +877,10 @@ petManager.projectileManager    = projectileManager;
 petManager.addEvent             = addEvent;
 projectileManager.petManager    = petManager;
 attackManager.petManager        = petManager;
+// A torre da ilha bate no jogador pela MESMA pilha de defesas do resto do jogo
+// (utils/player-defense.js), e ela precisa dos dois: o pet para o intercept
+// defensivo e o grupo para os talentos que contam companheiros na zona.
+islandManager.petManager        = petManager;
 projectileManager.grantSkillXp  = grantSkillXp;
 projectileManager.npcManagers   = [npcManager, npcManager2];
 projectileManager.bossManager   = bossManager;
@@ -1333,12 +1400,31 @@ const BORDER_BLOCK = {
  * Para bordas norte/sul a metade oeste (x<0) vai pro primeiro e a leste pro
  * segundo; para left/right decide pela metade em z.
  */
-function resolveBorderTarget(p, dir, targetRaw) {
+/**
+ * Qual mapa está do outro lado desta borda.
+ *
+ * Um número = destino único. Um ARRAY = a borda é dividida em faixas iguais ao
+ * longo do eixo transversal, e a faixa por onde o barco sai escolhe o destino:
+ * dois destinos partem a borda ao meio (o caso antigo do sul do mapa 11), três
+ * a partem em terços (o norte do 11, que dá nas três ilhas das guildas).
+ *
+ * A conta por faixa vale para qualquer N e devolve exatamente o mesmo resultado
+ * do `p.x < 0 ? a : b` de antes quando N vale 2 — que é o que mantém as saídas
+ * já existentes onde sempre estiveram.
+ */
+function resolveBorderTarget(p, dir, targetRaw, mapSize) {
   if (!Array.isArray(targetRaw)) return targetRaw;
+  if (targetRaw.length === 1) return targetRaw[0];
+
   const axis = BORDER_SPAWN_AT[dir]?.axis || 'z';
-  return axis === 'z'
-    ? (p.x < 0 ? targetRaw[0] : targetRaw[1])
-    : (p.z < 0 ? targetRaw[0] : targetRaw[1]);
+  // Borda norte/sul → a faixa é dada pelo X; borda leste/oeste → pelo Z.
+  const along = axis === 'z' ? (p.x || 0) : (p.z || 0);
+  const size  = mapSize || (MAP_DEFS[p.mapLevel || 1] || {}).size || 1200;
+
+  // 0 na ponta oeste/sul da borda, 1 na ponta leste/norte.
+  const t    = Math.min(0.999999, Math.max(0, (along + size / 2) / size));
+  const faixa = Math.floor(t * targetRaw.length);
+  return targetRaw[Math.min(faixa, targetRaw.length - 1)];
 }
 
 /**
@@ -1510,6 +1596,10 @@ setInterval(() => {
     });
   }
 
+  // ── Ilhas de guilda: torres atiram, prazo de graça corre, barco navega ──────
+  islandManager.update(now, dt);
+  taxBoatManager.update(now, dt);
+
   // ── Torre de treino — dispara no barco a cada fireInterval ───────────────────
   {
     const _tNow    = Date.now();
@@ -1535,7 +1625,10 @@ setInterval(() => {
           // XP de defesa por levar dano da torre (idêntico ao projétil)
           grantSkillXp(p, 'defesa', Math.max(1, Math.floor(_tFinalDmg / 5)), wss);
         }
-        sendTo(p.ws, { type: 'tower_shot', damage: _tFinalDmg, hp: p.hp, maxHp: p.maxHp });
+        // x/z vão junto para o cliente desenhar a bala saindo da torre — é a
+        // mesma mensagem (e o mesmo desenho) das torres das ilhas de guilda.
+        sendTo(p.ws, { type: 'tower_shot', damage: _tFinalDmg, hp: p.hp, maxHp: p.maxHp,
+                       x: _tTowerX, z: _tTowerZ, towerId: 'training' });
       });
     }
   }
@@ -1575,7 +1668,7 @@ setInterval(() => {
       const targetRaw = sideMapEntry[dir];
 
       atBorder = true;
-      const targetLevel = resolveBorderTarget(p, dir, targetRaw);
+      const targetLevel = resolveBorderTarget(p, dir, targetRaw, mapDef.size);
 
       // Mapa 5 (Treino AFK) é acessível apenas por compra — bloqueia borda
       if (targetLevel === 5) {
@@ -1651,24 +1744,47 @@ setInterval(() => {
       // ── Bonus dungeon: máquina de estados npcs → boss → complete ─────────
       // NPCs são deletados de mgr.npcs ao morrer (proxy), não apenas marcados dead.
       if (mgr._phase === 'npcs' && mgr._initialNpcCount > 0 && mgr.npcs.size === 0) {
-        // Todos os NPCs regulares mortos — spawnar boss do dungeon
-        mgr._phase = 'boss';
-        const mapDef   = MAP_DEFS[lvl] || {};
-        const dungeonId = mapDef.bonusMapId;                       // 'bonus_map_1' etc.
+        const mapDef     = MAP_DEFS[lvl] || {};
+        const dungeonId  = mapDef.bonusMapId;                       // 'bonus_map_1' etc.
         const dungeonDef = dungeonId && BONUS_DUNGEON_DEFS[dungeonId];
         const npcDef     = dungeonDef && BONUS_NPC_DEFS[dungeonDef.npcId];
-        if (npcDef) {
-          mgr.spawnWithDef(npcDef, lvl, 0, 0);
-          mgr._bossSpawnedAt = Date.now();
-          console.log(`💀 [BonusDungeon] Boss spawnou: ${npcDef.name} no mapa ${lvl}`);
+        const proxima    = (mgr._wave || 1) + 1;
+
+        if (proxima < (mgr._waveTotal || 1)) {
+          // ── Próxima leva de barcos comuns, mais forte que a anterior ──────
+          mgr._wave = proxima;
+          const mult = waveStatMult(proxima);
+          const qtd  = mgr.spawnWave(mult);
+          console.log(`🌊 [BonusDungeon] Mapa ${lvl}: leva ${proxima}/${mgr._waveTotal} — ${qtd} NPCs a ${mult.toFixed(2)}×`);
           for (const [, p] of bonusPlayers) {
-            sendTo(p.ws, { type: 'bonus_boss_spawn', bossName: npcDef.name, mapLevel: lvl });
+            sendTo(p.ws, {
+              type: 'bonus_wave_start', mapLevel: lvl,
+              wave: proxima, waveTotal: mgr._waveTotal,
+              statMult: Number(mult.toFixed(3)), isBossWave: false,
+            });
+          }
+        } else if (npcDef) {
+          // ── Última leva: o chefe ──────────────────────────────────────────
+          mgr._wave  = mgr._waveTotal || 1;
+          mgr._phase = 'boss';
+          // O mesmo crescimento das levas vale para o chefe — mas SÓ para a
+          // briga: o navio que ele dropa sai de rollBonusShip(npcDef), que lê
+          // a tabela estática e não enxerga este multiplicador.
+          const mult = waveStatMult(mgr._wave);
+          mgr.spawnWithDef(npcDef, lvl, 0, 0, mult);
+          mgr._bossSpawnedAt = Date.now();
+          console.log(`💀 [BonusDungeon] Boss spawnou: ${npcDef.name} no mapa ${lvl} (leva ${mgr._wave}, ${mult.toFixed(2)}×)`);
+          for (const [, p] of bonusPlayers) {
+            sendTo(p.ws, {
+              type: 'bonus_boss_spawn', bossName: npcDef.name, mapLevel: lvl,
+              wave: mgr._wave, waveTotal: mgr._waveTotal,
+              statMult: Number(mult.toFixed(3)), isBossWave: true,
+            });
           }
         } else {
           // Sem boss definido → completar direto
           mgr._phase = 'complete';
-          const md = MAP_DEFS[lvl] || {};
-          for (const [, p] of bonusPlayers) sendBonusDungeonComplete(p, lvl, md);
+          for (const [, p] of bonusPlayers) sendBonusDungeonComplete(p, lvl, mapDef);
         }
       }
 
@@ -1939,6 +2055,16 @@ setInterval(() => {
     e.dots = e.dots.filter(dot => {
       if (now < dot.next) return true;
       e.hp = Math.max(0, e.hp - dot.dmg);
+      // Dano de queimadura numa torre ou no barco da coleta conta para a
+      // conquista e para o espólio como qualquer outro. Fora daqui, quem
+      // derrubasse uma torre com fogo apareceria no ranking com zero.
+      if (isNPC && (e.isTower || e.isTaxBoat)) {
+        const _dotDono = players.get(dot.ownerId);
+        if (_dotDono) {
+          if (e.isTower)   islandManager.recordTowerDamage(e, _dotDono, dot.dmg);
+          if (e.isTaxBoat) taxBoatManager.recordDamage(e, _dotDono, dot.dmg);
+        }
+      }
       dot.dur -= dot.tick;
       dot.next = now + dot.tick;
       const effect = dot.effect || 'fire';
@@ -1952,7 +2078,20 @@ setInterval(() => {
         e.dead = true;
         if (isNPC) {
           const killer = players.get(dot.ownerId);
-          if (e.isBoss) {
+          // Torre e barco da coleta têm caminho de morte próprio, igual ao do
+          // projectile-manager. O DoT é a OUTRA porta pela qual uma entidade
+          // chega a zero de vida, e deixá-la de fora significaria uma torre
+          // derrubada no fogo pagando espólio de caçada e tentando renascer
+          // pelo manager errado — sem erro nenhum no log.
+          if (e.isTower) {
+            addEvent({ type: 'entity_dead', id: e.id, isNPC: true, isTower: true, killerId: dot.ownerId }, e.mapLevel);
+            projectileManager.npcs.delete(e.id);
+            islandManager.onTowerDestroyed(e, killer);
+          } else if (e.isTaxBoat) {
+            addEvent({ type: 'entity_dead', id: e.id, isNPC: true, isTaxBoat: true, killerId: dot.ownerId }, e.mapLevel);
+            projectileManager.npcs.delete(e.id);
+            taxBoatManager.onBoatSunk(e);
+          } else if (e.isBoss) {
             addEvent({ type: 'entity_dead', id: e.id, isNPC: true, isBoss: true, killerId: dot.ownerId }, e.mapLevel);
             const _dotBossLvl = e.mapLevel || 1;
             const dotBossMgr = projectileManager.bossManagers.get(_dotBossLvl)
@@ -2192,6 +2331,11 @@ setInterval(() => {
           ...(playersByZone.get(zone)  || []),
           ...(npcSnapByZone.get(zone)  || []),
           ...(bossesByZone.get(zone)   || []),
+          // Torres e barco da coleta: vêm de managers próprios, mas entram no
+          // MESMO índice de AOI que todo o resto — é o que faz a torre sumir
+          // na névoa e reaparecer com registro completo como qualquer barco.
+          ...islandManager.snapshotFor(zone),
+          ...taxBoatManager.snapshotFor(zone),
         ];
         for (const e of entities) liveIds.add(e.id);
         zoneIndex.set(zone, stateBuilder.buildZone(entities, zone));
@@ -2368,7 +2512,15 @@ setInterval(() => {
     const pFrag = mates.length
       ? JSON.stringify(mates.map(m => [Math.round(m.x), Math.round(m.z)]))
       : '[]';
-    sendRaw(p.ws, `{"type":"blips","n":${npcFrag.get(zone) || '[]'},"p":${pFrag}}`);
+    // Companheiros de GUILDA no mesmo mapa, na mesma lógica do grupo. Quem já
+    // está no grupo sai da lista: o blip dele já foi acima, e desenhar duas
+    // vezes pinta o mesmo barco em duas cores.
+    const inParty = new Set(mates.map(m => m.id));
+    const gMates  = guildManager.getGuildMembersInZone(p, zone, inParty);
+    const gFrag   = gMates.length
+      ? JSON.stringify(gMates.map(m => [Math.round(m.x), Math.round(m.z)]))
+      : '[]';
+    sendRaw(p.ws, `{"type":"blips","n":${npcFrag.get(zone) || '[]'},"p":${pFrag},"g":${gFrag}}`);
   });
 }, BLIP_RATE_MS);
 
@@ -2391,6 +2543,10 @@ function ensureBonusMapManager(level) {
   mgr.destroyed    = false;
   mgr._phase       = 'npcs'; // 'npcs' → 'boss' → 'complete'
   mgr._bossSpawnedAt = 0;
+  // Levas: a 1 já nasceu no construtor (spawnAll, multiplicador 1,00×). A
+  // ÚLTIMA leva é o chefe, então `_waveTotal - 1` levas são de barcos comuns.
+  mgr._wave        = 1;
+  mgr._waveTotal   = dungeonWaveCount((MAP_DEFS[level] || {}).bonusMapId);
   mgr.wallManager  = wallManager;
   bonusNpcManagers.set(level, mgr);
   _rewireProjectileManager();
@@ -2789,6 +2945,24 @@ wss.on('connection', (ws) => {
         || msg.type === 'forgot_password' || msg.type === 'reset_password';
       if (!player && !PRE_LOGIN) return;
 
+      // ── Imposto das ilhas: UM gancho, e não vinte ────────────────────────
+      // A guilda dona de uma ilha cobra uma fatia de tudo que se gasta na praça
+      // que ela governa. "Tudo" é a palavra difícil: o Mercado sozinho tem sete
+      // handlers de compra e ganha outros a cada leva de conteúdo.
+      //
+      // Em vez de somar a taxa dentro de cada um deles — onde o próximo item
+      // novo nasceria isento e ninguém perceberia —, a cobrança mede o OURO QUE
+      // SAIU: fotografa o saldo antes, deixa o handler fazer o que faz, e cobra
+      // a alíquota sobre a diferença. Handler novo entra taxado de graça; só
+      // precisa constar de VENUE_ACTIONS em constants/islands.js, que é a lista
+      // explícita do que é taxável.
+      //
+      // Funciona porque TODOS os handlers de compra são síncronos: quando o
+      // switch devolve, o ouro já saiu. Um handler assíncrono de compra teria de
+      // cobrar por dentro — está anotado aqui para quando o primeiro aparecer.
+      const _taxVenue  = player ? ACTION_VENUE[msg.type] : null;
+      const _goldBefore = _taxVenue ? (player.gold || 0) : 0;
+
       switch (msg.type) {
 
         case 'login': {
@@ -3070,14 +3244,17 @@ wss.on('connection', (ws) => {
               const returnX     = (Math.random() - 0.5) * getMapSize(returnLevel) * 0.5;
               const returnZ     = (Math.random() - 0.5) * getMapSize(returnLevel) * 0.5;
 
-              // Remove o mapa bônus dos desbloqueados
+              // Morrer custa a ENTRADA, e só ela: o desbloqueio sai, e as peças
+              // que sobraram no bolso ficam.
+              //
+              // Antes daqui saía também um `mapPieces[pieceId] = 0`, que zerava
+              // o ESTOQUE INTEIRO. Como a entrada já debitou as peças exigidas,
+              // isso cobrava a conta duas vezes e ainda levava o excedente:
+              // quem tinha 45 peças, pagava 30 para entrar e morria, perdia as
+              // 45. É a mesma regra da vitória (ver sendBonusDungeonComplete),
+              // onde as peças excedentes sempre ficaram — a diferença entre
+              // morrer e vencer está no PRÊMIO, não no bilhete.
               player.bonusMapsUnlocked = (player.bonusMapsUnlocked || []).filter(id => id !== bonusMapId);
-              // Reseta mapPieces para o dungeon (exige farmar peças novamente)
-              const mapDef = MAP_DEFS[player.mapLevel];
-              const bonusDef = BONUS_MAPS.find(m => m.id === bonusMapId);
-              if (bonusDef && player.mapPieces) {
-                player.mapPieces[bonusDef.pieceId] = 0;
-              }
               player.dead     = false;
               player._deathResolved = false;   // libera a próxima morte (resolvePlayerDeath)
               player.hp       = Math.max(1, Math.floor((player.maxHp || 100) * 0.10));
@@ -3445,6 +3622,38 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        // ── Ilhas de guilda ──────────────────────────────────────────────────
+        // Mesma guarda das guildas: mexer no cofre antes de o ouro do jogador
+        // ter chegado do banco é como se cria dobrão do nada.
+        case 'island_info':
+        case 'island_build':
+        case 'island_repair':
+        case 'island_force_event': {
+          if (!player || !player._dbLoaded) break;
+          islandManager.handleMessage(player, msg);
+          break;
+        }
+
+        // ── Guildas ──────────────────────────────────────────────────────────
+        // Um handler só: o GuildManager roteia por dentro (ver handleMessage).
+        // `_dbLoaded` é a guarda de sempre — mexer no cofre antes de o ouro do
+        // jogador ter chegado do banco é como se cria dobrão do nada.
+        case 'guild_info':
+        case 'guild_create':
+        case 'guild_search':
+        case 'guild_apply':
+        case 'guild_applications':
+        case 'guild_application_resolve':
+        case 'guild_leave':
+        case 'guild_kick':
+        case 'guild_set_tax':
+        case 'guild_donate':
+        case 'guild_skill_up': {
+          if (!player || !player._dbLoaded) break;
+          guildManager.handleMessage(player, msg);
+          break;
+        }
+
         // ── Party ────────────────────────────────────────────────────────────
         case 'party_invite': {
           const targetId = String(msg.targetId || '');
@@ -3513,6 +3722,23 @@ wss.on('connection', (ws) => {
         }
 
       }
+
+      // Fecha a conta do imposto (ver o comentário do _taxVenue acima).
+      if (_taxVenue && player) {
+        const _gasto = _goldBefore - (player.gold || 0);
+        if (_gasto > 0) {
+          const _imposto = islandManager.chargeTax(player, msg.type, _gasto);
+          if (_imposto > 0) {
+            // O handler já mandou o saldo dele; este é o saldo DEPOIS da taxa.
+            // Sem esta segunda mensagem o jogador veria o ouro certo só na
+            // próxima recompensa, e leria como se a loja tivesse cobrado errado.
+            sendTo(ws, {
+              type: 'currency_update', gold: player.gold, dobroes: player.dobroes,
+              islandTax: _imposto,
+            });
+          }
+        }
+      }
     } catch (e) {
       console.error('Message error:', e);
     }
@@ -3536,6 +3762,9 @@ wss.on('connection', (ws) => {
       if (player._dbLoaded) {
         db.save(player, true).catch(e => console.error('Save error:', e)); // persist on disconnect
       }
+      // Fecha o XP que a guilda ainda não recolheu — a varredura roda a cada
+      // 30s e o trecho ganho depois dela sumiria junto com o jogador.
+      guildManager.onPlayerLeft(player);
       partyManager.removePlayer(player.id, players);
       partyManager.clearInvites(player.id);
       addEvent({ type: 'player_leave', id: player.id });
@@ -3830,6 +4059,11 @@ async function handleLogin(ws, msg) {
   // `bonusShips`, e os dois são lidos logo abaixo.
   await auctionManager.onPlayerJoined(player);
 
+  // Guilda: carimba o bônus ANTES do payload abaixo. O Casco da Irmandade mexe
+  // no `maxHp`, e o init leva esse número — sem isto a barra de vida nasce com
+  // o teto de quem não tem guilda e só é corrigida no quadro seguinte.
+  guildManager.prepareLogin(player);
+
   const initShots = salvoCount(player);
   const initZone    = player.mapLevel || 1;
   ensureManagersForMap(initZone); // garante managers ativos para o mapa inicial do jogador
@@ -3927,6 +4161,10 @@ async function handleLogin(ws, msg) {
     ...pirateManager.injectInitData(player),
     // ── Casa de leilões ─────────────────────────────────────────────────────
     ...auctionManager.injectInitData(player),
+    // ── Guilda ──────────────────────────────────────────────────────────────
+    ...guildManager.injectInitData(player),
+    // ── Ilhas de guilda ─────────────────────────────────────────────────────
+    ...islandManager.injectInitData(player),
     bossProgress: (() => {
       if (MAP_DEFS[initZone]?.isTrainingMap) return null; // mapa de treino: sem boss
       const kts = MAP_DEFS[initZone]?.boss?.killsToSpawn ?? 10;
@@ -3936,6 +4174,11 @@ async function handleLogin(ws, msg) {
       return { current: tot % kts, needed: kts, mapLevel: initZone, bossAlive: alive };
     })(),
   });
+
+  // Guilda: carimba o bônus no jogador e marca o XP de partida. Precisa vir
+  // ANTES de qualquer recompensa — sem o carimbo, o primeiro abate depois do
+  // login sairia sem o bônus da irmandade.
+  guildManager.onPlayerJoined(player);
 
   // Notifica PetManager que jogador entrou (envia pets selvagens do mapa)
   petManager.onPlayerJoined(player);
@@ -4385,22 +4628,31 @@ function handleBuyPirate(player, msg, ws) {
   const { SHOP } = require('./constants');
   const item = SHOP.piratasMap[msg.pirateId];
   if (!item) { sendTo(ws, { type:'error', message:'Pirata não encontrado: ' + msg.pirateId }); return; }
+  // Quantidade: o Bar contrata de dez em dez, e um pedido por recruta era um
+  // clique por recruta. Sem `qty` (Mercado dos mapas 1/2, cliente antigo) o
+  // pedido continua valendo por UM — o default não pode ser 0 nem o balcão
+  // velho pararia de vender.
+  const qty = Math.max(1, Math.min(999, Math.floor(Number(msg.qty ?? 1))));
   // Recrutador (res_recrutador) desconta na contratação. O preço é calculado
   // aqui e não no cliente — que só desenha o valor que o servidor mandou.
   const price = Math.max(1, Math.round(item.price * fxTal.piratePriceMult(player)));
+  const total = price * qty;
+  // Tudo ou nada: comprar 20 com dinheiro para 12 leva os 12 e cobra os 12
+  // seria o tipo de meia-compra que ninguém pediu — e o painel já apaga o
+  // botão antes disso.
   if (item.currency === 'gold') {
-    if (player.gold < price) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
-    player.gold -= price;
+    if (player.gold < total) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
+    player.gold -= total;
   } else {
-    if (player.dobroes < price) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
-    player.dobroes -= price;
+    if (player.dobroes < total) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
+    player.dobroes -= total;
   }
   journalManager.ledger(player, JOURNAL_SRC.SHOP_PIRATE,
-    item.currency === 'gold' ? { gold: -price } : { dobroes: -price },
-    { detail: item.name || msg.pirateId });
+    item.currency === 'gold' ? { gold: -total } : { dobroes: -total },
+    { detail: item.name || msg.pirateId, n: qty });
   if (!player.inventory) player.inventory = {};
   if (!player.inventory.pirates) player.inventory.pirates = [];
-  player.inventory.pirates.push(msg.pirateId);
+  for (let i = 0; i < qty; i++) player.inventory.pirates.push(msg.pirateId);
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(ws, { type:'inventory_update', inventory: player.inventory, gold: player.gold, dobroes: player.dobroes });
   pirateManager.sendState(player);
@@ -4435,8 +4687,17 @@ function handleBuyGeneralItem(player, msg, ws) {
   journalManager.ledger(player, JOURNAL_SRC.SHOP_GENERAL,
     currency === 'gold' ? { gold: -total } : { dobroes: -total },
     { detail: item.name || item.id, n: qty });
-  if (!player.inventory) player.inventory = {};
-  player.inventory[item.id] = (player.inventory[item.id] || 0) + qty;
+
+  // ONDE o item é guardado — ver o campo `resource` em constants/shop.js. Os
+  // recursos de ofício são coluna do jogador (a Mesa e as masmorras os creditam
+  // assim); creditá-los no inventário criaria um segundo estoque que nenhuma
+  // das duas enxerga.
+  if (item.resource) {
+    player[item.id] = (player[item.id] || 0) + qty;
+  } else {
+    if (!player.inventory) player.inventory = {};
+    player.inventory[item.id] = (player.inventory[item.id] || 0) + qty;
+  }
 
   // Gancho de reativação: comprar comida acorda o pet, comprar RUN acorda a
   // tripulação. Sem isso o jogador compraria e continuaria inativo até o
@@ -4449,6 +4710,12 @@ function handleBuyGeneralItem(player, msg, ws) {
     inventory:    player.inventory,
     gold:         player.gold,
     dobroes:      player.dobroes,
+    // Os três recursos vão SEMPRE, comprados ou não: `inventory_update` é o
+    // recado que o cliente usa para reconciliar a bolsa inteira, e mandar só o
+    // que mudou obrigaria cada painel aberto a adivinhar o resto.
+    ironPlates:   player.ironPlates || 0,
+    goldDust:     player.goldDust   || 0,
+    gunpowder:    player.gunpowder  || 0,
     notification: `${item.icon} +${qty}× ${item.name} (-${total} ${item.currency === 'dobrao' ? '🟡' : '🪙'})`,
   });
   db.save(player, true).catch(e => console.error('Save error:', e));
@@ -4644,7 +4911,7 @@ function handleBuyAfkTime(player, msg) {
 // usa, e não depende do formato interno das parties.
 const CHAT_MAX_LEN     = 200;
 const CHAT_MIN_GAP_MS  = 700;   // anti-flood: 1 mensagem a cada 0,7 s por jogador
-const CHAT_CHANNELS    = ['global', 'map', 'party', 'say'];
+const CHAT_CHANNELS    = ['global', 'guild', 'map', 'party', 'say'];
 // 'say' vira BALÃO flutuando sobre o barco (player.gd:show_chat_bubble), e por
 // isso tem regras próprias:
 //  • texto curto — 200 caracteres em cima de um barco tapam a tela de quem passa;
@@ -4689,6 +4956,12 @@ function handleChatSend(player, msg) {
     if (channel === 'map'   && (p.mapLevel || 1) !== mapLvl) return;
     if (channel === 'party' && p.id !== player.id
         && !(partyManager && partyManager.areAllies(player.id, p.id))) return;
+    // Guilda: alcance de servidor inteiro, como o global, mas só para quem
+    // divide a bandeira. Sem guilda, a mensagem não sai nem para quem enviou.
+    if (channel === 'guild') {
+      if (!guildManager.guildOf(player)) return;
+      if (p.id !== player.id && !guildManager.areGuildMates(player.name, p.name)) return;
+    }
     if (channel === 'say') {
       if ((p.mapLevel || 1) !== mapLvl) return;
       const dx = (p.x || 0) - (player.x || 0);
@@ -4973,6 +5246,13 @@ function handleEnterBonusMap(player, msg, ws) {
     console.log(`🗝️ ${player.name} desbloqueou ${mapId} via enter (${required} peças deduzidas)`);
   }
 
+  // Dificuldade TRAVADA na entrada. Dentro da masmorra ela não engrossa mais o
+  // inimigo (ver npc-manager), só multiplica o prêmio — e trocar de dificuldade
+  // só exige 6 s fora de combate, o que acontece à vontade entre uma leva e
+  // outra. Sem travar aqui, o caminho seria entrar no Fácil e virar Extremo
+  // antes do chefe morrer para quintuplicar a recompensa de graça.
+  player.bonusDifficulty = player.difficulty || 0;
+
   // Guarda mapa de origem para retornar depois
   player.preBonusMapLevel = player.mapLevel || 1;
   player.preBonusX        = player.x || 0;
@@ -5013,6 +5293,8 @@ function handleEnterBonusMap(player, msg, ws) {
     bossProgress:   null,
     isBonusMap:     true,
     bonusMapId:     mapId,
+    bonusWave:      mgr._wave      || 1,
+    bonusWaveTotal: mgr._waveTotal || 1,
   });
   console.log(`🗺️ ${player.name} entrou em ${mapDef.name} (level ${level})`);
 }
@@ -5069,12 +5351,22 @@ function sendBonusDungeonComplete(player, mapLevel, mapDef) {
   const npcDef     = npcId && BONUS_NPC_DEFS[npcId];
   const waveRewards = dungeonDef?.waves?.[0]?.rewards || {};
 
+  // ── Dificuldade: é AQUI que ela pesa na masmorra ───────────────────────────
+  // Dentro do mapa bônus a dificuldade não dá vida nem dano ao inimigo (quem
+  // faz isso é a leva). Ela paga no prêmio: multiplica os recursos e a chance
+  // do navio, pelo mesmo `rewardMult` da tabela de DIFFICULTIES
+  // (fácil 1× · normal 2× · difícil 3× · muito difícil 4× · extremo 5×).
+  // O índice vem travado da entrada, não do valor atual — ver handleEnterBonusMap.
+  const diffIdx  = player.bonusDifficulty || 0;
+  const rewMult  = difficultyDef(diffIdx).rewardMult || 1;
+
   // ── Recursos fixos da wave ─────────────────────────────────────────────────
-  const dobraoAmt  = waveRewards.dobroes    || 0;
-  const goldAmt    = waveRewards.gold       || 0;
-  const ironAmt    = waveRewards.ironPlates || 0;
-  const dustAmt    = waveRewards.goldDust   || 0;
-  const powderAmt  = waveRewards.gunpowder  || 0;
+  const dobraoAmt  = Math.round((waveRewards.dobroes    || 0) * rewMult);
+  const goldAmt    = Math.round((waveRewards.gold       || 0) * rewMult);
+  const ironAmt    = Math.round((waveRewards.ironPlates || 0) * rewMult);
+  const dustAmt    = Math.round((waveRewards.goldDust   || 0) * rewMult);
+  const powderAmt  = Math.round((waveRewards.gunpowder  || 0) * rewMult);
+  const fragAmt    = Math.round((waveRewards.mapFragments || 0) * rewMult);
 
   player.dobroes    = (player.dobroes    || 0) + dobraoAmt;
   player.gold       = (player.gold       || 0) + goldAmt;
@@ -5082,10 +5374,14 @@ function sendBonusDungeonComplete(player, mapLevel, mapDef) {
   player.ironPlates = (player.ironPlates || 0) + ironAmt;
   player.goldDust   = (player.goldDust   || 0) + dustAmt;
   player.gunpowder  = (player.gunpowder  || 0) + powderAmt;
+  player.mapFragments = (player.mapFragments || 0) + fragAmt;
 
   // ── Navio raro (chance definida em npcDef) ─────────────────────────────────
   let shipDrop = null;
-  if (npcDef && Math.random() < (npcDef.shipDropChance ?? 0.02)) {
+  // A chance também escala com a dificuldade, com teto em 1 (100%): passar de
+  // 1 não significa "dois navios", só desperdiça o multiplicador em silêncio.
+  const chanceNavio = Math.min(1, (npcDef?.shipDropChance ?? 0.02) * rewMult);
+  if (npcDef && Math.random() < chanceNavio) {
     shipDrop = rollBonusShip(npcDef);
     if (!player.bonusShips) player.bonusShips = [];
     player.bonusShips.push(shipDrop);
@@ -5115,6 +5411,7 @@ function sendBonusDungeonComplete(player, mapLevel, mapDef) {
     ironPlates:      player.ironPlates    || 0,
     goldDust:        player.goldDust      || 0,
     gunpowder:       player.gunpowder     || 0,
+    mapFragments:    player.mapFragments  || 0,
     rareShips:       player.bonusShips    || [],
     // A Mesa de Exploração precisa saber na hora que a entrada foi gasta —
     // senão o botão "Entrar" continua verde até o próximo login.
@@ -5126,7 +5423,15 @@ function sendBonusDungeonComplete(player, mapLevel, mapDef) {
       ironPlates: ironAmt,
       goldDust:   dustAmt,
       gunpowder:  powderAmt,
+      mapFragments: fragAmt,
     },
+    // Para o painel de conclusão explicar de onde veio o número. A `key` vai
+    // junto para o cliente não precisar de uma cópia da tabela só para saber
+    // que 4 se chama "Extremo".
+    difficulty:    diffIdx,
+    difficultyKey: difficultyDef(diffIdx).key,
+    rewardMult:    rewMult,
+    shipChance:  chanceNavio,
     shipDrop,
   });
   console.log(`🏆 ${player.name} completou masmorra bônus ${dungeonId ?? mapLevel} — dobrões:${dobraoAmt} ouro:${goldAmt} navio:${shipDrop?.id ?? 'nenhum'}`);
@@ -6763,6 +7068,9 @@ async function shutdown() {
   if (worldBossManager) worldBossManager.destroy();
   if (playerManager) playerManager.destroy();
   if (auctionManager) auctionManager.destroy();
+  if (guildManager) guildManager.destroy();
+  if (taxBoatManager) taxBoatManager.destroy();
+  if (islandManager) islandManager.destroy();
   
   // Destroi managers dinâmicos (mapas 3-6 e bônus)
   for (const { npc, boss } of regularManagers.values()) {
@@ -6809,6 +7117,8 @@ db.init().then(async () => {
   // Antes do log de "DB pronto" de propósito: enquanto isto não termina, um
   // jogador poderia reanunciar um navio que já está em leilão.
   await auctionManager.init();
+  await guildManager.init();
+  await islandManager.init();
   console.log('✅ DB pronto — jogo totalmente operacional');
 }).catch(err => {
   console.error('❌ Falha ao conectar ao banco:', err.message);

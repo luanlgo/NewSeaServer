@@ -1,10 +1,19 @@
 // managers/wreck-manager.js — Ruínas saqueáveis da Zona Vermelha (PvP)
 //
-// Quando um jogador morre num mapa com pvpZone 'red' (qualquer causa: PvP,
-// arauto, aura, DoT), ele perde WRECK_GOLD_PCT do ouro na hora e uma ruína
-// (naufrágio) nasce no ponto da morte com esse ouro dentro. Qualquer jogador
-// pode saquear com F (msg loot_wreck) dentro de LOOT_RANGE durante o TTL;
-// depois disso o ouro se perde e a ruína some.
+// Quando um jogador é MORTO POR OUTRO JOGADOR num mapa com pvpZone 'red', ele
+// perde WRECK_GOLD_PCT do ouro na hora e uma ruína (naufrágio) nasce no ponto
+// da morte com esse ouro dentro. Qualquer jogador pode saquear com F (msg
+// loot_wreck) dentro de LOOT_RANGE durante o TTL; depois disso o ouro se perde
+// e a ruína some.
+//
+// ── Só morte para JOGADOR ────────────────────────────────────────────────────
+// Morrer para bicho, torre de ilha, aura ou DoT NÃO larga ruína e NÃO custa
+// ouro. A penalidade dos 10% é a moeda do PvP — ela existe para que afundar
+// alguém renda alguma coisa e ser afundado doa. Cobrando de toda morte, o ouro
+// simplesmente evaporava (não há para quem transferi-lo) e a ruína que nascia
+// era um presente para o primeiro que passasse. Nas ilhas de guilda (mapas
+// 12–14, zona `red`) isso era o caso COMUM: as torres matam sozinhas o dia
+// inteiro.
 //
 // Protocolo:
 //   server → mapa:   wreck_spawn   {id, x, z, gold, ownerName, ttlMs}
@@ -44,11 +53,21 @@ class WreckManager {
    * segunda porcentagem aqui dobraria a penalidade de morte sem que nenhum dos
    * dois arquivos dissesse isso.
    *
+   * QUEM matou também é decisão deste arquivo: passe o matador, não um "sim ou
+   * não" já resolvido lá fora. Um `killer` nulo é a morte por ambiente/bicho —
+   * e é o padrão de propósito, porque o caminho seguro para um chamador novo
+   * que esqueça o argumento é NÃO cobrar ouro de ninguém.
+   *
+   * @param {Object|null}   killer       jogador que deu o golpe, ou null para
+   *        morte por NPC, torre, aura ou DoT.
    * @param {Function|null} onSpoilZone  recebe (player, loss) e devolve true se
    *        absorveu o naufrágio — nesse caso não nasce ruína.
    */
-  onPlayerDeath(player, onSpoilZone = null) {
+  onPlayerDeath(player, killer = null, onSpoilZone = null) {
     if (!player || player.isNPC) return;
+    // Ver "Só morte para JOGADOR" no cabeçalho. Suicídio não conta: seria uma
+    // forma de dar o próprio ouro a quem estivesse por perto.
+    if (!killer || killer.isNPC || killer.id === player.id) return;
     const lvl = player.mapLevel || 1;
     // `>= red` e não `=== 'red'`: uma zona futura mais severa herda a regra em
     // vez de silenciosamente parar de dropar ouro.

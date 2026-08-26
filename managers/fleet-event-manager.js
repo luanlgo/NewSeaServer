@@ -11,11 +11,23 @@
 // onFleetShipKilled) — assim TODO caminho de dano (projétil, DoT, aura)
 // converge no mesmo pagamento.
 //
-// Escolha do mapa: sorteio entre FLEET_EVENT.maps que tenham jogador vivo.
-// Sem candidatos → nova tentativa em 1 min. O tamanho da frota congela no
-// anúncio (sizeForPlayers) — quem chegar depois do aviso não encolhe o evento.
+// Escolha do mapa: sorteio entre FLEET_EVENT.maps (zonas amarelas) que tenham
+// jogador vivo. Sem candidatos → nova tentativa em 1 min.
+//
+// ── O CAÇADO ────────────────────────────────────────────────────────────────
+// O anúncio elege um alvo: o jogador de maior Tier no mapa. O Tier dele congela
+// ali e é a única régua do evento — vida, dano e bounty de todos os navios
+// saem de `base + perTier × Tier` (ver constants/fleet_event.js), então cada
+// Tier a mais do alvo pesa a frota inteira. Congelar no anúncio importa
+// por dois motivos: quem chegar depois do aviso não muda mais o tamanho nem a
+// força da frota, e o alvo não escapa da própria caçada deslogando nos 30s.
+//
+// O alvo é a régua e o nome no aviso, não uma trava de mira: em campo cada
+// navio persegue o jogador mais próximo do mapa (npc-manager.js). Quem entrar
+// numa caçada alheia enfrenta a frota calibrada para o veterano — é o preço de
+// estar numa zona amarela durante o evento.
 
-const { uid, rand, broadcast, sendTo } = require('../utils/helpers');
+const { uid, rand, broadcast, sendTo, noteKillGold } = require('../utils/helpers');
 const { FLEET_EVENT } = require('../constants');
 const db = require('./db-manager');
 
@@ -32,8 +44,8 @@ class FleetEventManager {
     this.addEvent      = addEvent;
 
     this._nextAttemptAt = Date.now() + FLEET_EVENT.firstDelayMs;
-    this._pending       = null;  // { mapLevel, count, at }
-    this.active         = null;  // { mapLevel, shipIds:Set, total, startedAt }
+    this._pending       = null;  // { mapLevel, count, tier, targetName, at }
+    this.active         = null;  // { mapLevel, shipIds:Set, total, tier, targetName, startedAt }
   }
 
   _alivePlayersOnMap(lvl) {
@@ -44,13 +56,20 @@ class FleetEventManager {
     return n;
   }
 
-  // Média de abates de NPC dos jogadores vivos no mapa — dirige a escala da frota
-  _avgKillsOnMap(lvl) {
-    let sum = 0, n = 0;
+  /**
+   * O caçado: jogador vivo de maior Tier no mapa. É ele quem dimensiona a
+   * frota inteira. Empate fica com o primeiro encontrado — desempatar por
+   * outro critério não mudaria a frota, já que Tiers iguais resolvem os mesmos
+   * atributos; só o nome do aviso mudaria.
+   */
+  _huntedOnMap(lvl) {
+    let best = null, bestTier = -1;
     this.players.forEach(p => {
-      if (p && !p.dead && (p.mapLevel || 1) === lvl) { sum += (p.npcKills || 0); n++; }
+      if (!p || p.dead || (p.mapLevel || 1) !== lvl) return;
+      const t = FLEET_EVENT.tierOf(p);
+      if (t > bestTier) { bestTier = t; best = p; }
     });
-    return n > 0 ? sum / n : 0;
+    return best;
   }
 
   _scheduleNext(now) {
@@ -104,20 +123,34 @@ class FleetEventManager {
       const mapLevel = candidates[Math.floor(Math.random() * candidates.length)];
       const count    = FLEET_EVENT.sizeForPlayers(this._alivePlayersOnMap(mapLevel));
 
+      // O caçado dimensiona tudo. `_huntedOnMap` só devolve null se o mapa
+      // esvaziar entre o filtro de candidatos e aqui — nesse caso desiste e
+      // tenta de novo em 1 min, em vez de spawnar uma frota sem régua.
+      const hunted = this._huntedOnMap(mapLevel);
+      if (!hunted) {
+        this._nextAttemptAt = now + 60 * 1000;
+        return;
+      }
+      const tier       = FLEET_EVENT.tierOf(hunted);
+      const targetName = hunted.name || '?';
+
       broadcast(this.wss, {
         type:       'fleet_incoming',
         mapLevel,
         shipCount:  count,
         spawnDelay: FLEET_EVENT.announceMs,
+        targetName,
+        tier,
       });
-      this._pending       = { mapLevel, count, at: now + FLEET_EVENT.announceMs };
+      this._pending       = { mapLevel, count, tier, targetName, at: now + FLEET_EVENT.announceMs };
       this._nextAttemptAt = Infinity; // re-agendado quando o evento terminar
-      console.log(`🏴‍☠️ [Fleet] anúncio: ${count} navio(s) rumo ao mapa ${mapLevel} em ${FLEET_EVENT.announceMs / 1000}s`);
+      console.log(`🏴‍☠️ [Fleet] anúncio: ${count} navio(s) rumo ao mapa ${mapLevel} ` +
+        `caçando ${targetName} (Tier ${tier}) em ${FLEET_EVENT.announceMs / 1000}s`);
     }
   }
 
   // ── Spawn da frota no mapa alvo ─────────────────────────────────────────────
-  _spawn({ mapLevel, count }, now) {
+  _spawn({ mapLevel, count, tier, targetName }, now) {
     const mgr = this.getMapManager(mapLevel);
     if (!mgr || mgr.destroyed) {
       // Mapa esvaziou durante o anúncio e o manager foi limpo — cancela
@@ -126,14 +159,11 @@ class FleetEventManager {
       return;
     }
 
-    const mapSize  = (this.mapDefs[mapLevel] || {}).size || 1200;
-    // Escala = baseline do mapa × fator dinâmico pela média de abates no mapa.
-    // Congela no spawn e viaja com cada navio (npc.fleetScale) para o bounty
-    // usar exatamente o mesmo multiplicador que dimensionou hp/dano.
-    const avgKills = this._avgKillsOnMap(mapLevel);
-    const killMult = FLEET_EVENT.scaleForKills(avgKills);
-    const scaleMul = (FLEET_EVENT.mapScale[mapLevel] || 1) * killMult;
-    const keys     = FLEET_EVENT.formations[count - 1] || FLEET_EVENT.formations[0];
+    const mapSize = (this.mapDefs[mapLevel] || {}).size || 1200;
+    // Régua única do evento: o Tier do caçado, congelado no anúncio. Viaja com
+    // cada navio (npc.fleetTier) para o bounty ser resolvido no mesmo Tier que
+    // dimensionou vida e dano.
+    const keys = FLEET_EVENT.pickShips(count);
 
     // Frota entra pela borda, em linha perpendicular à direção do centro
     const ang  = Math.random() * Math.PI * 2;
@@ -147,7 +177,8 @@ class FleetEventManager {
       if (!def) return;
       const id     = uid();
       const offset = (i - (keys.length - 1) / 2) * 70; // 70u entre navios
-      const hp     = Math.round(def.baseHp * scaleMul);
+      const hp     = FLEET_EVENT.atTier(def.hp, tier);
+      const dmg    = FLEET_EVENT.atTier(def.damage, tier);
       const npc = {
         id,
         name:        def.name,
@@ -163,7 +194,7 @@ class FleetEventManager {
         isNPC:       true,
         isFleetShip: true,
         fleetKey:    key,
-        fleetScale:  scaleMul,   // congelado no spawn — usado no bounty
+        fleetTier:   tier,   // congelado no spawn — usado no bounty
         noRespawn:   true,   // respawnScaled remove e nunca re-spawna
         stunExpires: 0,
         slowMult:    1,
@@ -174,8 +205,8 @@ class FleetEventManager {
         cannonSpread: def.cannonSpread,
         cannonRange:  def.cannonRange,
         fireInterval: def.fireInterval,
-        cannonDmg:   Math.round(def.baseDamage * scaleMul),
-        baseDmg:     Math.round(def.baseDamage * scaleMul),
+        cannonDmg:   dmg,
+        baseDmg:     dmg,
         ammoType:    'bala_ferro',
         hitRadius:   def.hitRadius,
         npcModel:    def.model,
@@ -191,8 +222,8 @@ class FleetEventManager {
         _currentCast:     null,
         _castTimer:       null,
         _nextCannonShot:  0,
-        // Stats do evento são fixos por mapa — npc-manager pula o rescale de
-        // dificuldade para isFleetShip; os campos abaixo mantêm o contrato.
+        // Stats do evento saem do Tier do caçado — npc-manager pula o rescale
+        // de dificuldade para isFleetShip; os campos abaixo mantêm o contrato.
         _scaledForDiff:   1,
         diffMult:         1,
         diffIdx:          0,
@@ -213,10 +244,12 @@ class FleetEventManager {
       return;
     }
 
-    this.active = { mapLevel, shipIds, total: shipIds.size, startedAt: now };
-    this.addEvent({ type: 'fleet_spawned', mapLevel, shipCount: shipIds.size }, mapLevel);
+    this.active = { mapLevel, shipIds, total: shipIds.size, tier, targetName, startedAt: now };
+    this.addEvent({
+      type: 'fleet_spawned', mapLevel, shipCount: shipIds.size, targetName, tier,
+    }, mapLevel);
     console.log(`🏴‍☠️ [Fleet] ${shipIds.size} navio(s) spawnados no mapa ${mapLevel} ` +
-      `(scale ×${scaleMul.toFixed(2)} = map ${FLEET_EVENT.mapScale[mapLevel]} × kills ${killMult.toFixed(2)} @ avg ${avgKills.toFixed(0)})`);
+      `[${keys.join(', ')}] — caçando ${targetName} (Tier ${tier})`);
   }
 
   // ── Bounty — chamado pelo hook _onNpcKill (todo caminho de dano) ────────────
@@ -224,14 +257,20 @@ class FleetEventManager {
     if (!this.active || !this.active.shipIds.has(npc.id)) return;
     this.active.shipIds.delete(npc.id);
 
-    const def      = FLEET_EVENT.ships[npc.fleetKey] || {};
-    const scaleMul = npc.fleetScale || FLEET_EVENT.mapScale[npc.mapLevel] || 1;
-    const gold     = Math.round((def.bounty?.gold   || 0) * scaleMul);
-    const dobrao   = Math.round((def.bounty?.dobrao || 0) * scaleMul);
+    // Bounty pela MESMA régua dos atributos: o Tier do caçado, resolvido pelo
+    // mesmo atTier. Dificuldade de mundo e mapa não entram — um Tier 30 paga
+    // igual em qualquer zona amarela.
+    const def    = FLEET_EVENT.ships[npc.fleetKey] || {};
+    const tier   = npc.fleetTier || 0;
+    const gold   = FLEET_EVENT.atTier(def.bounty?.gold,   tier);
+    const dobrao = FLEET_EVENT.atTier(def.bounty?.dobrao, tier);
 
     if (killer) {
       killer.gold    = (killer.gold    || 0) + gold;
       killer.dobroes = (killer.dobroes || 0) + dobrao;
+      // O bounty é ouro de abate como qualquer outro — o cofre da guilda leva
+      // a fatia dele (ver GUILD_GOLD_SHARE).
+      noteKillGold(killer, gold);
       db.save(killer, true).catch(e => console.error('[Fleet] save error:', e));
       sendTo(killer.ws, {
         type:    'currency_update',
@@ -254,6 +293,8 @@ class FleetEventManager {
       mapLevel:   npc.mapLevel,
       shipName:   npc.name,
       killerName: killer?.name || '?',
+      targetName: this.active.targetName,
+      tier:       this.active.tier,
       remaining,
       bounty:     { gold, dobrao },
     }, npc.mapLevel);

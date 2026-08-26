@@ -92,10 +92,11 @@ const LEITOR = {
   slow_on_hit_pct: 'slowOnHit',
   slow_pursuers_pct: 'wakeSlow', stealth_range_pct: 'stealthRangeMult',
   fog_vision_pct: 'visionMult', night_vision_pct: 'visionMult',
+  vision_boost_flat: 'visionBoostBonus',
   // economia
   gold_drop_pct: 'lootMult', dobrao_drop_pct: 'lootMult', xp_drop_pct: 'lootMult',
   xp_boss_pct: 'lootMult', rare_drop_pct: 'lootMult', relic_drop_pct: 'lootMult',
-  wreck_loot_pct: 'spoilLootPct', fishing_yield_pct: 'lootMult',
+  wreck_loot_pct: 'spoilLootPct',
   mission_reward_pct: 'lootMult', bounty_pct: 'lootMult',
   pet_food_pct: 'lootMult', party_loot_pct: 'lootMult',
   abyssal_treasure_pct: 'lootMult',
@@ -127,7 +128,29 @@ const CAMPO_LEGADO = {
   mana_regen_pct: 'talentManaRegenBonus',
 };
 
-/** O jogo consome este stat de alguma das três formas? */
+/**
+ * Stats cujo efeito vive no CLIENTE, não no servidor.
+ *
+ * A varredura abaixo lê server.js e managers/ porque essa é a premissa de
+ * praticamente todo talento: o servidor simula, o cliente desenha. Um punhado
+ * de efeitos quebra essa premissa por serem puramente de apresentação — o
+ * servidor agrega o stat em player.tal e envia, e quem age é o cliente.
+ *
+ * Um stat só entra aqui se o servidor genuinamente não tiver o que fazer com
+ * ele. Na dúvida, é caso de ligar no servidor, não de listar aqui: esta lista
+ * é um buraco na rede de proteção, e cada entrada precisa dizer onde o efeito
+ * realmente mora para alguém poder conferir.
+ */
+const EFEITO_NO_CLIENTE = {
+  // Visão do barco (res_lamparina): o mesmo número entra no `omni_range` de um
+  // OmniLight3D e no `clear_radius` do shader da névoa local.
+  // NewSeaGodot/scripts/main.gd::_apply_vision_talent() lê o nível e chama
+  // Player.set_vision_bonus(). Os dois são decisão de render — o servidor não
+  // tem lamparina para iluminar nem névoa para desenhar.
+  vision_boost_flat: 'NewSeaGodot/scripts/main.gd::_apply_vision_talent',
+};
+
+/** O jogo consome este stat de alguma das formas conhecidas? */
 function consumidoPeloJogo(stat) {
   const fn = LEITOR[stat];
   if (fn && new RegExp('[._]' + fn + '\\s*\\(').test(CODIGO)) return true;
@@ -135,6 +158,7 @@ function consumidoPeloJogo(stat) {
   if (new RegExp('tal\\??\\.' + stat + '\\b').test(CODIGO)) return true;
   const legado = CAMPO_LEGADO[stat];
   if (legado && new RegExp('\\.' + legado + '\\b').test(CODIGO)) return true;
+  if (EFEITO_NO_CLIENTE[stat]) return true;
   return false;
 }
 
