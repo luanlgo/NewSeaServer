@@ -1,8 +1,9 @@
 {
-    "version":  "0.1.27",
-    "date":  "2026-08-26",
+    "version":  "0.1.28",
+    "date":  "2026-09-05",
     "changelog":  [
-                      "[v0.1.27] - 2026-08-26",
+                      "[v0.1.28] - 2026-09-05",
+                      "release: v0.1.27",
                       "feat(ilhas,guildas): conquista, imposto e a coleta semanal — e a escala de producao de volta",
                       "release: v0.1.26",
                       "release: v0.1.25",
@@ -11,15 +12,14 @@
                       "release: v0.1.24",
                       "feat(espolio,piratas,diario,leilao): a leva acumulada do servidor",
                       "balance(talentos): degraus de custo mais suaves no comeco da arvore",
-                      "release: v0.1.23",
-                      "fix(publicar): parar de injetar a URL no config.gd do jogo"
+                      "release: v0.1.23"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.27/SeaOfCode.exe",
-                      "sha256":  "8f65a5c796fe5a3da41a2f25454cdea7b27852df5500bfa30fa5b2363f2a48f9",
-                      "size":  828470376
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.28/SeaOfCode.exe",
+                      "sha256":  "7c732f5fbcd512d7a5212bbef08d5b75ec2e90f357b8dbdf6faab6d134196fcb",
+                      "size":  842123912
                   }
               ]
 }
