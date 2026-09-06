@@ -17,9 +17,19 @@ const BONUS_NPC_DEFS = {
   // trás — o chefe tier 1 tinha menos vida que um NPC comum do mapa 4.
   //
   // `hpMin/hpMax` faz DUAS coisas: é a vida do chefe E a vida do navio que ele
-  // dropa (ver rollBonusShip). Os valores de agora são do Luang e miram o navio:
-  // 70–100 mil abre acima do Fancy (70.000), que é o melhor navio comprável —
-  // antes o prêmio da masmorra era um downgrade do que se compra com ouro.
+  // dropa (ver rollBonusShip). Mexer aqui move os DOIS ao mesmo tempo.
+  //
+  // 2026-09-06 (pedido do Luang): as três faixas desceram para 60–65 / 65–70 /
+  // 70–75 mil, com os canhões acompanhando em 60–65 / 65–70 / 70–75. Os chefes
+  // estavam duros demais, e o preço é conhecido: a régua anterior (70–100 mil)
+  // existia para o prêmio abrir ACIMA do Fancy (70.000 de vida, 70k de ouro na
+  // loja), e agora só o tier 3 encosta nele. Em VIDA os tiers 1 e 2 passam a
+  // ficar abaixo do que se compra com ouro; quem segura o prêmio de pé é o
+  // canhão (60–75 contra os 60 do Whydah, o melhor comprável) mais o `isElite`
+  // — 10 vagas de curandeiro em vez de 5 e 3 velas.
+  //
+  // ⚠️ A rolagem é `Math.pow(random, 3)`: ela AMONTOA perto do mínimo. Na
+  // prática o que cai é quase sempre o piso da faixa, não a média dela.
   colossal_ghost_pirate_galleon: {
     id:             'colossal_ghost_pirate_galleon',
     name:           'Colossal Ghost Pirate Galleon',
@@ -40,8 +50,8 @@ const BONUS_NPC_DEFS = {
     shipDropId:     'colossal_ghost_pirate_galleon',
     shipDropChance: 0.03,
     stats: {
-      hpMin:     70000, hpMax:     80000,
-      cannonMin: 60,    cannonMax: 70,     // slots do NAVIO DROPADO (não do NPC)
+      hpMin:     60000, hpMax:     65000,
+      cannonMin: 60,    cannonMax: 65,     // slots do NAVIO DROPADO (não do NPC)
       dmgMin:    1000,  dmgMax:    1400,   // ≈300× mapa-1 por salva (2 proj × 1200 = 2400)
     },
   },
@@ -64,8 +74,8 @@ const BONUS_NPC_DEFS = {
     shipDropId:     'massive_imperial_warship',
     shipDropChance: 0.02,
     stats: {
-      hpMin:     80000, hpMax:     90000,
-      cannonMin: 70,    cannonMax: 80,     // slots do NAVIO DROPADO
+      hpMin:     65000, hpMax:     70000,
+      cannonMin: 65,    cannonMax: 70,     // slots do NAVIO DROPADO
       dmgMin:    1400,  dmgMax:    1800,   // ≈400× mapa-1 por salva (2 × 1600 = 3200)
     },
   },
@@ -88,8 +98,8 @@ const BONUS_NPC_DEFS = {
     shipDropId:     'gigantic_mechanical_pirate_ship',
     shipDropChance: 0.01,
     stats: {
-      hpMin:     90000, hpMax:    100000,
-      cannonMin: 80,    cannonMax: 90,    // slots do NAVIO DROPADO
+      hpMin:     70000, hpMax:     75000,
+      cannonMin: 70,    cannonMax: 75,    // slots do NAVIO DROPADO
       dmgMin:    1900,  dmgMax:    2500,   // ≈500× mapa-1 por salva (2 × 2200 = 4400)
     },
   },
