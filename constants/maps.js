@@ -509,16 +509,15 @@ MAP_DEFS[6] = {
   npc:         null,
   boss: {
     name:        'The Drowned Widow',
-    // ×10 (2026-09-06, pedido do Luang). Ela é a bancada isolada das mecânicas
-    // novas — mapa 6 não tem NPC nenhum — e a luta acabava antes de as quatro
-    // skills dela darem uma volta completa no sorteio. Com 10 M a briga passa a
-    // caber o ciclo inteiro, que é onde dá para LER o chefe.
+    // ×10 pela manhã, ÷5 à tarde (2026-09-06, as duas a pedido do Luang): o
+    // saldo do dia é ×2 sobre o 1 M de ontem. O ×10 existia para a briga caber
+    // o ciclo inteiro das quatro skills dela — a 2 M ela ainda cabe, e o que
+    // sai é a parte da luta que era só barra.
     //
-    // O `regenPerSec` (120) fica como está de propósito: ele era 0,012% da vida
-    // por segundo e virou 0,0012% — encostou de vez em irrelevante, que é o
-    // certo para uma barra deste tamanho. Regen que importa numa vida de 10 M
-    // seria uma corrida de DPS mínimo, e a Viúva não é esse tipo de luta.
-    baseHp:       10000000,
+    // O `regenPerSec` (120) continua onde está: 0,006% da vida por segundo.
+    // Irrelevante, que é o certo para uma barra deste tamanho — regen que
+    // importasse aqui viraria corrida de DPS mínimo, e a Viúva não é essa luta.
+    baseHp:       2000000,
     // Era 0 porque o único golpe dela era o `emerge`, que tinha dano próprio
     // hardcoded. Os ataques de ATTACK_DEFS calculam cannonDmg × damageMult, então
     // com 0 TODOS bateriam por 1 (o piso do Math.max). 60 dá a escala atual:
@@ -528,6 +527,12 @@ MAP_DEFS[6] = {
     regenDelay:    20000,
     killsToSpawn:  0,
     respawnDelay:  3600000, // 1 hora em ms após ser morta
+    // Ela NUNCA deu XP: sem `xpPerKill` o _rollPot do boss-manager devolve 0 e
+    // o xpShare de cada agressor sai zerado — sem erro, sem aviso, e o chefe
+    // mais longo do jogo pagava só dobrão. O número segue a régua dos outros
+    // chefes, que pagam ~0,67 de XP por dobrão mínimo (mapa 2: 300/450; mapa 3:
+    // 1000/1500). 30.000 × 0,67 = 20.000.
+    xpPerKill:     20000,
     dobraoMin:     30000,
     dobraoMax:     60000,
     hullColor:     0x553311,
@@ -872,6 +877,9 @@ MAP_DEFS[10] = {
     regenPerSec:   500,
     regenDelay:    20000,
     killsToSpawn:  100,
+    // Mesmo buraco da Viúva: sem `xpPerKill` o chefe do penúltimo mapa não
+    // pagava XP nenhum. Mesma régua (~0,67 por dobrão mínimo): 15.000 × 0,67.
+    xpPerKill:     10000,
     dobraoMin:     15000,
     dobraoMax:     30000,
     hullColor:     0x3a2008,

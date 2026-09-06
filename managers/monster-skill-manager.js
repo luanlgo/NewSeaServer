@@ -23,6 +23,7 @@ const { MONSTER_SKILLS } = require('../constants/monster_skills');
 const { isInvincible, isSafeAfterRespawn } = require('../utils/invincibility');
 const { applyGoldShield } = require('../utils/gold-shield');
 const shield = require('../utils/shield');
+const { isAnchored } = require('../utils/anchored');
 const { sonarSweep } = require('../utils/sonar-sweep');
 
 class MonsterSkillManager {
@@ -466,6 +467,9 @@ class MonsterSkillManager {
       if (cc.stunMs) e.stunExpires = Math.max(e.stunExpires || 0, now + cc.stunMs);
       if (cc.rootMs) e.stunExpires = Math.max(e.stunExpires || 0, now + cc.rootMs);
     }
+    // Torre não sai do lugar. O empurrão escreve `e.x/e.z` direto, e a torre
+    // não tem como voltar: a posição dela É o slot da ilha. Ver utils/anchored.js.
+    if (isAnchored(e)) return;
     if (cc.pullTo != null && !e.isBoss) {
       // Arrasta na direção do centro, parando a `pullTo` dele.
       const dx = e.x - ox, dz = e.z - oz;
@@ -1163,6 +1167,7 @@ class MonsterSkillManager {
         for (const t2 of fora) {
           const e = t2.e;
           if (e.isBoss) continue;
+          if (isAnchored(e)) continue;   // torre não é arrastada — ver utils/anchored.js
           const dx = e.x - ox, dz = e.z - oz;
           const d  = Math.hypot(dx, dz);
           if (d <= raio || d < 0.001) continue;
@@ -1328,10 +1333,15 @@ class MonsterSkillManager {
       dentro.sort((a, b) =>
         Math.hypot(a.e.x - player.x, a.e.z - player.z) -
         Math.hypot(b.e.x - player.x, b.e.z - player.z));
-      // Prefere quem PODE ser engolido; só cai no chefe se não houver mais nada.
-      const presa = dentro.find(t => !t.e.isBoss) || dentro[0];
+      // Prefere quem PODE ser engolido; só cai no chefe (ou na torre) se não
+      // houver mais nada — assim eles ainda levam as levas de dano.
+      const presa = dentro.find(t => !t.e.isBoss && !isAnchored(t.e)) || dentro[0];
       const e = presa.e;
-      const engolivel = !e.isBoss;
+      // Torre entra na mesma vala do chefe: apanha, mas não sai do lugar. Sem
+      // isto a bocarra COLAVA a torre no casco do jogador leva a leva e depois
+      // a cuspia — a forma mais literal de arrastar uma torre para fora da
+      // ilha. Ver utils/anchored.js.
+      const engolivel = !e.isBoss && !isAnchored(e);
       const fim = Date.now() + hold;
       if (engolivel) {
         e.stunExpires  = Math.max(e.stunExpires || 0, fim);

@@ -57,24 +57,30 @@ const { NPC_SHIP_HULLS } = require('./npc_ships');
 // O ALCANCE (TOWER_RANGE 150 contra 120 do canhão) é decisão de projeto e não
 // escala: a torre enxergar mais longe que o canhão é o que cobra o preço de
 // entrar no anel.
+// ── Escala (2026-09-06, pedido do Luang): vida ×2, dano ×3 ──────────────────
+// ⚠️ ESTA TABELA SÓ VALE PARA TORRE NOVA. A vida e o dano de uma torre viva são
+// DADO SALVO (o JSON de slots da ilha, no banco): `_spawnTowerEntity` lê
+// `slot.hp`/`slot.maxHp` e só cai no `def` como piso. Ou seja, mexer aqui não
+// toca em nenhuma torre que já existe — elas só pegam a escala nova ao serem
+// sorteadas de novo (ilha nova) ou reerguidas pela guilda.
 const TOWER_TYPES = {
   fraca: {
     id: 'fraca', name: 'Torre Fraca', icon: '🗼',
-    hp: 1_000_000, damage: 30_000,
+    hp: 2_000_000, damage: 90_000,
     costGold: 1_000_000, costDobroes: 0,
     weight: 60,
     model: '/models/torres/torreBasica.glb',
   },
   media: {
     id: 'media', name: 'Torre Média', icon: '🏯',
-    hp: 20_000_000, damage: 50_000,
+    hp: 40_000_000, damage: 150_000,
     costGold: 20_000_000, costDobroes: 0,
     weight: 30,
     model: '/models/torres/torreMedia.glb',
   },
   forte: {
     id: 'forte', name: 'Torre Forte', icon: '🏰',
-    hp: 40_000_000, damage: 50_000,
+    hp: 80_000_000, damage: 150_000,
     costGold: 0, costDobroes: 100_000,
     weight: 10,
     model: '/models/torres/torreLendaria.glb',
@@ -88,9 +94,9 @@ const TOWER_TYPES = {
  * cópia é o que faz a suíte gritar. Mexeu na escala de verdade? Mude as duas.
  */
 const TOWER_PROD = {
-  fraca: { hp:  1_000_000, damage: 30_000 },
-  media: { hp: 20_000_000, damage: 50_000 },
-  forte: { hp: 40_000_000, damage: 50_000 },
+  fraca: { hp:  2_000_000, damage:  90_000 },
+  media: { hp: 40_000_000, damage: 150_000 },
+  forte: { hp: 80_000_000, damage: 150_000 },
 };
 
 const TOWER_ORDER = ['fraca', 'media', 'forte'];

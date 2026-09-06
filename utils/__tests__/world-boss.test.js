@@ -83,8 +83,18 @@ describe('os números acompanham o jogo, não a versão de navegador', () => {
   const VIUVA = MAP_DEFS[6].boss;
 
   it('a vida está na faixa do chefe de mapa mais duro', () => {
+    // Teto afrouxado de ×2 para ×5 em 2026-09-06, à tarde: a Viúva caiu de 10 M
+    // para 2 M (pedido do Luang) e o chefe mundial ficou nos 8 M da manhã, ou
+    // seja ×4 dela. Não é o número que está errado — é a banda: o parágrafo
+    // acima diz "mesma ORDEM DE GRANDEZA", e ×4 é a mesma ordem. Apertar em ×2
+    // faria este guarda cobrar uma proporção que ninguém decidiu.
+    //
+    // ⚠️ Fica REGISTRADO que a proporção mudou: o chefe mundial passou a ser
+    // 4× a Viúva, onde de manhã era 0,8×. Se o playtest disser que ele ficou
+    // longo demais, é o `baseHp` dele em exploration.js que desce — não esta
+    // banda, que só existe para pegar erro de casa decimal.
     expect(DEF.baseHp).toBeGreaterThan(VIUVA.baseHp / 4);
-    expect(DEF.baseHp).toBeLessThanOrEqual(VIUVA.baseHp * 2);
+    expect(DEF.baseHp).toBeLessThanOrEqual(VIUVA.baseHp * 5);
   });
 
   it('o dano está na faixa do chefe de mapa mais duro', () => {
