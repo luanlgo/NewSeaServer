@@ -391,10 +391,11 @@ MAP_DEFS[4] = {
   npc: {
     count:        3,
     baseHp:       50000,
-    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
-    // mapas do fim do jogo estavam sendo atravessados sem que a vida
-    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
-    baseDamage:   16000,
+    // ÷2 (2026-09-06, tarde, pedido do Luang): desfaz o ×2 da mesma manhã. O
+    // dobro durou uma sessão e o valor voltou ao que era antes dela. Bosses
+    // continuam fora da conta nos DOIS sentidos — não subiram no ×2 e não
+    // descem aqui, então a distância bicho→chefe agora é a original.
+    baseDamage:   8000,
     fireInterval: 3200,
     names:        'Storm Wyvern',
     hullColor:    0x2a5a3a,
@@ -595,10 +596,11 @@ MAP_DEFS[7] = {
     count:           5,
     noNpcRespawn:    true,
     baseHp:          10000,
-    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
-    // mapas do fim do jogo estavam sendo atravessados sem que a vida
-    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
-    baseDamage:      2400,
+    // ÷2 (2026-09-06, tarde, pedido do Luang): desfaz o ×2 da mesma manhã. O
+    // dobro durou uma sessão e o valor voltou ao que era antes dela. Bosses
+    // continuam fora da conta nos DOIS sentidos — não subiram no ×2 e não
+    // descem aqui, então a distância bicho→chefe agora é a original.
+    baseDamage:      1200,
     fireInterval:    3000,
     cannonCount:     2,
     cannonRange:     120,
@@ -656,10 +658,11 @@ MAP_DEFS[8] = {
     count:           5,
     noNpcRespawn:    true,
     baseHp:          25000,
-    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
-    // mapas do fim do jogo estavam sendo atravessados sem que a vida
-    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
-    baseDamage:      5000,
+    // ÷2 (2026-09-06, tarde, pedido do Luang): desfaz o ×2 da mesma manhã. O
+    // dobro durou uma sessão e o valor voltou ao que era antes dela. Bosses
+    // continuam fora da conta nos DOIS sentidos — não subiram no ×2 e não
+    // descem aqui, então a distância bicho→chefe agora é a original.
+    baseDamage:      2500,
     fireInterval:    3000,
     cannonCount:     4,
     cannonRange:     120,
@@ -750,10 +753,11 @@ MAP_DEFS[9] = {
     count:           5,
     noNpcRespawn:    true,
     baseHp:          40000,
-    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
-    // mapas do fim do jogo estavam sendo atravessados sem que a vida
-    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
-    baseDamage:      7000,
+    // ÷2 (2026-09-06, tarde, pedido do Luang): desfaz o ×2 da mesma manhã. O
+    // dobro durou uma sessão e o valor voltou ao que era antes dela. Bosses
+    // continuam fora da conta nos DOIS sentidos — não subiram no ×2 e não
+    // descem aqui, então a distância bicho→chefe agora é a original.
+    baseDamage:      3500,
     fireInterval:    3000,
     cannonCount:     6,
     cannonRange:     120,
@@ -829,10 +833,11 @@ MAP_DEFS[10] = {
   npc: {
     count:        20,
     baseHp:       140000,
-    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
-    // mapas do fim do jogo estavam sendo atravessados sem que a vida
-    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
-    baseDamage:   30000,
+    // ÷2 (2026-09-06, tarde, pedido do Luang): desfaz o ×2 da mesma manhã. O
+    // dobro durou uma sessão e o valor voltou ao que era antes dela. Bosses
+    // continuam fora da conta nos DOIS sentidos — não subiram no ×2 e não
+    // descem aqui, então a distância bicho→chefe agora é a original.
+    baseDamage:   15000,
     fireInterval: 3000,
     names:        ['Mímico Guardião'],
     hullColor:    0x4a3010,
@@ -1144,10 +1149,11 @@ MAP_DEFS[11] = {
   npc: {
     count:        1,               // apenas o arauto, dentro da arena
     baseHp:       3000000,
-    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
-    // mapas do fim do jogo estavam sendo atravessados sem que a vida
-    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
-    baseDamage:   40000,
+    // ÷2 (2026-09-06, tarde, pedido do Luang): desfaz o ×2 da mesma manhã. O
+    // dobro durou uma sessão e o valor voltou ao que era antes dela. Bosses
+    // continuam fora da conta nos DOIS sentidos — não subiram no ×2 e não
+    // descem aqui, então a distância bicho→chefe agora é a original.
+    baseDamage:   20000,
     fireInterval: 3000,
     names:        'Arauto do Abismo',
     hullColor:    0x1a0a2a,

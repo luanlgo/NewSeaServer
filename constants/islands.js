@@ -318,11 +318,11 @@ const ISLAND_NPC_HULL = {
 const ISLAND_NPC_STATS = {
   count:        12,
   baseHp:       400_000,
-  // ×2 (2026-09-06): mesma leva que dobrou o dano de NPC do mapa 4 em
-  // diante. As três ilhas de guilda são os mapas 12/13/14 e herdam daqui —
-  // deixá-las de fora faria a patrulha das ilhas ser o trecho MAIS fácil do
-  // fim do jogo, logo depois do Mar dos Renegados.
-  baseDamage:   50_000,
+  // ÷2 (2026-09-06, tarde, pedido do Luang): desfaz o ×2 da mesma manhã, junto
+  // com os seis pontos de maps.js. As três ilhas de guilda são os mapas
+  // 12/13/14 e herdam daqui — subiram junto, então descem junto, senão a
+  // patrulha viraria o trecho mais DURO do fim do jogo em vez do mais fácil.
+  baseDamage:   25_000,
   xpPerKill:    900,
   goldMin:      25_000,
   goldMax:      40_000,
