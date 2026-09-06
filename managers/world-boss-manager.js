@@ -15,6 +15,32 @@ class WorldBossManager {
     this._spawnTimer = null; // Rastrear timer de spawn
   }
 
+  /**
+   * O NPCManager de um mapa.
+   *
+   * Antes o world boss só conhecia a lista fixa passada no construtor — que é
+   * `[npcManager, npcManager2]`, ou seja, os mapas 1 e 2 e mais nada. Era isso
+   * que prendia o evento aos dois mapas iniciais: `mapLevel: [4, 6, 10]` no
+   * dado não adiantaria nada, porque `validMaps` daria vazio e o `spawn`
+   * desistiria no `if (!mgr) return null`.
+   *
+   * `resolveManager` é injetado pelo server.js (ensureRegularManager), e ele
+   * CRIA o gerenciador do mapa se ninguém estiver lá — um evento de servidor
+   * não pode depender de haver alguém no mapa antes de ele começar.
+   */
+  mgrFor(level) {
+    if (this.resolveManager) {
+      try { return this.resolveManager(level) || null; } catch { return null; }
+    }
+    return this.npcManagers.find(m => m.zoneLevel === level) || null;
+  }
+
+  /** Mapas em que o evento pode nascer AGORA. */
+  _mapasValidos(def) {
+    const permitidos = def.mapLevel || [1];
+    return permitidos.filter(lvl => this.mgrFor(lvl));
+  }
+
   onZoneBossDead(boss, killerId) {
     this.totalBossKills++;
     const def = WORLD_BOSS_DEF[0];
@@ -26,10 +52,9 @@ class WorldBossManager {
 
         // Pré-calcular o mapa ANTES do anúncio para informar os jogadores
         // onde o boss vai aparecer — evita a percepção de "às vezes aparece, às vezes não"
-        const allowedMaps   = def.mapLevel || [1];
-        const availableMaps = this.npcManagers.map(m => m.zoneLevel);
-        const validMaps     = availableMaps.filter(m => allowedMaps.includes(m));
-        const preMapLvl     = validMaps.length > 0
+        const allowedMaps = def.mapLevel || [1];
+        const validMaps   = this._mapasValidos(def);
+        const preMapLvl   = validMaps.length > 0
           ? validMaps[Math.floor(Math.random() * validMaps.length)]
           : allowedMaps[0];
 
@@ -67,9 +92,8 @@ class WorldBossManager {
 
     // Se mapLvl não foi pré-computado (chamada manual), calcular agora
     if (mapLvl === null) {
-      const allowedMaps   = def.mapLevel || [1];
-      const availableMaps = this.npcManagers.map(m => m.zoneLevel);
-      const validMaps     = availableMaps.filter(m => allowedMaps.includes(m));
+      const allowedMaps = def.mapLevel || [1];
+      const validMaps   = this._mapasValidos(def);
       mapLvl = validMaps.length > 0
         ? validMaps[Math.floor(Math.random() * validMaps.length)]
         : allowedMaps[0];
@@ -139,7 +163,7 @@ class WorldBossManager {
     }, 5 * 60 * 1000);
 
     this.worldBossId = id;
-    const mgr = this.npcManagers.find(m => m.zoneLevel === mapLvl);
+    const mgr = this.mgrFor(mapLvl);
 
     // Guard: se não há manager para o mapa alvo, abortar para não travar worldBossAlive
     if (!mgr) {
@@ -151,6 +175,7 @@ class WorldBossManager {
     }
 
     mgr.npcs.set(id, boss);
+    this._lastMapLevel = mapLvl;
 
     broadcast(this.wss, {
       type: 'world_boss_spawn',
@@ -196,7 +221,7 @@ class WorldBossManager {
     }
     
     // Remover do NPC manager
-    const mgr = this.npcManagers.find(m => m.zoneLevel === boss.mapLevel);
+    const mgr = this.mgrFor(boss.mapLevel);
     if (mgr) {
       mgr.npcs.delete(boss.id);
     }
@@ -289,7 +314,7 @@ class WorldBossManager {
     }
 
     // Remover o boss do NPC manager
-    const mgr = this.npcManagers.find(m => m.zoneLevel === boss.mapLevel);
+    const mgr = this.mgrFor(boss.mapLevel);
     if (mgr) {
       mgr.npcs.delete(boss.id);
     }
@@ -317,7 +342,11 @@ class WorldBossManager {
     
     // Se houver world boss vivo, limpá-lo
     if (this.worldBossAlive && this.worldBossId) {
-      const mgr = this.npcManagers.find(m => m.npcs.has(this.worldBossId));
+      // No destroy o boss pode estar em qualquer mapa permitido, e o
+      // `resolveManager` não deve CRIAR gerenciador durante o desligamento —
+      // procura entre os que já existem.
+      const mgr = (this.npcManagers || []).find(m => m?.npcs?.has(this.worldBossId))
+               || this.mgrFor(this._lastMapLevel);
       if (mgr) {
         const boss = mgr.npcs.get(this.worldBossId);
         if (boss) {

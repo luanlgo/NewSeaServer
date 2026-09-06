@@ -88,9 +88,18 @@ const SHOP = {
     // do sorteio. O balcão é a torneira previsível: cara o bastante para a
     // exploração continuar valendo a pena, disponível o bastante para o upgrade
     // não ficar refém do dado.
-    { id: 'ironPlates', name: 'Chapas de Ferro', icon: '⚙',  price: 1000, currency: 'gold', resource: true,
+    //
+    // ── Chapa e pó passaram a custar DOBRÃO (09/2026) ──────────────────────
+    // Decisão do Luang. Em ouro os dois eram a torneira barata: ouro entra de
+    // todo abate, então bastava caçar meia hora para comprar o que a Mesa de
+    // Exploração levava um dia para sortear — e a Mesa é o sistema que os dois
+    // deviam alimentar. Dobrão é a moeda escassa, e o balcão volta a ser o
+    // atalho caro que era para ser. A pólvora fica em ouro: ela é consumo de
+    // salva, não material de ofício, e cobrar dobrão por tiro mudaria o custo
+    // de atirar, que é outra gaveta.
+    { id: 'ironPlates', name: 'Chapas de Ferro', icon: '⚙',  price: 500, currency: 'dobrao', resource: true,
       desc: 'Ferro batido para reforçar casco e canhão.' },
-    { id: 'goldDust',   name: 'Pó de Ouro',      icon: '✨', price: 500,  currency: 'gold', resource: true,
+    { id: 'goldDust',   name: 'Pó de Ouro',      icon: '✨', price: 100, currency: 'dobrao', resource: true,
       desc: 'O que sobra do ouro fundido. Serve de liga fina nas oficinas.' },
     { id: 'gunpowder',  name: 'Pólvora',         icon: '💣', price: 1000, currency: 'gold', resource: true,
       desc: 'Carga seca para as salvas. Sem ela o canhão é enfeite.' },

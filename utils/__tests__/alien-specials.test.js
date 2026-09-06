@@ -114,6 +114,54 @@ describe('ENGOLIR — tira do lugar, segura e cospe', () => {
     vi.runAllTimers();
     expect(chefe.stunExpires).toBeUndefined();
   });
+
+  // ── Playtest 2026-09-06: "o visual não bate com o dano" ───────────────────
+  // Duas causas somadas, e as duas do mesmo tipo: dado que não conta ao motor o
+  // que o motor faz.
+  it('bicho: UM cast é UMA bocarra — não cinco sobrepostas', () => {
+    // `swallow` roda o PRÓPRIO relógio (5 levas de 400 ms) e não estava no
+    // SELF_RUN: o laço de levas do _beginCast o chamava 5 vezes, cada chamada
+    // abrindo uma bocarra inteira. Eram 25 levas de dano no lugar de 5, e a
+    // presa era re-escolhida a cada 400 ms enquanto o desenho ficava parado.
+    const { npc, ev, am } = fazerBicho('alien_maw_engulf');
+    const v = fazerVitima(0, 20);
+    am.tryAttack(npc, v, [v], MAP);
+    vi.runAllTimers();
+
+    const engoles = ev.filter(e => e.type === 'relic_effect' && e.effect === 'swallow');
+    const cuspidas = ev.filter(e => e.type === 'relic_effect' && e.effect === 'spit_out');
+    const levas = ev.filter(e => e.type === 'npc_attack_hit');
+    expect(engoles, 'mais de uma bocarra no mesmo cast').toHaveLength(1);
+    expect(cuspidas, 'mais de uma cuspida no mesmo cast').toHaveLength(1);
+    expect(levas, 'o dano saiu multiplicado')
+      .toHaveLength(ATTACK_DEFS.alien_maw_engulf.ticks.count);
+  });
+
+  it('as duas faces marcam `atCaster` — o desenho nasce onde o dano é medido', () => {
+    // Os dois motores medem do LANÇADOR (`dist2D(npc, p)` / `player.x`), mas o
+    // cliente ancora círculo no PONTO MIRADO quando não vem a marca. Eram dois
+    // círculos de raio 75 a até 75 un um do outro: dava para estar dentro do
+    // desenho e não tomar nada, e para estar fora dele e tomar.
+    expect(ATTACK_DEFS.alien_maw_engulf.atCaster, 'face de BICHO sem atCaster').toBe(true);
+    expect(RELIC_DEFS.r48.atCaster, 'face de RELÍQUIA sem atCaster').toBe(true);
+  });
+
+  it('bicho: o telegraph vai com atCaster — e o dano confere do BICHO', () => {
+    const { npc, ev, am } = fazerBicho('alien_maw_engulf');
+    // 70 un do bicho: DENTRO do raio 75. Se o círculo fosse medido do ponto
+    // mirado o desenho nasceria em cima dela e o teste não distinguiria nada —
+    // o que importa é a marca que manda o cliente medir do casco do bicho.
+    const v = fazerVitima(0, 70);
+    am.tryAttack(npc, v, [v], MAP);
+
+    const tele = ev.find(e => e.type === 'npc_telegraph');
+    expect(tele.atCaster, 'o cliente ia desenhar no ponto mirado').toBe(true);
+    expect(tele.radius).toBe(ATTACK_DEFS.alien_maw_engulf.radius);
+
+    vi.advanceTimersByTime(ATTACK_DEFS.alien_maw_engulf.castTime + 10);
+    expect(v._swallowedBy, 'estava dentro do raio 75 e não foi engolida')
+      .toBe(npc.id);
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -145,7 +193,12 @@ describe('QUEIMAR MANA — ataca o recurso, não a vida', () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe('SILÊNCIO — trava a relíquia, não o barco', () => {
-  it('bicho: marca o jogador e avisa', () => {
+  // O Coro convergiu em 2026-09-05: as duas faces são a salva de rostos que voa
+  // do casco. O `special: 'silence'` saiu do dado junto — silêncio nunca foi um
+  // jeito de RESOLVER área, é um debuff no acerto. O eixo continua no jogo, só
+  // que agora é cada rosto que encosta em você que o aplica, e só do lado do
+  // bicho (NPC não usa relíquia: na mão do jogador seria texto sem efeito).
+  it('bicho: o rosto que encosta silencia, e avisa', () => {
     const { npc, ev, am } = fazerBicho('alien_boss_face_choir');
     const v = fazerVitima(0, 20);
     am.tryAttack(npc, v, [v], MAP);
@@ -154,19 +207,50 @@ describe('SILÊNCIO — trava a relíquia, não o barco', () => {
     expect(ev.some(e => e.type === 'silenced')).toBe(true);
   });
 
-  it('é CURTO — 2 s, e o telegraph é mais longo que ele', () => {
-    const d = ATTACK_DEFS.alien_boss_face_choir;
-    expect(d.silenceMs).toBeLessThanOrEqual(2000);
-    expect(d.castTime, 'aviso curto demais para um silêncio').toBeGreaterThanOrEqual(1500);
+  it('a relíquia NÃO silencia — só a face do bicho carrega o debuff', () => {
+    expect(RELIC_DEFS.r52.silenceMs).toBeUndefined();
+    expect(ATTACK_DEFS.alien_boss_face_choir.silenceMs).toBeGreaterThan(0);
   });
 
-  it('não trava navegação nem canhão (só marca _silencedUntil)', () => {
-    const { npc, am } = fazerBicho('alien_boss_face_choir');
-    const v = fazerVitima(0, 20);
-    am.tryAttack(npc, v, [v], MAP);
-    vi.runAllTimers();
-    expect(v.stunExpires, 'silêncio não pode atordoar').toBeFalsy();
-    expect(v.slowMult, 'silêncio não pode lentificar').toBeFalsy();
+  it('é CURTO, e a janela para reagir é maior que ele', () => {
+    // A janela não é mais só o cast: os rostos ainda têm de VOAR até você. Mas
+    // o cast sozinho já tem de cobrir o silêncio — se o castigo durar mais que
+    // o aviso, não houve aviso.
+    const d = ATTACK_DEFS.alien_boss_face_choir;
+    expect(d.silenceMs).toBeLessThanOrEqual(2000);
+    expect(d.castTime, 'o silêncio dura mais que o próprio aviso')
+      .toBeGreaterThanOrEqual(d.silenceMs);
+  });
+
+  it('silêncio não é atordoamento — o barco continua respondendo', () => {
+    // `stunChance` do Coro é sorteio POR ROSTO. Travado em 1 (nunca sorteia)
+    // para o teste medir o silêncio sozinho, que é o que ele quer isolar.
+    const sorteio = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    try {
+      const { npc, am } = fazerBicho('alien_boss_face_choir');
+      const v = fazerVitima(0, 20);
+      am.tryAttack(npc, v, [v], MAP);
+      vi.runAllTimers();
+      expect(v._silencedUntil, 'não silenciou').toBeGreaterThan(Date.now());
+      expect(v.stunExpires, 'silêncio não pode atordoar').toBeFalsy();
+      expect(v.slowMult, 'silêncio não pode lentificar').toBeFalsy();
+    } finally {
+      sorteio.mockRestore();
+    }
+  });
+
+  it('o atordoamento existe, mas é do ROSTO e não do silêncio', () => {
+    const sorteio = vi.spyOn(Math, 'random').mockReturnValue(0.0);
+    try {
+      const { npc, am } = fazerBicho('alien_boss_face_choir');
+      const v = fazerVitima(0, 20);
+      am.tryAttack(npc, v, [v], MAP);
+      vi.runAllTimers();
+      expect(v.stunExpires, 'com o sorteio no piso, o rosto tem de atordoar')
+        .toBeGreaterThan(Date.now());
+    } finally {
+      sorteio.mockRestore();
+    }
   });
 });
 

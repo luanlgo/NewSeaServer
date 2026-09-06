@@ -176,6 +176,8 @@ class DBManager {
              run_stock=?,
              tutorial_state=?,
              afk_until=?,
+             wanted_target=?, daily_wanted=?,
+             talent_points=?, daily_missions=?,
              last_seen=NOW()
          WHERE name=?`,
         [
@@ -226,6 +228,10 @@ class DBManager {
           Number(player.inventory?.run || 0),   // RUN da tripulação de piratas
           player.tutorialState || 0,
           player.afkTraining ? (player.afkUntil || null) : null,
+          player.wantedTarget ? JSON.stringify(player.wantedTarget) : null,
+          player.dailyWanted  ? JSON.stringify(player.dailyWanted)  : null,
+          Math.max(0, Math.floor(Number(player.talentPoints) || 0)),
+          player.dailyMissions ? JSON.stringify(player.dailyMissions) : null,
           player.name, // WHERE name=?
         ]
       );
@@ -1083,6 +1089,28 @@ class DBManager {
       // considerava mais em treino, então nada de afk_started/expiração e as
       // horas pagas eram perdidas. afkTraining é derivado desta coluna.
       "ALTER TABLE players ADD COLUMN afk_until BIGINT NULL",
+      // ── Talentos: os pontos LIVRES ────────────────────────────────────────
+      // A árvore (`talents`) sempre foi salva; os pontos ainda NÃO gastos não.
+      // Eles nascem de um reset ou de uma devolução — ou seja, são pontos que o
+      // jogador JÁ PAGOU em moeda — e viviam só na memória do processo. Um
+      // restart do servidor pegava a árvore zerada no banco (o reset salva
+      // isso) e o saldo livre em lugar nenhum: os pontos evaporavam, e a build
+      // guardada passava a acusar "não há pontos suficientes".
+      "ALTER TABLE players ADD COLUMN talent_points INT NOT NULL DEFAULT 0",
+      // ── Missões diárias ───────────────────────────────────────────────────
+      // Mesma história, com um agravante: os handlers CHAMAVAM `db.save` a cada
+      // aceitar/coletar/cancelar, então o código parecia persistir. Sem coluna,
+      // o restart não só apagava o progresso do dia como zerava o `claimed` —
+      // e a recompensa já paga podia ser coletada de novo.
+      "ALTER TABLE players ADD COLUMN daily_missions JSON",
+      // ── Contrato de Procurado (a caçada do Farol) ────────────────────────
+      // A caçada vivia SÓ em memória: um restart do servidor apagava o contrato
+      // aceito e o jogador ficava sem a caçada e sem o limite do dia — o alvo
+      // sumia da tela e nada dizia por quê. As duas colunas andam juntas de
+      // propósito: persistir o contrato sem o limite daria uma caçada extra de
+      // graça a cada reinício.
+      "ALTER TABLE players ADD COLUMN wanted_target JSON",
+      "ALTER TABLE players ADD COLUMN daily_wanted  JSON",
       // ── Conta (cadastro com senha + email + sexo — Session 13) ────────────
       "ALTER TABLE players ADD COLUMN password_hash   VARCHAR(255) DEFAULT NULL",
       "ALTER TABLE players ADD COLUMN email           VARCHAR(255) DEFAULT NULL",
@@ -1125,6 +1153,34 @@ class DBManager {
     await pool.query('UPDATE players SET last_seen = NOW() WHERE name = ?', [name]);
     console.log(`💾 Player loaded: ${name}`);
     return this._parse(rows[0]);
+  }
+
+  /**
+   * Soma pontos de talento LIVRES a uma conta, escrevendo SÓ essa coluna.
+   *
+   * Existe para o scripts/grant_talent_points.js, e é uma escrita cirúrgica de
+   * propósito: `_flush` grava a ficha INTEIRA a partir de um objeto no formato
+   * do jogador em memória (`player.cannons`, `player.activeShip`…), e o que o
+   * `loadOrCreate` devolve é o formato do `_parse` (`equipped.cannons`,
+   * `equipped.ship`…). Passar um ao outro não dá erro nenhum — os campos caem
+   * nos defaults `|| []` e a conta perde canhões equipados, velas, tripulação e
+   * o navio ativo. Ferramenta de manutenção escreve a coluna que veio mexer.
+   *
+   * @param {string} name   nome da conta
+   * @param {number} amount pontos a somar (> 0)
+   * @returns {Promise<{antes:number, depois:number}|null>} null = conta não existe
+   */
+  async addTalentPoints(name, amount) {
+    const n = Math.max(0, Math.floor(Number(amount) || 0));
+    if (!name || n <= 0) return null;
+    const [rows] = await pool.query(
+      'SELECT talent_points FROM players WHERE name = ?', [name]);
+    if (rows.length === 0) return null;
+    const antes  = Math.max(0, Math.floor(Number(rows[0].talent_points) || 0));
+    const depois = antes + n;
+    await pool.query(
+      'UPDATE players SET talent_points = ? WHERE name = ?', [depois, name]);
+    return { antes, depois };
   }
 
   _parse(row) {
@@ -1183,6 +1239,12 @@ class DBManager {
       // `pirates` / `equipped_pirates` que os curandeiros já usavam.
       runStock:     Number(row.run_stock || 0),
       tutorialState: row.tutorial_state || 0,
+      // Contrato de Procurado e o limite diário dele (ver a migração acima).
+      wantedTarget:  row.wanted_target || null,
+      dailyWanted:   row.daily_wanted  || null,
+      // Pontos de talento LIVRES (não gastos) e as missões do dia.
+      talentPoints:  Math.max(0, Math.floor(Number(row.talent_points) || 0)),
+      dailyMissions: row.daily_missions || null,
       // Treino AFK: `afkTraining` é derivado — se o prazo já passou o jogador
       // volta como não-treinando e o tick de expiração o devolve ao mapa.
       afkUntil:     row.afk_until ? Number(row.afk_until) : null,
@@ -1333,6 +1395,8 @@ class DBManager {
         bonus_inventory=?, active_bonus_ship_stats=?,
         tutorial_state=?,
         afk_until=?,
+        wanted_target=?, daily_wanted=?,
+        talent_points=?, daily_missions=?,
         last_seen=NOW()
       WHERE name=?`;
 
@@ -1383,6 +1447,10 @@ class DBManager {
           p.activeBonusShipStats ? JSON.stringify(p.activeBonusShipStats) : null,
           p.tutorialState || 0,
           p.afkTraining ? (p.afkUntil || null) : null,
+          p.wantedTarget ? JSON.stringify(p.wantedTarget) : null,
+          p.dailyWanted  ? JSON.stringify(p.dailyWanted)  : null,
+          Math.max(0, Math.floor(Number(p.talentPoints) || 0)),
+          p.dailyMissions ? JSON.stringify(p.dailyMissions) : null,
           p.name, // WHERE name=?
         ]);
       }));

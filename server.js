@@ -46,10 +46,16 @@ const _resetAttempts    = new Map();     // email → tentativas erradas de cód
 // uma torre e a um barco, e o cliente guarda entidade por id.
 const { sendTo, sendRaw, uid } = require('./utils/helpers');
 const stateBuilder = require('./utils/state-builder');
-const { isInvincible } = require('./utils/invincibility');
+const { isInvincible, isSafeAfterRespawn } = require('./utils/invincibility');
+const shield = require('./utils/shield');
 const { applyAuraBurn } = require('./utils/aura-burn');
+// Posição no ranking PVP → faixa de patente (a medalha do HUD).
+const pvpRank = require('./utils/pvp-rank');
 // Tradução dos 120 talentos em multiplicadores — ver utils/talent-effects.js.
 const fx = require('./utils/talent-effects');
+// `status` marca os talentos que PROCARAM para a barra de status da HUD. O
+// server.js passou a precisar dele quando a Barreira Arcana virou escudo.
+const status = require('./utils/talent-status');
 
 // Interest management do broadcast de estado. Ligado por padrão; AOI_ENABLED=0
 // volta para o broadcast completo (rota de fuga se algo aparecer em produção).
@@ -157,9 +163,11 @@ const {
   CANNON_DEFS,
   AMMO_DEFS,
   MAX_CANNON_SLOTS,
+  CANNON_ACCURACY_MAX,
   SAIL_DEFS,
   MAP_DEFS,
   getPvpZone,
+  pvpZoneAtLeast,
   SHIP_DEFS,
   maxHealersFor,
   PIRATE_DEFS,
@@ -189,8 +197,6 @@ const {
   difficultyDef,
   difficultyRewardMult,
   isDifficultyUnlocked,
-  DAILY_MISSIONS,
-  DAILY_MISSION_COUNT,
   // Ilhas de guilda — `ACTION_VENUE` é a lista explícita do que é taxável.
   ACTION_VENUE,
   ISLAND_BY_MAP,
@@ -208,8 +214,14 @@ const {
   snapshotBuild:        _snapshotBuild,
 } = require('./utils/talent-logic');
 const fxTal = require('./utils/talent-effects');
-const { calcMaxCannons: _calcMaxCannons, trimCannons: _trimCannons } = require('./utils/combat-calc');
+const { calcMaxCannons: _calcMaxCannons, trimCannons: _trimCannons,
+        filterOwnedCannons: _filterOwnedCannons, hasSpareCannon: _hasSpareCannon } = require('./utils/combat-calc');
 const worldState = require('./utils/world-state');
+// Missões do dia: lógica pura (sorteio, saneamento e a montagem do bloco do
+// jogador). Fora do server.js para poder ser testada — e porque o pool GRAVADO
+// passou a mandar no dia, regra que precisa de teste (ver o módulo).
+const { todayDateStr, sanitizeDailyMissions, buildDailyMissions,
+        missionDefById, isMissionInPlayerPool } = require('./utils/daily-missions');
 const { BONUS_DUNGEON_DEFS, BONUS_NPC_DEFS, rollBonusShip,
         waveStatMult, dungeonWaveCount } = require('./constants/bonus_dungeons');
 
@@ -418,6 +430,10 @@ const partyManager      = new PartyManager();
 const petManager        = new PetManager(wss, players, db);
 // Barco de Missões — NPC não-combatente que navega entre os mapas 1–4
 const missionBoatManager = new MissionBoatManager(players, MAP_DEFS);
+
+// O escudo é absorvido em treze pontos de dano diferentes; quem manda o recado
+// para o cliente é UM notificador, injetado aqui. Ver utils/shield.js.
+shield.setNotifier((e, msg) => { if (e && e.ws) sendTo(e.ws, msg); });
 // Clima dinâmico sincronizado por mapa — o servidor cicla e envia no `state`
 const weatherManager     = new WeatherManager(MAP_DEFS);
 // Obstáculos temporários (ex.: Muro de Pedra) — único registro pra TODOS os
@@ -522,7 +538,18 @@ guildManager.onMemberStatsChanged = (p, notify = true) => {
   // ele não zera nada: o handler do cliente usa o valor atual como padrão.
   sendTo(p.ws, { type: 'inventory_update', hp: p.hp, maxHp: p.maxHp });
 };
+// Missões diárias: os managers não podem chamar `progressDailyMission` (ela
+// mora aqui e mexe no bloco do dia do jogador), então recebem o funil por
+// injeção — mesmo padrão do `journal` e do `onPlayerKilled`.
+projectileManager.onMissionStat = (p, stat, n) => progressDailyMission(p, stat, n);
+wreckManager.onMissionStat      = (p, stat, n) => progressDailyMission(p, stat, n);
+petManager.onMissionStat        = (p, stat, n) => progressDailyMission(p, stat, n);
+
 projectileManager.journal = journalManager;
+// Escolta de Ossos: o acerto de canhão precisa chegar ao motor das
+// relíquias para as caveiras saltarem. Mesma injeção do partyManager — são
+// duas instâncias vivas, não módulos, então `require` cruzado não serve.
+projectileManager.monsterSkills = monsterSkillManager;
 attackManager.journal     = journalManager;
 wreckManager.journal      = journalManager;
 
@@ -548,6 +575,8 @@ monsterSkillManager.ctx = {
   sendTo,
   relicDamageFor:   (p, d) => relicDamageFor(p, d),
   relicCanHitPlayer: (c, t) => relicCanHitPlayer(c, t),
+  // O espelho do de cima para NPC: a nau da coleta não é alvo de quem a escolta.
+  relicCanHitNpc:   (c, n) => !isEscortedTaxBoat(n, c),
   grantSkillXp:     (p, skill, amt) => grantSkillXp(p, skill, amt, wss),
   getMapManagerFor: (lvl) => (lvl === 1 ? npcManager : lvl === 2 ? npcManager2 : getMapManager(lvl)),
   onNpcDamaged:     (killer, npc) => _monsterSkillNpcKill(killer, npc),
@@ -680,11 +709,22 @@ function _creditPvpKill(killer, victim) {
   // ── Contrato de Procurado ─────────────────────────────────────────────────
   // Antes do currency_update lá embaixo: assim o saldo que vai para o cliente já
   // inclui o prêmio, em vez de mandar o valor de antes e corrigir depois.
-  if (killer.wantedTarget && killer.wantedTarget.targetId === victim.id) {
-    const wReward = killer.wantedTarget;
+  // Pelo NOME, não pelo id de sessão: o contrato agora é persistido e o alvo
+  // pode ter relogado (ou o servidor ter reiniciado) desde que ele foi aceito —
+  // e nesse caso o id guardado não é mais o dele. Ver o bloco do Procurado.
+  if (killer.wantedTarget && _mesmoNome(killer.wantedTarget.targetName, victim.name)) {
+    // Caçador de Recompensas (res_recompensa) — o talento tinha a função pronta
+    // (`lootMult(..., 'bounty')`) e nenhum dos dois pagadores a chamava.
+    const wMult = fx.lootMult(killer, 'bounty');
+    const wReward = {
+      ...killer.wantedTarget,
+      rewardGold:   Math.round(killer.wantedTarget.rewardGold   * wMult),
+      rewardDobrao: Math.round(killer.wantedTarget.rewardDobrao * wMult),
+    };
     killer.gold    = (killer.gold    || 0) + wReward.rewardGold;
     killer.dobroes = (killer.dobroes || 0) + wReward.rewardDobrao;
     killer.wantedTarget = null;
+    db.save(killer, true).catch(() => {});
     sendTo(killer.ws, {
       type:         'wanted_killed',
       killedName:   wReward.targetName,
@@ -892,6 +932,15 @@ bossManager2.npcs = npcManager2.npcs;
 // 6. World Boss Manager — tracks total zone-boss kills and spawns the World Boss
 const worldBossManager = new WorldBossManager(wss, players, [npcManager, npcManager2]);
 projectileManager.worldBossManager = worldBossManager;
+// O chefe mundial deixou de morar nos mapas 1 e 2 (ver constants/exploration.js).
+// Para nascer no 4, no 6 ou no 10 ele precisa do gerenciador daquele mapa — e
+// precisa que ele EXISTA mesmo que ninguém esteja lá, porque o evento é o que
+// chama as pessoas para o mapa, não o contrário.
+worldBossManager.resolveManager = (level) => {
+  if (level === 1) return npcManager;
+  if (level === 2) return npcManager2;
+  return ensureRegularManager(level)?.npc || null;
+};
 worldBossManager.journal           = journalManager;
 
 // 6b. Frota de Caçadores — evento periódico: 1–3 navios colossais caçam os
@@ -1016,11 +1065,27 @@ function _recalcSails(player) {
 // Sem multiplicador de alcance por talento: o nó que fazia isso (atk_miralonga)
 // virou o Rasga-Velame, que aplica lentidão no acerto. Alcance é o eixo que
 // este jogo não quer esticar — mais alcance só afasta os dois barcos.
+/**
+ * Preço de loja com o desconto do Negociante (res_negociante) já aplicado.
+ *
+ * Um helper porque são OITO balcões (canhão, munição, navio, vela, navio de
+ * elite, upgrade de canhão, loja geral, comida de pet) e o talento existia sem
+ * um único call-site — `fx.shopPriceMult` estava escrito e ninguém chamava.
+ *
+ * NÃO vale para talento (`buy_talent`): o custo de talento sobe com o total
+ * gasto, então descontar ali seria o talento pagando por si mesmo. Nem para
+ * pirata, que já tem o Recrutador — dois talentos no mesmo preço viraria uma
+ * multiplicação escondida.
+ */
+function precoLoja(player, valor) {
+  return Math.max(0, Math.ceil((valor || 0) * fx.shopPriceMult(player)));
+}
+
 function recalcCannons(player) {
   if (!player.cannons.length) {
     player.cannonRange       = 80;
     player.cannonCooldownMax = 5000;
-    player.cannonLifesteal   = 0;
+    player.cannonAccuracy    = 0;
     player.cannonDamage      = 0;
     player.cannonCooldown    = 0;
     player.cannonCritChance  = 0;
@@ -1036,11 +1101,17 @@ function recalcCannons(player) {
   const upgData    = player.cannonUpgradesData || [];
   const c6UpgDefs  = (MAP_DEFS[3]?.market?.items?.[0]?.cannonUpgrades) || [];
 
-  let bestRange = 0, sumCd = 0, bestLifesteal = 0, totalDmg = 0;
+  let bestRange = 0, sumCd = 0, bestAccuracy = 0, totalDmg = 0;
   let equippedC6Count = 0;
-  // Crítico do canhão: "melhor de", mesma convenção do lifesteal — equipar dois
-  // c6 com a Pontaria não dobra a chance, e um c6 sem o upgrade não dilui a de
-  // quem tem (seria o oposto do que "melhorar um canhão" promete).
+  // Crítico e precisão do canhão: "melhor de". Equipar dois c6 com a Pontaria
+  // não dobra a chance, e um c6 sem o upgrade não dilui a de quem tem (seria o
+  // oposto do que "melhorar um canhão" promete).
+  //
+  // Para a PRECISÃO isso tem um efeito que vale dizer em voz alta: o casco todo
+  // atira com a mira do melhor canhão a bordo. É deliberado — a alternativa
+  // (média) faria encher os slots vagos com canhões baratos PIORAR a pontaria
+  // de quem já tinha bons, e "comprar mais canhão me deixou pior" é exatamente
+  // o tipo de regra que ninguém descobre sem planilha.
   let bestCrit = 0, bestCritMult = 0;
 
   debugServer(`[server] recalcCannons for player ${player.name || player.id}: cannons=${JSON.stringify(player.cannons)}`);
@@ -1054,6 +1125,7 @@ function recalcCannons(player) {
     let effectiveRange    = d.range;
     let effectiveCooldown = d.cooldown;
     let effectiveDamage   = d.damage || 0;
+    let effectiveAccuracy = d.accuracy || 0;
 
     // Apply per-instance C6 upgrades
     if (cid === 'c6') {
@@ -1064,6 +1136,7 @@ function recalcCannons(player) {
         if (ud.attackSpeedBonus) effectiveCooldown = Math.max(500, effectiveCooldown + ud.attackSpeedBonus);
         if (ud.rangeBonus)       effectiveRange    += ud.rangeBonus;
         if (ud.damageBonus)      effectiveDamage   = Math.round(effectiveDamage * (1 + ud.damageBonus));
+        if (ud.accuracyBonus)    effectiveAccuracy += ud.accuracyBonus;
         if (ud.critChance && ud.critChance > bestCrit) {
           bestCrit     = ud.critChance;
           bestCritMult = ud.critMult || 1.5;
@@ -1075,13 +1148,17 @@ function recalcCannons(player) {
     debugServer(`[server]   cannon '${cid}' -> range=${effectiveRange}, cooldown=${effectiveCooldown}`);
     bestRange     = Math.max(bestRange, effectiveRange);
     sumCd        += effectiveCooldown;
-    bestLifesteal = Math.max(bestLifesteal, d.lifesteal || 0);
+    bestAccuracy  = Math.max(bestAccuracy, effectiveAccuracy);
     totalDmg     += effectiveDamage;
   });
 
   player.cannonRange       = bestRange;
   player.cannonCooldownMax = Math.round(sumCd / player.cannons.length);
-  player.cannonLifesteal   = Math.min(bestLifesteal, 0.5);
+  // O teto CANNON_ACCURACY_MAX (70%) é do CANHÃO + pesquisa. O Pulso Firme
+  // (atk_deriva) soma depois dele, com teto próprio de 95% — se somasse antes,
+  // o nó cheio não faria nada em quem já comprou a Mira Calibrada.
+  player.cannonAccuracy    = Math.min(0.95,
+    Math.min(bestAccuracy, CANNON_ACCURACY_MAX) + fx.cannonAccuracyBonus(player));
   player.cannonDamage      = Math.round(totalDmg / player.cannons.length);
   player.cannonCooldown    = 0;
   player.cannonCritChance  = Math.min(bestCrit, 0.5);
@@ -1089,7 +1166,7 @@ function recalcCannons(player) {
   // (constants/maps.js) — é lá que mora o número de verdade; estes `|| 1.5` são
   // só o fallback de quem não comprou o upgrade.
   player.cannonCritMult    = bestCritMult || 1.5;
-  debugServer(`[server]   -> result: cannonRange=${player.cannonRange}, cooldownMax=${player.cannonCooldownMax}, lifesteal=${player.cannonLifesteal}`);
+  debugServer(`[server]   -> result: cannonRange=${player.cannonRange}, cooldownMax=${player.cannonCooldownMax}, accuracy=${player.cannonAccuracy}`);
 }
 
 // Total projectiles per salvo
@@ -1253,90 +1330,141 @@ function refreshTalentDerived(player, opts = {}) {
   player.mana = opts.fillMana ? player.maxMana : Math.min(player.mana || 0, player.maxMana);
 }
 
-// ── Missões Diárias ──────────────────────────────────────────────────────────
-function todayDateStr() {
-  return new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
+
+/**
+ * A escolta da coleta não machuca a própria nau.
+ *
+ * O tiro já é aparado dentro do projectile-manager, mas relíquia é outro
+ * caminho de dano — meia dúzia de laços que varrem `projectileManager.npcs` e
+ * subtraem vida direto. Sem esta guarda o membro da guilda dona não afundava o
+ * imposto da semana com o canhão e afundava com o relâmpago.
+ *
+ * Vale também para o congelamento e o atordoamento: amarrar a nau que você
+ * está escoltando é atrasá-la, e a viagem tem prazo (TAX_BOAT_LEG_TIMEOUT_MS).
+ *
+ * @param {object} npc    alvo do laço
+ * @param {object} caster quem conjurou
+ * @returns {boolean} true = pule este alvo
+ */
+function isEscortedTaxBoat(npc, caster) {
+  return !!(npc && npc.isTaxBoat && taxBoatManager.isGuardian(npc, caster));
 }
 
-// Notifica qualquer jogador que esteja caçando `targetPlayer` sobre mudança de mapa
+/**
+ * O bloco `equipped` que o cliente espera — navio, canhões, tripulação, munição
+ * ativa, velas e o deck de relíquias.
+ *
+ * Existe porque ele saía de DOIS lugares com formatos diferentes: o `init`
+ * montava o bloco completo, e o `bonus_ship_activated` mandava um `{ship}`
+ * solto de um `player.equipped` que não existia em mais lugar nenhum. O
+ * cliente SUBSTITUI o dicionário inteiro ao receber (`_player_equipped =
+ * data.get("equipped", …)`), então ativar um navio bônus zerava, na tela, as
+ * velas, os canhões, os piratas e o deck de quem acabou de trocar de navio —
+ * inclusive a contagem de mastros do Armazém, que passava a ler "0 de 3".
+ *
+ * @param {object} player
+ * @returns {object}
+ */
+function _equippedPayload(player) {
+  return {
+    ship:    player.activeShip,
+    cannons: player.cannons,
+    pirates: player.pirates,
+    ammo:    player.currentAmmo,
+    sails:   player.equippedSails || [],
+    relics:  player.relicDeck     || [],
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Contrato de Procurado — a caçada aceita no Farol
+//
+// ── Por que tudo aqui casa por NOME ─────────────────────────────────────────
+// O contrato é persistido (coluna `wanted_target`) e sobrevive ao restart do
+// servidor e ao relogin dos dois lados. O `id` NÃO sobrevive a nada disso: ele
+// é o número da sessão, sorteado a cada conexão. Enquanto o pagamento e as
+// notificações comparavam id, bastava o alvo relogar para a caçada virar um
+// contrato fantasma — o jogador continuava com ele na ficha, afundava o alvo e
+// não recebia nada.
+//
+// O nome de conta é a chave estável do jogo (é a PK da tabela `players`), e a
+// comparação é SEM CAIXA pela mesma razão do login: o MySQL casa `name` numa
+// collation `_ci`, então "bagatinha" e "Bagatinha" são a mesma conta.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Mesmo nome de conta? (sem caixa, como o MySQL casa) */
+function _mesmoNome(a, b) {
+  if (!a || !b) return false;
+  return String(a).localeCompare(String(b), 'pt', { sensitivity: 'base' }) === 0;
+}
+
+/**
+ * O alvo da caçada de `hunter`, se estiver online agora. null se não estiver.
+ *
+ * Tenta pelo `targetId` guardado ANTES de varrer a lista: os blips do minimapa
+ * chamam isto duas vezes por segundo, e uma varredura com `localeCompare` por
+ * caçador seria O(caçadores × jogadores) a 2 Hz. O id é só um atalho — quem
+ * confirma é o nome, e a varredura continua sendo a resposta certa quando o
+ * alvo relogou (id novo) ou o servidor reiniciou (id de outra encarnação).
+ */
+function _wantedTargetOnline(hunter) {
+  const alvo = hunter?.wantedTarget?.targetName;
+  if (!alvo) return null;
+  const porId = players.get(hunter.wantedTarget.targetId);
+  if (porId && porId !== hunter && _mesmoNome(porId.name, alvo)) return porId;
+  for (const p of players.values()) {
+    if (p !== hunter && _mesmoNome(p.name, alvo)) return p;
+  }
+  return null;
+}
+
+/**
+ * O contrato na forma que o cliente desenha (faixa do HUD + marca no minimapa).
+ * `online` é o que separa "ele está no mapa 6" de "ele não está no mar agora" —
+ * sem isso o jogador ficaria varrendo um mapa atrás de quem deslogou.
+ */
+function _wantedPayload(hunter) {
+  const w = hunter?.wantedTarget;
+  if (!w) return null;
+  const vivo = _wantedTargetOnline(hunter);
+  if (vivo) {
+    w.targetId       = vivo.id;              // ressincroniza a sessão do alvo
+    w.targetMapLevel = vivo.mapLevel || 1;
+  }
+  return {
+    targetId:       vivo ? vivo.id : null,
+    targetName:     w.targetName,
+    targetMapLevel: w.targetMapLevel || 1,
+    mapName:        (MAP_DEFS[w.targetMapLevel || 1] || {}).name || '',
+    online:         !!vivo,
+    rewardGold:     w.rewardGold    || 0,
+    rewardDobrao:   w.rewardDobrao  || 0,
+  };
+}
+
+/** Manda o estado atual do contrato para o caçador (ou o fim dele, com null). */
+function _sendWantedState(hunter) {
+  if (!hunter?.ws) return;
+  sendTo(hunter.ws, { type: 'wanted_target_moved', contract: _wantedPayload(hunter) });
+}
+
+/**
+ * Avisa quem estiver caçando `targetPlayer` que algo mudou nele: trocou de
+ * mapa, entrou no jogo ou saiu. Chamado de todo lugar que mexe no mapLevel do
+ * alvo, do login e do disconnect.
+ */
 function _notifyWantedHunters(targetPlayer) {
+  if (!targetPlayer?.name) return;
   players.forEach(hunter => {
-    if (!hunter.wantedTarget || hunter.wantedTarget.targetId !== targetPlayer.id) return;
-    hunter.wantedTarget.targetMapLevel = targetPlayer.mapLevel || 1;
-    sendTo(hunter.ws, {
-      type:           'wanted_target_moved',
-      targetId:       targetPlayer.id,
-      targetMapLevel: targetPlayer.mapLevel || 1,
-    });
+    if (hunter === targetPlayer) return;
+    if (!_mesmoNome(hunter.wantedTarget?.targetName, targetPlayer.name)) return;
+    _sendWantedState(hunter);
   });
 }
 
-// Sorteia N missões do dia (mesmas para todos — seed determinística pela data)
-function getDailyMissionPool() {
-  const allDefs = DAILY_MISSIONS || [];
-  const count   = DAILY_MISSION_COUNT || 5;
-  if (allDefs.length <= count) return allDefs;
-
-  const today = todayDateStr();
-  let seed = today.replace(/-/g, '').split('').reduce((a, c) => a * 31 + c.charCodeAt(0), 7);
-  const next = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return Math.abs(seed); };
-
-  const arr = [...allDefs];
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = next() % (i + 1);
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr.slice(0, count);
-}
-
-// Garante que o jogador tem missões do dia; reseta se for outro dia.
-function buildDailyMissions(player) {
-  const today   = todayDateStr();
-  const pool    = getDailyMissionPool();
-  const poolIds = pool.map(m => m.id);
-
-  // Força reset se: sem dados, data diferente, pool não definido, ou tamanho do pool errado
-  const needsReset = !player.dailyMissions
-    || player.dailyMissions.date !== today
-    || !player.dailyMissions.pool
-    || player.dailyMissions.pool.length !== poolIds.length;
-
-  if (needsReset) {
-    player.dailyMissions = {
-      date:          today,
-      pool:          poolIds,
-      activeMission: null,
-      progress:      Object.fromEntries(pool.map(m => [m.id, 0])),
-      claimed:       Object.fromEntries(pool.map(m => [m.id, false])),
-    };
-  } else {
-    player.dailyMissions.pool = poolIds;
-    for (const m of pool) {
-      if (!(m.id in player.dailyMissions.progress)) {
-        player.dailyMissions.progress[m.id] = 0;
-        player.dailyMissions.claimed[m.id]  = false;
-      }
-    }
-    const validIds = new Set(poolIds);
-    for (const key of Object.keys(player.dailyMissions.progress)) {
-      if (!validIds.has(key)) { delete player.dailyMissions.progress[key]; delete player.dailyMissions.claimed[key]; }
-    }
-    if (player.dailyMissions.activeMission && !validIds.has(player.dailyMissions.activeMission)) {
-      player.dailyMissions.activeMission = null;
-    }
-  }
-
-  return pool.map(m => ({
-    id:       m.id,
-    icon:     m.icon,
-    label:    m.label,
-    target:   m.target,
-    reward:   m.reward,
-    progress: player.dailyMissions.progress[m.id] || 0,
-    claimed:  player.dailyMissions.claimed[m.id]  || false,
-    active:   player.dailyMissions.activeMission  === m.id,
-  }));
-}
+// (getDailyMissionPool / sanitizeDailyMissions / buildDailyMissions moraram
+//  aqui até 2026-09-04 — foram para utils/daily-missions.js, onde dá para
+//  testá-las sem subir o servidor. Ver o require lá em cima.)
 
 // Atualiza progresso APENAS da missão ativa e envia update ao cliente em tempo real
 function progressDailyMission(player, stat, amount = 1) {
@@ -1346,8 +1474,8 @@ function progressDailyMission(player, stat, amount = 1) {
   const activeId  = player.dailyMissions.activeMission;
   if (!activeId) return;
 
-  const pool      = getDailyMissionPool();
-  const activeDef = pool.find(m => m.id === activeId);
+  // Pela FICHA, não pelo sorteio do dia — ver a nota do `missionDefById`.
+  const activeDef = missionDefById(activeId);
   if (!activeDef || activeDef.stat !== stat) return;
   if (player.dailyMissions.claimed[activeId]) return;
 
@@ -1955,6 +2083,7 @@ setInterval(() => {
 
         projectileManager.npcs.forEach(npc => {
           if (npc.dead) return;
+          if (isEscortedTaxBoat(npc, p)) return;
           if (Math.hypot(npc.x - p.x, npc.z - p.z) > aRange) return;
           npc.hp = Math.max(0, npc.hp - aDamage);
           npc.lastDamageTime = now;
@@ -2006,7 +2135,7 @@ setInterval(() => {
         players.forEach(target => {
           if (!relicCanHitPlayer(p, target)) return;
           if (Math.hypot(target.x - p.x, target.z - p.z) > aRange) return;
-          target.hp = Math.max(0, target.hp - aDamage);
+          target.hp = Math.max(0, target.hp - shield.absorb(target, aDamage).dmg);
           target.lastCombatTime = now;
           const tgtStacks = applyAuraBurn(target, p, aDef, aSalvo, now);
           aHits.push({ id: target.id, dmg: aDamage, hp: target.hp, isNPC: false, stacks: tgtStacks });
@@ -2049,12 +2178,26 @@ setInterval(() => {
 
   function processDots(e, isNPC) {
     if (!e.dots || e.dots.length === 0 || e.dead) return;
+    // Queimadura acesa antes de morrer não pode continuar queimando na trégua:
+    // renasce-se com 10% da vida, e dois tiques bastavam para afundar de novo.
+    if (!isNPC && isSafeAfterRespawn(e, now)) { e.dots.length = 0; return; }
     // Névoa Espectral (do jogador ou do pet): invencível também pausa DoT — sem
     // gastar a carga do escudo (ver utils/invincibility.js).
     if (!isNPC && isInvincible(e, now)) return;
     e.dots = e.dots.filter(dot => {
       if (now < dot.next) return true;
-      e.hp = Math.max(0, e.hp - dot.dmg);
+      // A escolta da coleta não queima a própria nau: o tiro dela já não a
+      // acerta, mas uma queimadura acesa ANTES de entrar na guilda continuaria
+      // tiquetaqueando até afundar o imposto da irmandade. O fogo simplesmente
+      // se apaga quando quem o acendeu passou para o lado da escolta.
+      if (isNPC && e.isTaxBoat
+          && taxBoatManager.isGuardian(e, players.get(dot.ownerId))) return false;
+      // Maresia Purificadora (def_maresia): a redução de dano contínuo existia
+      // em damageReduction e este caminho nunca dizia `isDot` — por isso o
+      // talento aparecia na árvore e não fazia nada.
+      const dotDmg = isNPC ? dot.dmg
+                           : fx.applyDamageReduction(e, dot.dmg, { isDot: true, fromNPC: true });
+      e.hp = Math.max(0, e.hp - shield.absorb(e, dotDmg).dmg);
       // Dano de queimadura numa torre ou no barco da coleta conta para a
       // conquista e para o espólio como qualquer outro. Fora daqui, quem
       // derrubasse uma torre com fogo apareceria no ranking com zero.
@@ -2480,6 +2623,14 @@ setInterval(() => {
 // 21 (mapa 10), contra os 200 jogadores. Dos jogadores só vão os do GRUPO
 // (máx. 4): mandar os 200 custaria +30%, oito vezes mais que todos os NPCs.
 const BLIP_RATE_MS = parseInt(process.env.BLIP_RATE_MS) || 500;
+// Espécie do blip — terceiro campo da tupla [x, z, especie]. O cliente escolhe
+// cor e tamanho por ele (ver set_blips em scripts/minimap.gd); espécie
+// desconhecida cai no ponto laranja de NPC, então acrescentar uma aqui não
+// quebra um cliente antigo.
+const BLIP_NPC      = 0;
+const BLIP_BOSS     = 1;
+const BLIP_TAX_BOAT = 2;
+const BLIP_WANTED   = 3;
 setInterval(() => {
   if (players.size === 0) return;
 
@@ -2495,11 +2646,18 @@ setInterval(() => {
       if (!mgr || mgr.destroyed || !mgr.npcs) return;
       mgr.npcs.forEach(n => {
         if (!n || n.dead) return;
-        out.push([Math.round(n.x), Math.round(n.z), n.isBoss ? 1 : 0]);
+        out.push([Math.round(n.x), Math.round(n.z), n.isBoss ? BLIP_BOSS : BLIP_NPC]);
       });
     };
     collect(getMapManager(zone));
     collect(projectileManager.bossManagers.get(zone)); // boss vive em manager próprio
+    // O barco da coleta mora em manager próprio (não é `mgr.npcs` de ninguém) e
+    // por isso nunca aparecia no radar: o evento da semana atravessava quatro
+    // mapas e o jeito de saber que ele passou por perto era esbarrar nele. Vai
+    // com espécie PRÓPRIA — no minimapa ele não é mais um bicho laranja.
+    for (const b of taxBoatManager.snapshotFor(zone)) {
+      out.push([Math.round(b.x), Math.round(b.z), BLIP_TAX_BOAT]);
+    }
     npcFrag.set(zone, JSON.stringify(out));
   }
 
@@ -2520,7 +2678,19 @@ setInterval(() => {
     const gFrag   = gMates.length
       ? JSON.stringify(gMates.map(m => [Math.round(m.x), Math.round(m.z)]))
       : '[]';
-    sendRaw(p.ws, `{"type":"blips","n":${npcFrag.get(zone) || '[]'},"p":${pFrag},"g":${gFrag}}`);
+    // A PRESA do contrato de Procurado, quando está neste mapa. É a única
+    // informação que faz a caçada ser jogável: sem ela o jogador aceita o
+    // contrato, sabe o mapa e depois varre uma área de milhares de unidades
+    // atrás de um barco que se move. Não é um detector geral — sai UM ponto,
+    // do UM alvo que este jogador contratou, e só enquanto ele estiver aqui.
+    let wFrag = '[]';
+    if (p.wantedTarget) {
+      const presa = _wantedTargetOnline(p);
+      if (presa && !presa.dead && (presa.mapLevel || 1) === zone) {
+        wFrag = JSON.stringify([[Math.round(presa.x), Math.round(presa.z), BLIP_WANTED]]);
+      }
+    }
+    sendRaw(p.ws, `{"type":"blips","n":${npcFrag.get(zone) || '[]'},"p":${pFrag},"g":${gFrag},"w":${wFrag}}`);
   });
 }, BLIP_RATE_MS);
 
@@ -2723,6 +2893,12 @@ function pickArchDestination(currentLevel, playerMapXp) {
     const def = MAP_DEFS[lvl];
     if (!def) continue;
     if ((def.xpRequired || 0) > xp) continue;      // além do que o XP do jogador libera
+    // Zona vermelha é SAÍDA, nunca chegada. O destino é sorteado e o jogador
+    // confirma sem saber onde vai cair: mandá-lo para um mapa de PvP total,
+    // onde a morte dropa 10% do ouro dele numa ruína saqueável, seria uma
+    // armadilha — e o Mar dos Renegados não é um lugar protegido que precise do
+    // portal, entra-se nele pelo norte do 6 e do 10 sem gate nenhum.
+    if (pvpZoneAtLeast(lvl, 'red')) continue;
     for (const a of arches) dests.push({ level: lvl, x: a.x, z: a.z });
   }
   if (dests.length === 0) return null;
@@ -2794,8 +2970,11 @@ function handleArchTeleport(p) {
   if (!p || p.dead) return;
   const now = Date.now();
   const sinceCombat = now - (p.lastCombatTime || 0);
-  if (sinceCombat < ARCH_COMBAT_COOLDOWN_MS) {
-    const wait = Math.ceil((ARCH_COMBAT_COOLDOWN_MS - sinceCombat) / 1000);
+  // Passagem Rápida (res_passagem): a única "recarga" que a arcada tem é esta
+  // espera de 30s fora de combate — é ela que o talento encurta.
+  const archCd = ARCH_COMBAT_COOLDOWN_MS * fx.archCooldownMult(p);
+  if (sinceCombat < archCd) {
+    const wait = Math.ceil((archCd - sinceCombat) / 1000);
     sendTo(p.ws, { type: 'teleport_arch_denied', reason: 'combat', wait });
     return;
   }
@@ -3150,6 +3329,7 @@ wss.on('connection', (ws) => {
         case 'cancel_wanted': {
           if (!player) break;
           player.wantedTarget = null;
+          db.save(player, true).catch(() => {});
           sendTo(player.ws, { type: 'wanted_cancelled' });
           break;
         }
@@ -3293,7 +3473,10 @@ wss.on('connection', (ws) => {
 
             // ── Respawn normal ────────────────────────────────────────────────
             const mapSize = getMapSize(player.mapLevel || 1);
-            player.hp             = Math.max(1, Math.floor((player.maxHp || 100) * 0.10));
+            // Volta por Cima (def_retorno): a fração de vida do renascimento é
+            // o que o talento levanta — 10% sem ele, até 40% no nó cheio.
+            player.hp             = Math.max(1, Math.floor((player.maxHp || 100) * fx.respawnHpFrac(player)));
+            shield.clear(player);
             player.dead           = false;
             player._deathResolved = false;   // libera a próxima morte (resolvePlayerDeath)
             player.x              = (Math.random() - 0.5) * mapSize * 0.8;
@@ -3305,12 +3488,22 @@ wss.on('connection', (ws) => {
             player.slowExpires    = 0;
             player.stunExpires    = 0;
             player.dot            = null;
+            // ⚠️ `dot` (singular) é o DoT antigo do player-manager; `dots` é o
+            // ARRAY que o processDots consome, alimentado por munição de fogo e
+            // pelas skills do bestiário. Quando o plural entrou, esta linha não
+            // veio junto — e quem morria queimando renascia queimando.
+            player.dots           = [];
+            // A Bocarra marca a presa e só limpa a marca ao cuspir; quem morre
+            // dentro dela nunca é cuspido, então a marca ficava para sempre.
+            delete player._swallowedBy;
             // Reset cannon so player can fire immediately
             player.cannonCooldown = 0;
             const totalCharges    = playerManager.getSalvoCount(player.cannons) || 1;
             player.cannonCharges  = totalCharges;
             // ── Imunidade pós-respawn: 30 s de safe period ──────────────────
-            const SAFE_MS = 30000;
+            // Trégua (def_tregua) soma no período seguro de sempre. O talento
+            // existia desde a primeira leva e nunca somou em lugar nenhum.
+            const SAFE_MS = 30000 + fx.respawnImmunityBonus(player);
             player.safeUntil = Date.now() + SAFE_MS;
             sendTo(ws, { type: 'respawn', x: player.x, z: player.z, hp: player.hp, maxHp: player.maxHp });
             sendTo(ws, { type: 'cannon_state', charges: totalCharges, maxCharges: totalCharges, cooldown: 0, cooldownMax: player.cannonCooldownMax, homingCharges: 0 });
@@ -3598,7 +3791,7 @@ wss.on('connection', (ws) => {
             sendTo(ws, { type: 'pet_error', reason: 'Item inválido.' });
             break;
           }
-          const totalCost = unitPrice * qty;
+          const totalCost = precoLoja(player, unitPrice * qty);
           if (player.gold < totalCost) {
             sendTo(ws, { type: 'pet_error', reason: `Gold insuficiente (precisa ${totalCost}, tem ${player.gold}).` });
             break;
@@ -3770,6 +3963,11 @@ wss.on('connection', (ws) => {
       addEvent({ type: 'player_leave', id: player.id });
       playerManager.remove(player.id);
       players.delete(player.id);
+      // Quem estava caçando este jogador precisa saber que ele saiu do mar —
+      // senão o caçador varre o mapa da última posição conhecida atrás de um
+      // barco que não está mais lá. Depois do `players.delete` de propósito: é
+      // isso que faz o `_wantedPayload` já responder `online: false`.
+      _notifyWantedHunters(player);
       console.log(`[-] ${player.name} left`);
     }
   });
@@ -3854,17 +4052,50 @@ async function handleLogin(ws, msg) {
   player._dbLoaded = false;
   players.set(player.id, player);
 
-  // ── Sessão única: derruba conexão anterior de mesmo nome (anti-dupe) ────────
+  // ── Sessão única: encerra a sessão anterior (anti-dupe) ────────────────────
+  // Duas coisas derrubam a anterior, e por motivos diferentes:
+  //
+  //  • MESMA CONEXÃO — é o "Sair para o Menu Principal" do cliente. A cena
+  //    recarrega, mas o WebSocket mora num autoload e SOBREVIVE ao reload: o
+  //    login seguinte chega pelo mesmo `ws`. Sem encerrar a anterior ficam DOIS
+  //    jogadores apontando para o mesmo socket, e todo broadcast que varre
+  //    `players` (chat, relíquia, state) sai duas vezes na mesma conexão — o
+  //    cliente escreve a frase duas vezes no chat e dispara a relíquia em dobro.
+  //
+  //  • MESMO NOME noutra conexão — a conta entrou de outro aparelho.
+  //
+  // A comparação de nome é SEM CAIXA de propósito: o MySQL casa `name` numa
+  // collation `_ci`, então "bagatinha" e "Bagatinha" abrem a MESMA conta — mas
+  // o `!==` as tratava como gente diferente e deixava as duas sessões vivas.
+  const _mesmaConta = (a, b) =>
+    String(a).localeCompare(String(b), 'pt', { sensitivity: 'base' }) === 0;
   for (const [pid, other] of players) {
-    if (pid === player.id || other.name !== player.name) continue;
-    console.log(`[login] Derrubando sessão anterior de "${player.name}"`);
-    try { sendTo(other.ws, { type: 'kicked', message: 'Sua conta entrou em outra sessão.' }); } catch (_) {}
+    if (pid === player.id) continue;
+    const mesmaConexao = other.ws === ws;
+    if (!mesmaConexao && !_mesmaConta(other.name, player.name)) continue;
+    console.log(`[login] Encerrando sessão anterior de "${other.name}"`
+      + (mesmaConexao ? ' (mesma conexão — voltou do menu)' : ' (entrou em outra sessão)'));
+    // `playerManager.remove` zera o `other.ws`; guarde o socket ANTES, senão o
+    // `terminate()` lá embaixo vira no-op e a conexão velha nunca fecha.
+    const otherWs = other.ws;
+    // Só avisa quem está do outro lado de OUTRA conexão — nesta aqui o `kicked`
+    // chegaria ao próprio jogador que acabou de pedir para entrar.
+    if (!mesmaConexao) {
+      try { sendTo(otherWs, { type: 'kicked', message: 'Sua conta entrou em outra sessão.' }); } catch (_) {}
+    }
+    // Mesmo encerramento que o `ws.on('close')` faz: sem isto o último minuto
+    // de extrato e o XP que a guilda ainda não recolheu somem com a sessão.
+    journalManager.flushPlayer(other, true);
     if (other._dbLoaded) db.save(other, true).catch(() => {});
+    guildManager.onPlayerLeft(other);
     partyManager.removePlayer(other.id, players);
     partyManager.clearInvites(other.id);
+    // O barco da sessão anterior fica parado na tela de todo mundo sem isto: o
+    // `player_leave` só saía pelo `ws.on('close')`, que aqui não acontece.
+    addEvent({ type: 'player_leave', id: other.id });
     playerManager.remove(other.id);
     players.delete(other.id);
-    try { other.ws?.terminate?.(); } catch (_) {}
+    if (!mesmaConexao) { try { otherWs?.terminate?.(); } catch (_) {} }
   }
 
   // Garante que os managers do mapa do jogador existam
@@ -3907,6 +4138,11 @@ async function handleLogin(ws, msg) {
   // um save do sistema antigo entra aqui com 10 chaves que não existem mais.
   // migrateLegacyTalents apaga essas chaves e devolve o total como pontos livres.
   player.talents       = saved.talents || { totalSpent: 0 };
+  // Os pontos LIVRES (comprados e depois devolvidos por reset/refund). Precisa
+  // vir ANTES das duas migrações abaixo, que fazem `talentPoints += devolvido`
+  // — com o campo ainda indefinido a devolução delas era o único saldo, e o que
+  // o jogador tinha guardado do reset anterior sumia junto.
+  player.talentPoints  = Math.max(0, Math.floor(Number(saved.talentPoints) || 0));
   player.talentBuilds  = Array.isArray(saved.talentBuilds) ? saved.talentBuilds : [];
   const refunded       = _migrateLegacyTalents(player, LEGACY_TALENT_MAP);
   if (refunded > 0) {
@@ -3949,6 +4185,22 @@ async function handleLogin(ws, msg) {
   // valor salvo e sai clampado no maxHp que acabou de ser calculado.
   player.hp = saved.hp != null ? saved.hp : Infinity;
   refreshTalentDerived(player, { fillMana: true });
+
+  // ── Contrato de Procurado ────────────────────────────────────────────────
+  // A caçada e o limite do dia voltam do banco. O `targetId` que veio de lá é
+  // o número de uma sessão que já não existe; quem o ressincroniza é o
+  // `_wantedPayload`, pelo NOME, na hora de mandar o estado para o cliente.
+  // Contrato sem nome (save de antes desta coluna) é descartado — sem nome não
+  // há como pagar a caçada.
+  player.wantedTarget  = saved.wantedTarget?.targetName ? saved.wantedTarget : null;
+  player.dailyWanted   = saved.dailyWanted?.date ? saved.dailyWanted : null;
+  // ── Missões diárias ──────────────────────────────────────────────────────
+  // Progresso E `claimed` do dia. Sem esta linha os handlers salvavam no vazio
+  // (não havia coluna): o restart devolvia o dia zerado e, pior, com todas as
+  // recompensas coletáveis DE NOVO. O `buildDailyMissions` cuida da virada de
+  // data e de pool diferente; aqui só se confere a forma, porque isto vem do
+  // banco como JSON e um objeto torto derrubaria o primeiro `progress[id]`.
+  player.dailyMissions = sanitizeDailyMissions(saved.dailyMissions);
   // Relics
   player.inventory.relics = saved.inventory.relics || [];
   const shipReliqC = SHIP_RELIQC[savedShipId] || {};
@@ -4004,7 +4256,7 @@ async function handleLogin(ws, msg) {
   player.inventory.run = Number(saved.runStock || 0);  // RUN da tripulação (coluna run_stock)
   // Pad cannonUpgradesData to match inventory.cannons length
   while (player.cannonUpgradesData.length < player.inventory.cannons.length) {
-    player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0 });
+    player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0, ac: 0 });
   }
 
   // Pré-carrega os stats do navio bônus ANTES do trim — o limite de canhões
@@ -4018,7 +4270,10 @@ async function handleLogin(ws, msg) {
 
   // Restore equipped cannons from DB (what was equipped last session)
   const savedEquipped = saved.equipped?.cannons || [];
-  player.cannons = savedEquipped.filter(cid => player.inventory.cannons.includes(cid));
+  // Pelo estoque, não pela presença: uma ficha salva com quatro `c6` de um só
+  // (o exploit antigo do equip_cannon_sync, que o db.save gravou) volta no
+  // login ao que a conta de fato tem no porão.
+  player.cannons = _filterOwnedCannons(savedEquipped, player.inventory.cannons);
   // If nothing equipped, equip up to 3 starter cannons from inventory (respect ship limit later)
   if (player.cannons.length === 0) {
     player.cannons = (player.inventory.cannons || []).slice(0, 3);
@@ -4104,6 +4359,9 @@ async function handleLogin(ws, msg) {
     difficulty:   player.difficulty || 0,
     difficulties: DIFFICULTIES,
     tutorialState: player.tutorialState || 0,
+    // A caçada em curso: o cliente desenha a faixa do HUD já no primeiro quadro
+    // em vez de o jogador entrar sem saber que ainda tem contrato aberto.
+    wantedContract: _wantedPayload(player),
     gender:     player.gender || '',
     mapXp:      player.mapXp    || 0,
     mapLevel:   player.mapLevel || 1,
@@ -4123,14 +4381,7 @@ async function handleLogin(ws, msg) {
     })(),
     mapFragments: player.mapFragments || 0,
     activeShip: player.activeShip,    // espelhado no top-level para _get_or_create
-    equipped: {
-      ship:    player.activeShip,
-      cannons: player.cannons,
-      pirates: player.pirates,
-      ammo:    player.currentAmmo,
-      sails:   player.equippedSails || [],
-      relics:  player.relicDeck || [],
-    },
+    equipped: _equippedPayload(player),
     relicInventory:      player.inventory.relics || [],
     relicDeck:           player.relicDeck || [],
     mana:                player.mana,
@@ -4182,6 +4433,16 @@ async function handleLogin(ws, msg) {
 
   // Notifica PetManager que jogador entrou (envia pets selvagens do mapa)
   petManager.onPlayerJoined(player);
+
+  // Patente PVP: fora do `init` porque depende de uma leitura do banco que pode
+  // estar fria. O HUD nasce sem medalha e a recebe no quadro seguinte — o que
+  // não dá para fazer é esperar por ela para entregar o mundo.
+  sweepPvpRank(player);
+
+  // Contrato de Procurado: quem estava caçando ESTE jogador recebe a presa de
+  // volta na faixa do HUD (com a sessão nova, o mapa certo e o `online`). Vale
+  // dos dois lados — o contrato do próprio recém-chegado já foi no `init`.
+  _notifyWantedHunters(player);
   // Corta o excesso de peso no porão e apura a RUN da tripulação
   pirateManager.onPlayerJoined(player);
 
@@ -4346,7 +4607,7 @@ function handleShoot(player, msg) {
 
   projectileManager.spawnSalvo(player, msg.targetX, msg.targetZ);
   // Atacar abre mão da imunidade pós-respawn — não dá pra atirar sob proteção.
-  if (player.safeUntil && Date.now() < player.safeUntil) {
+  if (isSafeAfterRespawn(player)) {
     player.safeUntil = 0;
     sendTo(player.ws, { type: 'safe_period_end' });
   }
@@ -4361,7 +4622,7 @@ function handleBuyCannon(player, msg, ws) {
   const def = CANNON_DEFS[msg.cannonId];
   if (!def) return;
   const qty       = Math.max(1, Math.min(99999, parseInt(msg.qty) || 1));
-  const totalCost = def.price * qty;
+  const totalCost = precoLoja(player, def.price * qty);
   if (def.currency === 'gold') {
     if (player.gold < totalCost) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
     player.gold -= totalCost;
@@ -4376,7 +4637,7 @@ function handleBuyCannon(player, msg, ws) {
   for (let i = 0; i < qty; i++) {
     player.inventory.cannons.push(msg.cannonId);
     // Keep cannonUpgradesData in sync with inventory
-    player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0 });
+    player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0, ac: 0 });
   }
   db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(ws, {
@@ -4392,7 +4653,12 @@ function handleEquipCannon(player, msg, ws) {
   if (!def) return;
 
   if (action === 'add') {
-    if (player.cannons.length < (player.maxCannons || MAX_CANNON_SLOTS)) player.cannons.push(cannonId);
+    // Duas perguntas, e as duas são do servidor: cabe no casco, e sobrou
+    // unidade no porão? A segunda faltava — dava para encher a bordada inteira
+    // de `c6` sem possuir nenhum, um pacote avulso por canhão.
+    const cabe   = player.cannons.length < (player.maxCannons || MAX_CANNON_SLOTS);
+    const possui = _hasSpareCannon(cannonId, player.cannons, player.inventory?.cannons);
+    if (cabe && possui) player.cannons.push(cannonId);
   } else {
     const idx = player.cannons.lastIndexOf(cannonId);
     if (idx !== -1) player.cannons.splice(idx, 1);
@@ -4411,7 +4677,7 @@ function handleEquipCannon(player, msg, ws) {
     cooldown:    0,
     cooldownMax: player.cannonCooldownMax,
     range:       player.cannonRange,
-    lifesteal:   player.cannonLifesteal,
+    accuracy:    player.cannonAccuracy,
   });
 }
 
@@ -4420,8 +4686,9 @@ function handleEquipCannonSync(player, msg, ws) {
     .slice(0, player.maxCannons || MAX_CANNON_SLOTS)
     .filter(cid => CANNON_DEFS[cid]);
 
-  // Only allow cannons that are actually in inventory
-  player.cannons = incoming.filter(cid => player.inventory.cannons.includes(cid));
+  // Só passa o que ele REALMENTE possui — e por UNIDADE, não por existência:
+  // mandar quatro `c6` tendo um só no porão equipa um.
+  player.cannons = _filterOwnedCannons(incoming, player.inventory.cannons);
   recalcCannons(player);
   const shots = salvoCount(player);
   db.save(player, true).catch(e => console.error('Save error:', e));
@@ -4435,7 +4702,7 @@ function handleEquipCannonSync(player, msg, ws) {
     cooldown:    0,
     cooldownMax: player.cannonCooldownMax,
     range:       player.cannonRange,
-    lifesteal:   player.cannonLifesteal,
+    accuracy:    player.cannonAccuracy,
   });
 }
 
@@ -4485,9 +4752,12 @@ function handleCancelActiveMission(player) {
 function handleAcceptDailyMission(player, msg) {
   const acceptId = msg.id;
   buildDailyMissions(player);
-  const pool2   = getDailyMissionPool();
-  const accDef  = pool2.find(m => m.id === acceptId);
-  if (!accDef) { sendTo(player.ws, { type: 'daily_mission_error', id: acceptId, reason: 'not_found' }); return; }
+  // A posse é o quadro DO JOGADOR, não o sorteio do dia: os dois só coincidem
+  // enquanto ninguém edita constants/missions.js no meio do dia.
+  const accDef = missionDefById(acceptId);
+  if (!accDef || !isMissionInPlayerPool(player, acceptId)) {
+    sendTo(player.ws, { type: 'daily_mission_error', id: acceptId, reason: 'not_found' }); return;
+  }
   if (player.dailyMissions.claimed[acceptId]) { sendTo(player.ws, { type: 'daily_mission_error', id: acceptId, reason: 'already_claimed' }); return; }
   player.dailyMissions.activeMission = acceptId;
   db.save(player).catch(e => console.error('Save error:', e));
@@ -4506,9 +4776,8 @@ function handleAcceptDailyMission(player, msg) {
 function handleClaimDailyMission(player, msg) {
   const missionId = msg.id;
   buildDailyMissions(player);
-  const pool3  = getDailyMissionPool();
-  const def    = pool3.find(m => m.id === missionId);
-  if (!def) return;
+  const def = missionDefById(missionId);
+  if (!def || !isMissionInPlayerPool(player, missionId)) return;
   const curProg = player.dailyMissions.progress[missionId] || 0;
   const curClaim = player.dailyMissions.claimed[missionId];
   if (curClaim || curProg < def.target) {
@@ -4518,11 +4787,19 @@ function handleClaimDailyMission(player, msg) {
   player.dailyMissions.claimed[missionId] = true;
   // Limpar missão ativa após coletar
   if (player.dailyMissions.activeMission === missionId) player.dailyMissions.activeMission = null;
-  if (def.reward.gold)   player.gold    = (player.gold    || 0) + def.reward.gold;
-  if (def.reward.dobrao) player.dobroes = (player.dobroes || 0) + def.reward.dobrao;
+  // Contratado (res_contratado): a recompensa da missão passa pelo lootMult,
+  // que é onde o talento sempre esperou por um call-site.
+  const mMult   = fx.lootMult(player, 'mission');
+  const mGold   = Math.round((def.reward.gold   || 0) * mMult);
+  const mDobrao = Math.round((def.reward.dobrao || 0) * mMult);
+  if (mGold)   player.gold    = (player.gold    || 0) + mGold;
+  if (mDobrao) player.dobroes = (player.dobroes || 0) + mDobrao;
   // missionsCompleted: completar OUTRA missão diária enquanto mission_streak está ativa
   if (missionId !== 'mission_streak') progressDailyMission(player, 'missionsCompleted', 1);
-  db.save(player).catch(e => console.error('Save error:', e));
+  // URGENTE, como qualquer outro pagamento: a recompensa já entrou na carteira,
+  // e a marca de "coletada" não pode ficar num save adiado. Uma queda dentro da
+  // janela do debounce devolveria a missão coletável com o ouro já pago.
+  db.save(player, true).catch(e => console.error('Save error:', e));
   journalManager.log(player, JOURNAL_KINDS.REWARD, {
     source:  'missao',
     gold:    def.reward.gold   || 0,
@@ -4549,18 +4826,62 @@ async function handleGetRanking(player, msg) {
   try {
     const rankings = await db.getRankings();
     const list = rankings[category] || [];
-    const myIdx = list.findIndex(e => e.name === player.name);
+    const myRank = pvpRank.rankInList(list, player.name);
     sendTo(player.ws, {
       type:    'ranking',
       category,
       entries: list.slice(0, 50).map((e, i) => ({ rank: i + 1, ...e })),
-      you:     myIdx >= 0 ? { rank: myIdx + 1, ...list[myIdx] } : null,
+      you:     myRank > 0 ? { rank: myRank, ...list[myRank - 1] } : null,
     });
   } catch (err) {
     console.error('[RANKING] Error building ranking:', err);
     sendTo(player.ws, { type: 'ranking', category, entries: [], you: null });
   }
 }
+
+// ── Patente PVP (a medalha ao lado do globo de vida) ─────────────────────────
+//
+// A plaqueta mostra a faixa, não a posição, então o pacote só sai quando a FAIXA
+// muda: entre o 26º e o 50º lugar a medalha é a mesma, e mandar a cada varredura
+// seria tráfego para redesenhar a mesma imagem.
+//
+// O campo `_pvpTier` que isto carimba é o mesmo que vai no snapshot do
+// playerManager — é por ele que a medalha dos OUTROS jogadores chega ao cliente.
+// Esta mensagem serve ao barco do próprio jogador, que não pode depender do
+// broadcast (o registro completo dele só sai quando ele se mexe).
+//
+// A varredura serve todos os jogadores de uma vez porque `getRankings()` é
+// cacheado por 60 s — a segunda chamada dentro da janela não toca no MySQL.
+// Pelo mesmo motivo a patente pode demorar até ~1 min (mais os 15 s do
+// batchSave) para reagir a um abate; é ranking, não placar de combate.
+async function sweepPvpRank(only = null) {
+  if (players.size === 0) return;
+  let lista;
+  try {
+    lista = (await db.getRankings()).pvp_kills || [];
+  } catch (err) {
+    console.error('[PATENTE] Falha ao ler o ranking:', err);
+    return;
+  }
+  // Índice por nome: a lista tem uma linha por jogador com abate de PVP no
+  // banco inteiro, e procurar nela uma vez por jogador online seria o produto
+  // dos dois conjuntos a cada 20 s.
+  const posicao = new Map();
+  for (let i = 0; i < lista.length; i++) {
+    if (lista[i] && lista[i].name) posicao.set(lista[i].name, i + 1);
+  }
+  const alvos = only ? [only] : [...players.values()];
+  for (const p of alvos) {
+    if (!p || !p.name || !p._dbLoaded) continue;
+    const rank = posicao.get(p.name) || 0;
+    const tier = pvpRank.tierOfRank(rank);
+    if (p._pvpTier === tier) continue;
+    p._pvpTier = tier;
+    sendTo(p.ws, { type: 'pvp_rank', tier });
+  }
+}
+
+setInterval(() => { sweepPvpRank(); }, 20000);
 
 function handleRequestWanted(player) {
   // Verificar se o limite diário já foi usado
@@ -4586,6 +4907,10 @@ function handleRequestWanted(player) {
     type:           'wanted_list',
     players:        wantedList,
     dailyLimitUsed: player.dailyWanted.used,
+    // O contrato em curso vai junto: quem reabre o Farol depois de um restart
+    // precisa ver de quem é a caçada que já tem, e não uma lista nova que ele
+    // não pode aceitar porque o limite do dia já foi gasto.
+    contract:       _wantedPayload(player),
   });
 }
 
@@ -4614,6 +4939,10 @@ function handleAcceptWanted(player, msg) {
     rewardGold:   Math.max(200, 100 * (wTarget.npcKills || 0)),
     rewardDobrao: Math.max(20,   10   * (wTarget.npcKills || 0)),
   };
+  // Urgente: o contrato e o limite do dia só valem alguma coisa se estiverem no
+  // banco quando o servidor cair. O batchSave de 15 s não serve — o aperto é
+  // justamente entre aceitar a caçada e o próximo restart.
+  db.save(player, true).catch(e => console.error('Save error:', e));
   sendTo(player.ws, {
     type:         'wanted_accepted',
     targetId:     wTarget.id,
@@ -4621,6 +4950,7 @@ function handleAcceptWanted(player, msg) {
     targetMapLevel: wTarget.mapLevel || 1,
     rewardGold:   player.wantedTarget.rewardGold,
     rewardDobrao: player.wantedTarget.rewardDobrao,
+    contract:     _wantedPayload(player),
   });
 }
 
@@ -4673,7 +5003,7 @@ function handleBuyGeneralItem(player, msg, ws) {
     return;
   }
 
-  const total    = item.price * qty;
+  const total    = precoLoja(player, item.price * qty);
   const currency = item.currency === 'dobrao' ? 'dobroes' : 'gold';
   if ((player[currency] || 0) < total) {
     sendTo(ws, {
@@ -4727,7 +5057,7 @@ function handleBuyAmmo(player, msg, ws) {
   const item = SHOP.ammo[msg.ammoId];
   if (!item) return;
   const packs     = Math.max(1, Math.min(99999, parseInt(msg.packs) || 1)); // how many packs (1 pack = item.qty) — sem limite prático; custo limita
-  const totalCost = item.price * packs;
+  const totalCost = precoLoja(player, item.price * packs);
   if (item.currency === 'gold') {
     if (player.gold < totalCost) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
     player.gold -= totalCost;
@@ -4752,16 +5082,19 @@ function handleBuyNavio(player, msg, ws) {
   // Navio bônus está no SHIP_DEFS para herdar as regras de navio, mas não se
   // compra: sem esta linha um pacote forjado o levaria pelo `price` da tabela.
   if (ship.bonusOnly) { sendTo(ws, { type:'error', message:'Este navio não está à venda' }); return; }
+  // Negociante desconta aqui, uma vez, e todo o resto do handler
+  // (checagem de saldo, débito e livro-caixa) usa o mesmo número.
+  const preco = precoLoja(player, ship.price);
   if (player.inventory.ships.includes(msg.shipId)) { sendTo(ws, { type:'error', message:'Já possui este navio' }); return; }
   if (ship.currency === 'gold') {
-    if (player.gold < ship.price) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
-    player.gold -= ship.price;
+    if (player.gold < preco) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
+    player.gold -= preco;
   } else if (ship.currency === 'dobrao') {
-    if (player.dobroes < ship.price) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
-    player.dobroes -= ship.price;
+    if (player.dobroes < preco) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
+    player.dobroes -= preco;
   }
   journalManager.ledger(player, JOURNAL_SRC.SHOP_SHIP,
-    ship.currency === 'dobrao' ? { dobroes: -ship.price } : { gold: -ship.price },
+    ship.currency === 'dobrao' ? { dobroes: -preco } : { gold: -preco },
     { detail: ship.name || msg.shipId });
   player.inventory.ships.push(msg.shipId);
   progressDailyMission(player, 'itemsBought', 1);
@@ -4772,15 +5105,18 @@ function handleBuyNavio(player, msg, ws) {
 function handleBuyVela(player, msg, ws) {
   const sail = SAIL_DEFS[msg.sailId];
   if (!sail) return;
+  // Negociante desconta aqui, uma vez, e todo o resto do handler
+  // (checagem de saldo, débito e livro-caixa) usa o mesmo número.
+  const preco = precoLoja(player, sail.price);
   if (sail.currency === 'gold') {
-    if (player.gold < sail.price) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
-    player.gold -= sail.price;
+    if (player.gold < preco) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
+    player.gold -= preco;
   } else if (sail.currency === 'dobrao') {
-    if (player.dobroes < sail.price) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
-    player.dobroes -= sail.price;
+    if (player.dobroes < preco) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
+    player.dobroes -= preco;
   }
   journalManager.ledger(player, JOURNAL_SRC.SHOP_SAIL,
-    sail.currency === 'dobrao' ? { dobroes: -sail.price } : { gold: -sail.price },
+    sail.currency === 'dobrao' ? { dobroes: -preco } : { gold: -preco },
     { detail: sail.name || msg.sailId });
   player.inventory.sails.push(msg.sailId);
   progressDailyMission(player, 'itemsBought', 1);
@@ -4794,16 +5130,19 @@ function handleBuyEliteShip(player, msg, ws) {
   if (!shipDef || !shipDef.isElite) { sendTo(ws, { type:'error', message:'Navio elite não encontrado' }); return; }
   // Os navios bônus também são isElite — a flag abaixo é o que os separa da loja.
   if (shipDef.bonusOnly) { sendTo(ws, { type:'error', message:'Este navio não está à venda' }); return; }
+  // Negociante desconta aqui, uma vez, e todo o resto do handler
+  // (checagem de saldo, débito e livro-caixa) usa o mesmo número.
+  const preco = precoLoja(player, shipDef.price);
   if (player.inventory.ships.includes(msg.shipId)) { sendTo(ws, { type:'error', message:'Já possui este navio' }); return; }
   if (shipDef.currency === 'dobrao') {
-    if (player.dobroes < shipDef.price) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
-    player.dobroes -= shipDef.price;
+    if (player.dobroes < preco) { sendTo(ws, { type:'error', message:'Dobrões insuficientes' }); return; }
+    player.dobroes -= preco;
   } else {
-    if (player.gold < shipDef.price) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
-    player.gold -= shipDef.price;
+    if (player.gold < preco) { sendTo(ws, { type:'error', message:'Ouro insuficiente' }); return; }
+    player.gold -= preco;
   }
   journalManager.ledger(player, JOURNAL_SRC.SHOP_ELITE,
-    shipDef.currency === 'dobrao' ? { dobroes: -shipDef.price } : { gold: -shipDef.price },
+    shipDef.currency === 'dobrao' ? { dobroes: -preco } : { gold: -preco },
     { detail: shipDef.name || msg.shipId });
   player.inventory.ships.push(msg.shipId);
   progressDailyMission(player, 'itemsBought', 1);
@@ -5003,6 +5342,9 @@ function handleBuyCannonUpgrade(player, msg, ws) {
   const cupgList = (MAP_DEFS[3]?.market?.items?.[0]?.cannonUpgrades) || [];
   const cupgDef  = cupgList.find(u => u.id === msg.upgradeId);
   if (!cupgDef) { sendTo(ws, { type:'error', message:'Upgrade de canhão não encontrado' }); return; }
+  // Negociante desconta aqui, uma vez, e todo o resto do handler
+  // (checagem de saldo, débito e livro-caixa) usa o mesmo número.
+  const preco = precoLoja(player, cupgDef.price);
   const idx = parseInt(msg.cannonIdx);
   if (isNaN(idx) || idx < 0 || idx >= player.inventory.cannons.length) {
     sendTo(ws, { type:'error', message:'Índice de canhão inválido' }); return;
@@ -5012,26 +5354,26 @@ function handleBuyCannonUpgrade(player, msg, ws) {
   }
   if (!player.cannonUpgradesData) player.cannonUpgradesData = [];
   while (player.cannonUpgradesData.length <= idx) {
-    player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0 });
+    player.cannonUpgradesData.push({ as: 0, cr: 0, dm: 0, ac: 0 });
   }
   const upg = player.cannonUpgradesData[idx];
   const field = cupgDef.field; // 'as', 'cr' ou 'dm'
   if (upg[field]) { sendTo(ws, { type:'error', message:'Upgrade já aplicado neste canhão' }); return; }
   // ── Custo primário (gold ou dobrao) ─────────────────────────────────────
   if (cupgDef.currency === 'gold') {
-    if ((player.gold || 0) < cupgDef.price) { sendTo(ws, { type:'error', message:`Ouro insuficiente! Necessário: ${cupgDef.price.toLocaleString()}` }); return; }
-    player.gold -= cupgDef.price;
+    if ((player.gold || 0) < preco) { sendTo(ws, { type:'error', message:`Ouro insuficiente! Necessário: ${preco.toLocaleString()}` }); return; }
+    player.gold -= preco;
   } else {
-    if ((player.dobroes || 0) < cupgDef.price) { sendTo(ws, { type:'error', message:`Dobrões insuficientes! Necessário: ${cupgDef.price.toLocaleString()}` }); return; }
-    player.dobroes -= cupgDef.price;
+    if ((player.dobroes || 0) < preco) { sendTo(ws, { type:'error', message:`Dobrões insuficientes! Necessário: ${preco.toLocaleString()}` }); return; }
+    player.dobroes -= preco;
   }
   // ── Custo em chapas (sempre exigido quando ironPlatesPrice > 0) ──────────
   const platesNeeded = cupgDef.ironPlatesPrice || 0;
   if (platesNeeded > 0) {
     if ((player.ironPlates || 0) < platesNeeded) {
       // Devolver o custo primário já deduzido antes de retornar erro
-      if (cupgDef.currency === 'gold') player.gold += cupgDef.price;
-      else player.dobroes += cupgDef.price;
+      if (cupgDef.currency === 'gold') player.gold += preco;
+      else player.dobroes += preco;
       sendTo(ws, { type:'error', message:`Chapas insuficientes! Necessário: ${platesNeeded}` }); return;
     }
     player.ironPlates -= platesNeeded;
@@ -5039,7 +5381,7 @@ function handleBuyCannonUpgrade(player, msg, ws) {
   // Depois do estorno das chapas, de propósito: a compra que volta atrás não
   // pode deixar rastro de gasto no extrato.
   journalManager.ledger(player, JOURNAL_SRC.UPG_CANNON,
-    cupgDef.currency === 'gold' ? { gold: -cupgDef.price } : { dobroes: -cupgDef.price },
+    cupgDef.currency === 'gold' ? { gold: -preco } : { dobroes: -preco },
     { detail: cupgDef.name || cupgDef.id });
   upg[field] = 1;
   recalcCannons(player);
@@ -5061,7 +5403,7 @@ function handleBuyCannonUpgrade(player, msg, ws) {
     cooldown:    0,
     cooldownMax: player.cannonCooldownMax,
     range:       player.cannonRange,
-    lifesteal:   player.cannonLifesteal,
+    accuracy:    player.cannonAccuracy,
   });
 }
 
@@ -5134,6 +5476,13 @@ function handleExploreMap(player, msg, ws) {
       { dobroes: -(timesDobroes * FRAGMENT_EXPLORE_FALLBACK_COST) }, { n: timesDobroes });
   }
 
+  // Talentos da Mesa (os dois entraram em 09/2026, no lugar de dois nós que
+  // prometiam sistemas inexistentes):
+  //   Garimpeiro          — multiplica a QUANTIDADE de cada prêmio;
+  //   Escavação Profunda  — chance de a exploração render uma rolagem a mais.
+  const explMult   = fx.explorationLootMult(player);
+  const explDouble = fx.explorationDoubleChance(player);
+
   // Pre-compute weight sum
   const totalWeight = EXPLORATION_REWARDS.reduce((s, r) => s + r.weight, 0);
 
@@ -5149,23 +5498,37 @@ function handleExploreMap(player, msg, ws) {
       player.dobroes -= FRAGMENT_EXPLORE_FALLBACK_COST;
     }
 
-    // Weighted random pick
-    let roll = Math.random() * totalWeight;
-    let reward = EXPLORATION_REWARDS[0];
-    for (const entry of EXPLORATION_REWARDS) { roll -= entry.weight; if (roll <= 0) { reward = entry; break; } }
+    // A rolagem extra é uma exploração inteira de graça, não meia — por isso é
+    // um laço e não um multiplicador: ela pode cair numa PEÇA de mapa bônus,
+    // que multiplicar quantidade nunca daria.
+    const rolagens = 1 + (Math.random() < explDouble ? 1 : 0);
+    for (let r = 0; r < rolagens; r++) {
+      // Weighted random pick
+      let roll = Math.random() * totalWeight;
+      let reward = EXPLORATION_REWARDS[0];
+      for (const entry of EXPLORATION_REWARDS) { roll -= entry.weight; if (roll <= 0) { reward = entry; break; } }
 
-    if (reward.type === 'ammo') {
-      ammoResults[reward.id] = (ammoResults[reward.id] || 0) + reward.qty;
-      player.inventory.ammo[reward.id] = (player.inventory.ammo[reward.id] || 0) + reward.qty;
-    } else if (reward.type === 'mapPiece') {
-      if (!player.mapPieces) player.mapPieces = {};
-      player.mapPieces[reward.id] = (player.mapPieces[reward.id] || 0) + reward.qty;
-      resourceResults[reward.id] = (resourceResults[reward.id] || 0) + reward.qty;
-      console.log(`[EXPLORE] mapPiece rolled: ${reward.id} → total: ${player.mapPieces[reward.id]}`);
-    } else {
-      // resource: ironPlates | goldDust | gunpowder | mapFragments
-      resourceResults[reward.id] = (resourceResults[reward.id] || 0) + reward.qty;
-      player[reward.id] = (player[reward.id] || 0) + reward.qty;
+      // Peça de mapa bônus NÃO escala com o Garimpeiro: ela vem de 1 em 1 e o
+      // desbloqueio conta peças inteiras — multiplicar aqui mexeria no número
+      // de explorações que abre cada masmorra, que é balanceamento de outra
+      // gaveta. Munição e recurso escalam.
+      const qty = reward.type === 'mapPiece'
+        ? reward.qty
+        : Math.max(reward.qty, Math.round(reward.qty * explMult));
+
+      if (reward.type === 'ammo') {
+        ammoResults[reward.id] = (ammoResults[reward.id] || 0) + qty;
+        player.inventory.ammo[reward.id] = (player.inventory.ammo[reward.id] || 0) + qty;
+      } else if (reward.type === 'mapPiece') {
+        if (!player.mapPieces) player.mapPieces = {};
+        player.mapPieces[reward.id] = (player.mapPieces[reward.id] || 0) + qty;
+        resourceResults[reward.id] = (resourceResults[reward.id] || 0) + qty;
+        console.log(`[EXPLORE] mapPiece rolled: ${reward.id} → total: ${player.mapPieces[reward.id]}`);
+      } else {
+        // resource: ironPlates | goldDust | gunpowder | mapFragments
+        resourceResults[reward.id] = (resourceResults[reward.id] || 0) + qty;
+        player[reward.id] = (player[reward.id] || 0) + qty;
+      }
     }
   }
 
@@ -5343,6 +5706,7 @@ function handleLeaveBonusMap(player, ws) {
 // ──────────────────────────────────────────────────────────────────────────────
 function sendBonusDungeonComplete(player, mapLevel, mapDef) {
   const ws = player.ws;
+  progressDailyMission(player, 'bonusDungeons', 1);   // missão diária
 
   // ── Ler definições da dungeon (BONUS_DUNGEON_DEFS) ─────────────────────────
   const dungeonId  = mapDef.bonusMapId;
@@ -5380,7 +5744,10 @@ function sendBonusDungeonComplete(player, mapLevel, mapDef) {
   let shipDrop = null;
   // A chance também escala com a dificuldade, com teto em 1 (100%): passar de
   // 1 não significa "dois navios", só desperdiça o multiplicador em silêncio.
-  const chanceNavio = Math.min(1, (npcDef?.shipDropChance ?? 0.02) * rewMult);
+  // Sorte de Marujo (res_sorte) entra aqui: o navio raro da masmorra é o único
+  // "drop raro" que o jogo tem hoje, e o talento nunca teve onde valer.
+  const chanceNavio = Math.min(1, (npcDef?.shipDropChance ?? 0.02) * rewMult
+                                   * fx.lootMult(player, 'rare'));
   if (npcDef && Math.random() < chanceNavio) {
     shipDrop = rollBonusShip(npcDef);
     if (!player.bonusShips) player.bonusShips = [];
@@ -5528,15 +5895,12 @@ function handleActivateBonusShip(player, msg, ws) {
   const tr = _trimCannons(player.cannons, player.maxCannons);
   if (tr.removed > 0) { player.cannons = tr.cannons; recalcCannons(player); }
 
-  if (!player.equipped) player.equipped = {};
-  player.equipped.ship = player.activeShip;
-
   db.save(player, true).catch(e => console.error('Save error (activate bonus ship):', e));
   sendTo(ws, {
     type:                  'bonus_ship_activated',
     instanceId,
     ship,
-    equipped:              player.equipped,
+    equipped:              _equippedPayload(player),
     hp:                    player.hp,
     maxHp:                 player.maxHp,
     maxCannons:            player.maxCannons,
@@ -5736,10 +6100,20 @@ function relicDamageFor(player, relicDef) {
 // dos canhões (projectile-manager.hit) e o da aura: mesmo mapa e PvP habilitado
 // na zona. Sem o check de mapa, uma AoE lançada no mapa 1 acertava quem estivesse
 // em coordenada parecida em QUALQUER outro mapa — inclusive nos PvE e no treino.
+/**
+ * Este jogador pode ser alvo de uma relíquia agora?
+ *
+ * ⚠️ O período seguro pós-renascimento entrou aqui em 09/2026, e a ausência
+ * dele era uma brecha GERAL, não um bug de uma relíquia: este é o portão que o
+ * `_targetsIn` do motor do bestiário usa, ou seja, o portão das 34 relíquias e
+ * das 34 skills de bicho. Canhão, torre e ataque em área respeitavam a trégua;
+ * relíquia não respeitava nenhuma.
+ */
 function relicCanHitPlayer(caster, target) {
   if (!target || target.dead) return false;
   if (target.id === caster.id) return false;
   if ((target.mapLevel || 1) !== (caster.mapLevel || 1)) return false;
+  if (isSafeAfterRespawn(target)) return false;
   return getPvpZone(target.mapLevel || 1) !== 'green';
 }
 
@@ -5880,6 +6254,10 @@ function handleUseRelic(player, msg) {
     return;
   }
   player.mana = Math.max(0, player.mana - manaCost);
+  // Missão diária: aqui, e não no topo da função, porque só neste ponto a
+  // relíquia foi PAGA e vai mesmo sair — contar no clique daria progresso por
+  // apertar a tecla sem mana, sem alvo ou em recarga.
+  progressDailyMission(player, 'relicsUsed', 1);
   // Memória do último golpe de bestiário: é o que o Espelho do Córtex do boss
   // copia. Só relíquia de monstro entra — as r1..r13 não têm versão de bicho,
   // e o espelho precisa de algo que o ATTACK_DEFS saiba lançar.
@@ -5912,13 +6290,13 @@ function handleUseRelic(player, msg) {
   // ── Talentos pendurados no USO da relíquia ──────────────────────────────
   // Impulso Arcano (velocidade por 4s) e Barreira Arcana (escudo em vida).
   fx.onRelicUsed(player, now2);
+  // ⚠️ Isto era `player.hp += barreira` — CURA, não escudo. Com a vida cheia
+  // não fazia nada e nada aparecia na tela ("nem percebi esse escudo", playtest
+  // de 09/2026). Agora é absorção com prazo, e o próprio módulo avisa o dono.
   const barreira = fx.relicShieldAmount(player);
-  if (barreira > 0 && player.hp < player.maxHp) {
-    player.hp = Math.min(player.maxHp, player.hp + barreira);
-    addEvent({
-      type: 'heal', targetId: player.id, amount: barreira,
-      x: player.x, z: player.z, hp: player.hp, maxHp: player.maxHp,
-    }, player.mapLevel || 1);
+  if (barreira > 0) {
+    status.noteHit(player, 'shield_on_relic_pct', now2);
+    shield.grant(player, barreira, fx.RELIC_SHIELD_MS, now2);
   }
 
   // Apply effect
@@ -5994,6 +6372,7 @@ function handleUseRelic(player, msg) {
       const hits2 = [];
       projectileManager.npcs.forEach(npc => {
         if (npc.dead) return;
+        if (isEscortedTaxBoat(npc, player)) return;
         const d = Math.hypot(npc.x - lx, npc.z - lz);
         if (d <= LIGHTNING_RADIUS) {
           npc.hp = Math.max(0, npc.hp - relicDamage);
@@ -6042,7 +6421,7 @@ function handleUseRelic(player, msg) {
         if (!relicCanHitPlayer(player, p)) return;
         const d = Math.hypot(p.x - lx, p.z - lz);
         if (d <= LIGHTNING_RADIUS) {
-          p.hp = Math.max(0, p.hp - relicDamage);
+          p.hp = Math.max(0, p.hp - shield.absorb(p, relicDamage).dmg);
           p.lastCombatTime = Date.now();
           hits2.push({ id: p.id, hp: p.hp, isNPC: false, dmg: relicDamage });
           resolvePlayerDeath(p, player.id);
@@ -6101,6 +6480,7 @@ function handleUseRelic(player, msg) {
       const hitsRkt = [];
       projectileManager.npcs.forEach(npc => {
         if (npc.dead) return;
+        if (isEscortedTaxBoat(npc, player)) return;
         if (Math.hypot(npc.x - rkTx, npc.z - rkTz) <= ROCKET_RADIUS) {
           npc.hp = Math.max(0, npc.hp - relicDamage);
           npc.lastDamageTime = Date.now();
@@ -6147,7 +6527,7 @@ function handleUseRelic(player, msg) {
       players.forEach(p => {
         if (!relicCanHitPlayer(player, p)) return;
         if (Math.hypot(p.x - rkTx, p.z - rkTz) <= ROCKET_RADIUS) {
-          p.hp = Math.max(0, p.hp - relicDamage);
+          p.hp = Math.max(0, p.hp - shield.absorb(p, relicDamage).dmg);
           p.lastCombatTime = Date.now();
           hitsRkt.push({ id: p.id, hp: p.hp, isNPC: false, dmg: relicDamage });
           resolvePlayerDeath(p, player.id);
@@ -6217,6 +6597,7 @@ function handleUseRelic(player, msg) {
       const hitsM = [];
       projectileManager.npcs.forEach(npc => {
         if (npc.dead) return;
+        if (isEscortedTaxBoat(npc, player)) return;
         if (Math.hypot(npc.x - hitPos.x, npc.z - hitPos.z) > radius) return;
         npc.hp = Math.max(0, npc.hp - dmg);
         npc.lastDamageTime = Date.now();
@@ -6261,7 +6642,7 @@ function handleUseRelic(player, msg) {
       players.forEach(p => {
         if (!relicCanHitPlayer(player, p)) return;
         if (Math.hypot(p.x - hitPos.x, p.z - hitPos.z) <= radius) {
-          p.hp = Math.max(0, p.hp - dmg);
+          p.hp = Math.max(0, p.hp - shield.absorb(p, dmg).dmg);
           p.lastCombatTime = Date.now();
           hitsM.push({ id: p.id, hp: p.hp, isNPC: false, dmg });
           resolvePlayerDeath(p, player.id);
@@ -6364,6 +6745,7 @@ function handleUseRelic(player, msg) {
     const iceSlowMult = 1 - (relicDef.slowPct || 0.5);
     projectileManager.npcs.forEach(npc => {
       if (npc.dead) return;
+      if (isEscortedTaxBoat(npc, player)) return;
       if (Math.hypot(npc.x - gx, npc.z - gz) > ICE_RADIUS) return;
       npc.slowMult    = Math.min(npc.slowMult || 1, iceSlowMult);
       npc.slowExpires = now2 + iceZoneMs;
@@ -6383,6 +6765,7 @@ function handleUseRelic(player, msg) {
       const hitsIce = [];
       projectileManager.npcs.forEach(npc => {
         if (npc.dead) return;
+        if (isEscortedTaxBoat(npc, player)) return;
         if (npc.isBoss) return; // bosses são imunes a stun (só levam o slow)
         if (Math.hypot(npc.x - gx, npc.z - gz) > ICE_RADIUS) return;
         npc.stunExpires = tnow + iceStunMs;
@@ -6522,6 +6905,7 @@ function handleUseRelic(player, msg) {
       let best = null; // { ent, isNPC, t } — menor t = 1º na linha
       projectileManager.npcs.forEach(npc => {
         if (npc.dead) return;
+        if (isEscortedTaxBoat(npc, player)) return;
         if ((npc.mapLevel || 1) !== hMapLvl) return;
         const { d, t } = distToSeg(npc.x, npc.z);
         if (d > H_RADIUS || t < 0.05) return;
@@ -6540,7 +6924,7 @@ function handleUseRelic(player, msg) {
       const target = best.ent;
       const hDmg = relicDamageFor(player, relicDef);
       const hitsH = [];
-      target.hp = Math.max(0, target.hp - hDmg);
+      target.hp = Math.max(0, target.hp - shield.absorb(target, hDmg).dmg);
       if (best.isNPC) {
         const npc = target;
         npc.lastDamageTime = Date.now();
@@ -6678,6 +7062,7 @@ function relicAreaDamage(player, cx, cz, radius, dmg) {
   const hits = [];
   projectileManager.npcs.forEach(npc => {
     if (npc.dead) return;
+    if (isEscortedTaxBoat(npc, player)) return;
     if ((npc.mapLevel || 1) !== (player.mapLevel || 1)) return;
     if (Math.hypot(npc.x - cx, npc.z - cz) > radius) return;
     npc.hp = Math.max(0, npc.hp - dmg);
@@ -6723,7 +7108,7 @@ function relicAreaDamage(player, cx, cz, radius, dmg) {
   players.forEach(p => {
     if (!relicCanHitPlayer(player, p)) return;
     if (Math.hypot(p.x - cx, p.z - cz) > radius) return;
-    p.hp = Math.max(0, p.hp - dmg);
+    p.hp = Math.max(0, p.hp - shield.absorb(p, dmg).dmg);
     p.lastCombatTime = Date.now();
     hits.push({ id: p.id, hp: p.hp, isNPC: false, dmg });
     resolvePlayerDeath(p, player.id);
@@ -6738,6 +7123,8 @@ function handlePetUseRelic(player, msg) {
   const v = petManager.validateOffensiveUse(player, msg);
   if (!v) return;
   const { relicDef, npc, dmgMult } = v;
+  // Só as três legadas usam este número direto; as do bestiario escalam o dado
+  // (ver petScaledRelic) porque o motor delas calcula o dano por conta própria.
   const dmg    = Math.max(1, Math.round(relicDamageFor(player, relicDef) * dmgMult));
   console.log(`[Pet] 🐾 ${player.name}: pet usou ${relicDef.effect} em ${npc.id} (dmg=${dmg}, mult=${dmgMult.toFixed(2)})`);
   const tx     = npc.x, tz = npc.z;
@@ -6772,7 +7159,45 @@ function handlePetUseRelic(player, msg) {
       const hits = relicAreaDamage(player, tx, tz, radius, dmg);
       addEvent({ type: 'meteor_strike', x: tx, z: tz, radius, hits, fromPet: true }, mapLvl);
     }, PET_CAST_MS);
+
+  } else if (relicDef.effect === 'monster_skill') {
+    // ── As 20 do bestiario, num branch só ─────────────────────────────
+    // Elas têm motor próprio (MonsterSkillManager), então o pet não precisa de um
+    // `if` por relíquia como as três de cima — quem sabe desenhar cada uma é o
+    // mesmo código que já desenha na mão do jogador. Quais entram está em
+    // PET_RELIC_IDS (constants/monster_skills.js), e o critério lá é duro: nada
+    // que precise saber ONDE O PET ESTÁ, porque o servidor não sabe.
+    //
+    // O `castMs` da relíquia é PRESERVADO, diferente das três legadas que caem
+    // para 250 ms. Encurtar seria um buff: essas vinte são área com telegraph de
+    // verdade, e tirar o aviso das lendárias faria o pet acertar o que o dono
+    // não acerta. O custo do pet continua sendo a recarga longa, não a esquiva.
+    monsterSkillManager.cast(player, petScaledRelic(relicDef, dmgMult), tx, tz, {});
   }
+}
+
+/**
+ * A relíquia como o PET a lança: mesma forma, mesmo tempo, dano reduzido.
+ *
+ * O `dmgMult` do pet não tem por onde entrar no `MonsterSkillManager.cast()` —
+ * ele chama `relicDamageFor(player, def)` lá dentro, com o def cru. Em vez de
+ * abrir um parâmetro no motor (que todo `special` teria de repassar, e são
+ * quinze), a escala entra no DADO: uma cópia do def com as frações de dano já
+ * multiplicadas. O motor continua sem saber que existe pet.
+ *
+ * São três frações porque são três as que o `_resolveOnce` lê como "o pct":
+ * `damagePct` (golpe único), `ticks.pct` (que SUBSTITUI o damagePct quando há
+ * levas) e `burstPct` (a pancada de abertura da canalizada). As derivadas
+ * — `orbTickPct`, `dot.pct` — são fração do damagePct e escalam junto sozinhas.
+ */
+function petScaledRelic(def, mult) {
+  const out = { ...def };
+  if (out.damagePct) out.damagePct *= mult;
+  if (out.burstPct)  out.burstPct  *= mult;
+  if (out.ticks && out.ticks.pct != null) {
+    out.ticks = { ...out.ticks, pct: out.ticks.pct * mult };
+  }
+  return out;
 }
 
 function handleBuyTalent(player, msg) {

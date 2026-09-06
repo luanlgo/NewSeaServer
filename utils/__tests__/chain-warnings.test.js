@@ -20,13 +20,16 @@ const AttackManager = require('../../managers/attack-manager.js');
 const { ATTACK_DEFS } = require('../../constants/index.js');
 
 const MAP = 1;
-const DEF = ATTACK_DEFS.drake_chain_arc;
+// A cadeia ficou sem dono quando o Rastilho convergiu (2026-09-05) — nenhuma
+// skill do jogo usa `shape: 'chain'` hoje. O def sintético do chain-fixture
+// mantém a geometria coberta em vez de deixar o motor apodrecer calado.
+const { CHAIN_ID, CHAIN_DEF: DEF } = require('./chain-fixture.js');
 
 function fazerNpc() {
   return {
     id: 'npc1', x: 0, z: 0, dead: false,
     hp: 1000, maxHp: 1000, cannonDmg: 100, dmgMult: 1,
-    attacks: ['drake_chain_arc'], _attackCooldowns: {},
+    attacks: [CHAIN_ID], _attackCooldowns: {},
   };
 }
 

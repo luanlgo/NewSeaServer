@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calcMaxCannons, trimCannons } from '../combat-calc.js';
+import { calcMaxCannons, trimCannons, filterOwnedCannons, hasSpareCannon } from '../combat-calc.js';
 import { applyTalentBonuses } from '../talent-logic.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -199,5 +199,198 @@ describe('Integração — troca de navio com talento de canhão', () => {
     const trimResult = trimCannons(cannonsEquipados, maxDepois);
     expect(trimResult.removed).toBe(10);
     expect(trimResult.cannons).toHaveLength(5);
+  });
+});
+
+// ── filterOwnedCannons — estoque, não presença ────────────────────────────────
+//
+// O `equip_cannon_sync` validava com `inventory.includes(cid)`, que responde
+// "sim" para CADA elemento da lista: um pacote forjado com quatro `c6` passava
+// inteiro por quem possuía um só. Duplicação de canhão, e canhão é o eixo de
+// dano do jogo. A régua agora é contagem — cada unidade equipada desconta uma
+// do porão.
+
+describe('filterOwnedCannons — quantidade possuída', () => {
+  it('EXPLOIT: 4x c6 com apenas 1 no inventário equipa 1', () => {
+    const incoming  = ['c6', 'c6', 'c6', 'c6'];
+    const inventory = ['c1', 'c1', 'c1', 'c6'];
+    expect(filterOwnedCannons(incoming, inventory)).toEqual(['c6']);
+  });
+
+  it('EXPLOIT: 20x c6 sem nenhum no inventário equipa 0', () => {
+    const incoming = Array.from({ length: 20 }, () => 'c6');
+    expect(filterOwnedCannons(incoming, ['c1', 'c1', 'c1'])).toEqual([]);
+  });
+
+  it('uso normal: equipar exatamente o que possui passa inteiro', () => {
+    const inventory = ['c1', 'c1', 'c1'];
+    expect(filterOwnedCannons(['c1', 'c1', 'c1'], inventory)).toEqual(['c1', 'c1', 'c1']);
+  });
+
+  it('uso normal: equipar menos do que possui passa inteiro', () => {
+    expect(filterOwnedCannons(['c1'], ['c1', 'c1', 'c1'])).toEqual(['c1']);
+  });
+
+  it('desconta por id: 2 c6 + 1 c1 possuídos, pedido de 4 c6 + 2 c1', () => {
+    const incoming  = ['c6', 'c6', 'c6', 'c6', 'c1', 'c1'];
+    const inventory = ['c6', 'c6', 'c1'];
+    expect(filterOwnedCannons(incoming, inventory)).toEqual(['c6', 'c6', 'c1']);
+  });
+
+  it('preserva a ORDEM do pedido (o slot 0 do jogador continua o slot 0)', () => {
+    const incoming  = ['c1', 'c6', 'c1', 'c6'];
+    const inventory = ['c6', 'c1', 'c1'];
+    expect(filterOwnedCannons(incoming, inventory)).toEqual(['c1', 'c6', 'c1']);
+  });
+
+  it('canhão que não está no inventário cai', () => {
+    expect(filterOwnedCannons(['c1', 'c6'], ['c1'])).toEqual(['c1']);
+  });
+
+  it('não modifica os arrays recebidos', () => {
+    const incoming  = ['c6', 'c6'];
+    const inventory = ['c6'];
+    filterOwnedCannons(incoming, inventory);
+    expect(incoming).toEqual(['c6', 'c6']);
+    expect(inventory).toEqual(['c6']);
+  });
+
+  it('inventário vazio: nada passa', () => {
+    expect(filterOwnedCannons(['c1', 'c6'], [])).toEqual([]);
+  });
+
+  it('pedido vazio: lista vazia', () => {
+    expect(filterOwnedCannons([], ['c1', 'c1'])).toEqual([]);
+  });
+
+  it('argumentos ausentes não estouram', () => {
+    expect(filterOwnedCannons(undefined, undefined)).toEqual([]);
+    expect(filterOwnedCannons(['c1'], undefined)).toEqual([]);
+    expect(filterOwnedCannons(undefined, ['c1'])).toEqual([]);
+  });
+});
+
+// ── hasSpareCannon — o equip_cannon avulso ────────────────────────────────────
+//
+// O 'add' do `equip_cannon` empilhava sem olhar o inventário nenhuma vez: era
+// pior que o sync, porque nem exigia possuir a primeira unidade.
+
+describe('hasSpareCannon — sobrou unidade no porão?', () => {
+  it('possui 3, equipou 2 → pode equipar mais um', () => {
+    expect(hasSpareCannon('c1', ['c1', 'c1'], ['c1', 'c1', 'c1'])).toBe(true);
+  });
+
+  it('possui 3, equipou 3 → não pode', () => {
+    expect(hasSpareCannon('c1', ['c1', 'c1', 'c1'], ['c1', 'c1', 'c1'])).toBe(false);
+  });
+
+  it('EXPLOIT: não possui nenhum → não pode equipar o primeiro', () => {
+    expect(hasSpareCannon('c6', [], ['c1', 'c1', 'c1'])).toBe(false);
+  });
+
+  it('conta por id — c1 equipado não gasta a vaga do c6', () => {
+    expect(hasSpareCannon('c6', ['c1', 'c1'], ['c1', 'c1', 'c6'])).toBe(true);
+  });
+
+  it('inventário ausente não estoura', () => {
+    expect(hasSpareCannon('c6', [], undefined)).toBe(false);
+  });
+});
+
+// ── Integração: os dois caminhos de equipar canhão ────────────────────────────
+
+describe('Integração — pacote forjado não duplica canhão', () => {
+  const CANNON_DEFS = { c1: { id: 'c1' }, c6: { id: 'c6' } };
+
+  /** Espelha handleEquipCannonSync (server.js). */
+  function equipSync(player, msg) {
+    const incoming = (msg.cannons || [])
+      .slice(0, player.maxCannons)
+      .filter(cid => CANNON_DEFS[cid]);
+    player.cannons = filterOwnedCannons(incoming, player.inventory.cannons);
+    return player.cannons;
+  }
+
+  /** Espelha o ramo 'add' de handleEquipCannon (server.js). */
+  function equipAdd(player, cannonId) {
+    if (!CANNON_DEFS[cannonId]) return player.cannons;
+    const cabe   = player.cannons.length < player.maxCannons;
+    const possui = hasSpareCannon(cannonId, player.cannons, player.inventory?.cannons);
+    if (cabe && possui) player.cannons.push(cannonId);
+    return player.cannons;
+  }
+
+  it('equip_cannon_sync com 4x c6 possuindo 1 equipa 1 (não 4)', () => {
+    const player = {
+      maxCannons: 5,
+      cannons:    [],
+      inventory:  { cannons: ['c1', 'c1', 'c1', 'c6'] },
+    };
+    const result = equipSync(player, { type: 'equip_cannon_sync', cannons: ['c6', 'c6', 'c6', 'c6'] });
+    expect(result).toEqual(['c6']);
+    expect(result).toHaveLength(1);
+  });
+
+  it('equip_cannon_sync legítimo do armazém continua funcionando', () => {
+    const player = {
+      maxCannons: 5,
+      cannons:    [],
+      inventory:  { cannons: ['c1', 'c1', 'c1', 'c6', 'c6'] },
+    };
+    // O que _equip_all_cannon manda: tudo o que cabe e é possuído.
+    const result = equipSync(player, { cannons: ['c6', 'c6', 'c1', 'c1', 'c1'] });
+    expect(result).toEqual(['c6', 'c6', 'c1', 'c1', 'c1']);
+  });
+
+  it('id inventado é descartado antes do estoque', () => {
+    const player = { maxCannons: 5, cannons: [], inventory: { cannons: ['c1'] } };
+    expect(equipSync(player, { cannons: ['c99', 'c1'] })).toEqual(['c1']);
+  });
+
+  it('o limite de slots continua valendo junto com o estoque', () => {
+    const player = {
+      maxCannons: 3,
+      cannons:    [],
+      inventory:  { cannons: Array.from({ length: 10 }, () => 'c6') },
+    };
+    const result = equipSync(player, { cannons: Array.from({ length: 10 }, () => 'c6') });
+    expect(result).toHaveLength(3);
+  });
+
+  it('equip_cannon "add" repetido não passa do que possui', () => {
+    const player = {
+      maxCannons: 20,
+      cannons:    [],
+      inventory:  { cannons: ['c6', 'c6', 'c6'] },   // possui 3
+    };
+    for (let i = 0; i < 20; i++) equipAdd(player, 'c6');
+    expect(player.cannons).toEqual(['c6', 'c6', 'c6']);
+  });
+
+  it('equip_cannon "add" sem possuir nenhum não equipa nada', () => {
+    const player = {
+      maxCannons: 20,
+      cannons:    [],
+      inventory:  { cannons: ['c1', 'c1', 'c1'] },
+    };
+    for (let i = 0; i < 20; i++) equipAdd(player, 'c6');
+    expect(player.cannons).toEqual([]);
+  });
+});
+
+// ── Login: a ficha salva também passa pelo estoque ────────────────────────────
+
+describe('Login — equipped_cannons do DB é filtrado por estoque', () => {
+  it('conta já explorada volta ao que realmente possui', () => {
+    // Linha do DB gravada pelo exploit: 4 c6 equipados, 1 c6 no porão.
+    const savedEquipped    = ['c6', 'c6', 'c6', 'c6'];
+    const inventoryCannons = ['c1', 'c1', 'c1', 'c6'];
+    expect(filterOwnedCannons(savedEquipped, inventoryCannons)).toEqual(['c6']);
+  });
+
+  it('ficha legítima atravessa o login intacta', () => {
+    const savedEquipped    = ['c1', 'c1', 'c1'];
+    const inventoryCannons = ['c1', 'c1', 'c1'];
+    expect(filterOwnedCannons(savedEquipped, inventoryCannons)).toEqual(['c1', 'c1', 'c1']);
   });
 });

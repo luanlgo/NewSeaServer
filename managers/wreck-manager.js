@@ -24,6 +24,7 @@
 'use strict';
 
 const { pvpZoneAtLeast } = require('../constants/maps');
+const fx = require('../utils/talent-effects');
 
 const WRECK_TTL_MS   = 10000;  // ruína fica 10 s no mar
 const WRECK_GOLD_PCT = 0.10;   // vítima perde 10% do ouro ao afundar
@@ -73,7 +74,10 @@ class WreckManager {
     // vez de silenciosamente parar de dropar ouro.
     if (!pvpZoneAtLeast(lvl, 'red')) return;
 
-    const loss = Math.floor((player.gold || 0) * WRECK_GOLD_PCT);
+    // Seguro Marítimo (res_seguro) corta o que se perde. O talento tinha a
+    // função `deathPenaltyMult` escrita desde a primeira leva e nenhum call-site
+    // — era um número na árvore que não descontava nada de ninguém.
+    const loss = Math.floor((player.gold || 0) * WRECK_GOLD_PCT * fx.deathPenaltyMult(player));
     if (loss <= 0) return;
 
     player.gold = (player.gold || 0) - loss;
@@ -112,6 +116,8 @@ class WreckManager {
     this.wrecks.delete(wreckId);
     player.gold = (player.gold || 0) + w.gold;
     this.journal?.ledger(player, 'wreck_loot', { gold: w.gold }, { target: w.ownerName || '' });
+    // Missão diária: saquear naufrágio na Zona Vermelha.
+    this.onMissionStat?.(player, 'wrecksLooted', 1);
 
     this.sendTo(player.ws, { type: 'wreck_looted', amount: w.gold, gold: player.gold });
     this.sendTo(player.ws, { type: 'currency_update', gold: player.gold, dobroes: player.dobroes, reward: { type: 'gold', amount: w.gold } });

@@ -351,6 +351,26 @@ MAP_DEFS[3] = {
             price: 10000, currency: 'dobrao',
             ironPlatesPrice: 1500,
           },
+          // ── Mira Calibrada ─────────────────────────────────────────────
+          // Os 5 pontos que levam o c6 de 65% para o teto de 70% de precisão
+          // (CANNON_ACCURACY_MAX, em constants/cannons.js).
+          //
+          // É a pesquisa mais cara das quatro, e não por engano: precisão
+          // multiplica TUDO o que o canhão faz — dano, crítico, efeito de
+          // munição, veneno, roubo de recurso. +5 pontos em cima de 65 são
+          // ~7,7% de dano efetivo em cada linha de uma vez, enquanto o upgrade
+          // de Dano dá +10% só no dano bruto. Cobrar o mesmo pelos dois faria
+          // este ser sempre a primeira compra e os outros, sobra.
+          {
+            id: 'cannon_accuracy_upgrade',
+            name: 'Mira Calibrada',
+            description: '+5% de precisão',
+            icon: '🎯',
+            field: 'ac',
+            accuracyBonus: 0.05,
+            price: 15000, currency: 'dobrao',
+            ironPlatesPrice: 2000,
+          },
         ],
       }
     ]
@@ -371,7 +391,10 @@ MAP_DEFS[4] = {
   npc: {
     count:        3,
     baseHp:       50000,
-    baseDamage:   8000,
+    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
+    // mapas do fim do jogo estavam sendo atravessados sem que a vida
+    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
+    baseDamage:   16000,
     fireInterval: 3200,
     names:        'Storm Wyvern',
     hullColor:    0x2a5a3a,
@@ -485,7 +508,16 @@ MAP_DEFS[6] = {
   npc:         null,
   boss: {
     name:        'The Drowned Widow',
-    baseHp:       1000000,
+    // ×10 (2026-09-06, pedido do Luang). Ela é a bancada isolada das mecânicas
+    // novas — mapa 6 não tem NPC nenhum — e a luta acabava antes de as quatro
+    // skills dela darem uma volta completa no sorteio. Com 10 M a briga passa a
+    // caber o ciclo inteiro, que é onde dá para LER o chefe.
+    //
+    // O `regenPerSec` (120) fica como está de propósito: ele era 0,012% da vida
+    // por segundo e virou 0,0012% — encostou de vez em irrelevante, que é o
+    // certo para uma barra deste tamanho. Regen que importa numa vida de 10 M
+    // seria uma corrida de DPS mínimo, e a Viúva não é esse tipo de luta.
+    baseHp:       10000000,
     // Era 0 porque o único golpe dela era o `emerge`, que tinha dano próprio
     // hardcoded. Os ataques de ATTACK_DEFS calculam cannonDmg × damageMult, então
     // com 0 TODOS bateriam por 1 (o piso do Math.max). 60 dá a escala atual:
@@ -563,7 +595,10 @@ MAP_DEFS[7] = {
     count:           5,
     noNpcRespawn:    true,
     baseHp:          10000,
-    baseDamage:      1200,
+    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
+    // mapas do fim do jogo estavam sendo atravessados sem que a vida
+    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
+    baseDamage:      2400,
     fireInterval:    3000,
     cannonCount:     2,
     cannonRange:     120,
@@ -621,7 +656,10 @@ MAP_DEFS[8] = {
     count:           5,
     noNpcRespawn:    true,
     baseHp:          25000,
-    baseDamage:      2500,
+    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
+    // mapas do fim do jogo estavam sendo atravessados sem que a vida
+    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
+    baseDamage:      5000,
     fireInterval:    3000,
     cannonCount:     4,
     cannonRange:     120,
@@ -712,7 +750,10 @@ MAP_DEFS[9] = {
     count:           5,
     noNpcRespawn:    true,
     baseHp:          40000,
-    baseDamage:      3500,
+    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
+    // mapas do fim do jogo estavam sendo atravessados sem que a vida
+    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
+    baseDamage:      7000,
     fireInterval:    3000,
     cannonCount:     6,
     cannonRange:     120,
@@ -788,7 +829,10 @@ MAP_DEFS[10] = {
   npc: {
     count:        20,
     baseHp:       140000,
-    baseDamage:   15000,
+    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
+    // mapas do fim do jogo estavam sendo atravessados sem que a vida
+    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
+    baseDamage:   30000,
     fireInterval: 3000,
     names:        ['Mímico Guardião'],
     hullColor:    0x4a3010,
@@ -861,6 +905,14 @@ MAP_DEFS[10] = {
     hasMoon:          true,
     hasDenseNebula:   false,
   },
+  // Zona de cura do naufrágio deste mapa. O CLIENTE já desenhava o círculo
+  // verde aqui — ele o gera sozinho de todo `broken_pirate_shipwreck` do
+  // RUINS_DEFS (ver _spawn_ruins em main.gd) — mas quem cura é o servidor, e
+  // sem a entrada abaixo a ruína era um desenho: o jogador parava dentro do
+  // círculo e não recebia um ponto de vida. Coordenada = a da ruína no cliente.
+  healingZones: [
+    { x: -350, z: -938, radius: 80, healPct: 0.10 },  // broken_pirate_shipwreck
+  ],
 };
 
 // ── Mapa 11: Mar dos Renegados (Zona Vermelha — PVP total) ────────────────────
@@ -1092,7 +1144,10 @@ MAP_DEFS[11] = {
   npc: {
     count:        1,               // apenas o arauto, dentro da arena
     baseHp:       3000000,
-    baseDamage:   20000,
+    // ×2 (2026-09-06): o dano de NPC do mapa 4 em diante foi dobrado — os
+    // mapas do fim do jogo estavam sendo atravessados sem que a vida
+    // importasse. Bosses ficaram FORA da conta (não foi o pedido).
+    baseDamage:   40000,
     fireInterval: 3000,
     names:        'Arauto do Abismo',
     hullColor:    0x1a0a2a,
@@ -1256,6 +1311,12 @@ const ARCH_PORTALS = {
   1:  [{ x:  220, z: -290 }],
   4:  [{ x: -787, z: -700 }],
   10: [{ x: -990, z:  -80 }],
+  // A arcada do Mar dos Renegados existia SÓ no cliente (RUINS_DEFS[11]): ela
+  // era desenhada, o rótulo "Passagem Antiga" flutuava sobre ela e o [F]
+  // aparecia, mas o `isNearArch` do servidor procurava numa lista que não tinha
+  // o mapa 11 e devolvia "você não está perto de uma passagem". Ela SAI daqui,
+  // mas não RECEBE ninguém — ver a nota de zona vermelha em pickArchDestination.
+  11: [{ x: -990, z:  -80 }],
 };
 
 // ID → mapLevel lookup para uso no servidor

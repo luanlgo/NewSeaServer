@@ -47,10 +47,12 @@ const LEITOR = {
   salvo_damage_pct: 'outgoingDamageMult', ammo_damage_pct: 'outgoingDamageMult',
   damage_low_hp_pct: 'outgoingDamageMult', frenzy_pct: 'outgoingDamageMult',
   killstreak_pct: 'outgoingDamageMult', aoe_damage_pct: 'outgoingDamageMult',
-  ram_damage_pct: 'outgoingDamageMult',
+  streak_damage_stacks: 'outgoingDamageMult',
   crit_chance: 'critChance', crit_chain_pct: 'noteCritRoll',
   crit_damage_pct: 'critMult', crit_damage_high_hp: 'critMult',
-  armor_pen_pct: 'armorPen', pierce_chance: 'pierceChance',
+  armor_pen_pct: 'armorPen', armor_pen_pct_2: 'armorPen',
+  streak_pen_stacks: 'armorPen', cannon_accuracy_pct: 'cannonAccuracyBonus',
+  pierce_chance: 'pierceChance',
   double_shot_chance: 'doubleShotChance', burn_pct: 'burnDot',
   // dano recebido
   damage_reduction_pct: 'damageReduction', damage_reduction_pct_2: 'damageReduction',
@@ -58,8 +60,9 @@ const LEITOR = {
   reduction_still_pct: 'damageReduction', reduction_solo_pct: 'damageReduction',
   reduction_per_ally_pct: 'damageReduction', reduction_after_hit_pct: 'damageReduction',
   crit_taken_reduction: 'damageReduction', abyssal_heart_pct: 'damageReduction',
-  reduction_aoe_pct: 'damageReduction', reduction_relic_pct: 'damageReduction',
-  dot_reduction_pct: 'damageReduction',
+  reduction_relic_pct: 'damageReduction', dot_reduction_pct: 'damageReduction',
+  reduction_vs_tower_pct: 'damageReduction', reduction_vs_npc_ship_pct: 'damageReduction',
+  block_chance: 'blockChance', low_hp_shield_pct: 'lowHpShieldAmount',
   flat_reduction_pct: 'flatReduction',
   dodge_chance: 'dodgeChance', dodge_moving_chance: 'dodgeChance', wind_spirit_pct: 'dodgeChance',
   thorns_pct: 'thornsDamage', lifesteal_pct: 'lifestealAmount',
@@ -67,10 +70,12 @@ const LEITOR = {
   second_wind_pct: 'secondWindHeal',
   // vida e mana
   max_hp_flat: 'recalcMaxHp', max_hp_flat_2: 'recalcMaxHp', max_hp_pct: 'recalcMaxHp',
-  healing_received_pct: 'healingReceivedMult', hp_regen_flat: 'hpRegenPerSec',
-  hp_regen_low_pct: 'hpRegenPerSec', repair_out_combat_pct: 'hpRegenPerSec',
+  healing_received_pct: 'healingReceivedMult',
+  healing_received_pct_2: 'healingReceivedMult',
+  healing_out_combat_pct: 'healingReceivedMult',
+  hp_regen_low_pct: 'hpRegenPerSec',
   max_mana_flat: 'maxManaBonus', mana_regen_pct: 'manaRegenMult',
-  mana_out_combat_pct: 'manaRegenMult', mana_on_kill: 'manaOnKill',
+  mana_out_combat_pct: 'manaRegenMult',
   // relíquias e canhão
   relic_damage_pct: 'relicDamageMult', relic_overload_pct: 'relicDamageMult',
   relic_crit_chance: 'relicCritBonus', relic_mana_cost_pct: 'relicManaCostMult',
@@ -82,17 +87,12 @@ const LEITOR = {
   speed_pct: 'speedMult', speed_in_combat_pct: 'speedMult', speed_out_combat_pct: 'speedMult',
   speed_low_hp_pct: 'speedMult', burst_speed_pct: 'speedMult',
   speed_on_kill_pct: 'speedMult', speed_on_relic_pct: 'speedMult',
-  weather_speed_pct: 'weatherResist',
   party_speed_pct: 'partySpeedAura', turn_speed_pct: 'turnRateMult',
-  turn_while_fast_pct: 'turnRateMult', drag_reduction_pct: 'dragReduction',
-  accel_pct: 'accelMult', stop_time_pct: 'stopTimeMult',
-  reverse_speed_pct: 'reverseSpeedMult',
   // CC e percepção
   cc_resist_pct: 'ccDurationMult', slow_resist_pct: 'slowStrengthMult',
   slow_on_hit_pct: 'slowOnHit',
-  slow_pursuers_pct: 'wakeSlow', stealth_range_pct: 'stealthRangeMult',
+  stealth_range_pct: 'stealthRangeMult',
   fog_vision_pct: 'visionMult', night_vision_pct: 'visionMult',
-  vision_boost_flat: 'visionBoostBonus',
   // economia
   gold_drop_pct: 'lootMult', dobrao_drop_pct: 'lootMult', xp_drop_pct: 'lootMult',
   xp_boss_pct: 'lootMult', rare_drop_pct: 'lootMult', relic_drop_pct: 'lootMult',
@@ -102,9 +102,16 @@ const LEITOR = {
   abyssal_treasure_pct: 'lootMult',
   shop_discount_pct: 'shopPriceMult',
   gold_double_chance: 'goldDoubleChance', dobrao_double_chance: 'dobraoDoubleChance',
-  death_penalty_pct: 'deathPenaltyMult', inventory_slots: 'inventorySlotBonus',
-  respawn_time_pct: 'respawnTimeMult', respawn_immunity_ms: 'respawnImmunityBonus',
-  arch_cooldown_pct: 'archCooldownMult', dash_cooldown_pct: 'dashCooldownMult',
+  death_penalty_pct: 'deathPenaltyMult',
+  respawn_hp_pct: 'respawnHpFrac', respawn_immunity_ms: 'respawnImmunityBonus',
+  arch_cooldown_pct: 'archCooldownMult',
+  // Mesa de Exploração (os dois nós que substituíram sistemas inexistentes) e o
+  // fragmento extra por abate.
+  exploration_loot_pct: 'explorationLootMult',
+  exploration_double_chance: 'explorationDoubleChance',
+  fragment_extra_chance: 'fragmentExtraChance',
+  // Mascote
+  pet_xp_pct: 'petXpMult', pet_relic_cooldown_ms: 'petRelicCooldownReduction',
   // piratas e espólio
   pirate_capacity_flat: 'pirateCapacityBonus', pirate_capacity_pct: 'pirateCapacityBonus',
   pirate_power_pct: 'pirateBattlePowerPct', pirate_command_pct: 'pirateBattlePowerPct',
@@ -141,14 +148,14 @@ const CAMPO_LEGADO = {
  * é um buraco na rede de proteção, e cada entrada precisa dizer onde o efeito
  * realmente mora para alguém poder conferir.
  */
-const EFEITO_NO_CLIENTE = {
-  // Visão do barco (res_lamparina): o mesmo número entra no `omni_range` de um
-  // OmniLight3D e no `clear_radius` do shader da névoa local.
-  // NewSeaGodot/scripts/main.gd::_apply_vision_talent() lê o nível e chama
-  // Player.set_vision_bonus(). Os dois são decisão de render — o servidor não
-  // tem lamparina para iluminar nem névoa para desenhar.
-  vision_boost_flat: 'NewSeaGodot/scripts/main.gd::_apply_vision_talent',
-};
+// Vazia desde 09/2026: a "Lamparina Reforçada" era a única entrada, e o bônus
+// de visão dela virou PADRÃO do jogo (VISION_BONUS_DEFAULT em main.gd) — todo
+// mundo enxerga o equivalente ao nó cheio, sem gastar ponto. O nó deu lugar ao
+// Vínculo Selvagem, que é servidor puro.
+//
+// Fica declarada de propósito: é o buraco conhecido da rede de proteção, e
+// deixá-la visível e vazia é melhor do que ressuscitá-la sem ninguém notar.
+const EFEITO_NO_CLIENTE = {};
 
 /** O jogo consome este stat de alguma das formas conhecidas? */
 function consumidoPeloJogo(stat) {

@@ -58,78 +58,12 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 // ═════════════════════════════════════════════════════════════════════════════
-describe('r44 Sentença do Crânio — a marca ANDA com quem foi carimbado', () => {
-  it('carimba quem está perto do cursor e estoura NELE, não onde ele estava', () => {
-    // O alvo é carimbado a (0,60) e navega para (0,140) antes do pavio queimar.
-    // Com a resolução genérica antiga a explosão cairia lá atrás, em volta do
-    // cursor — que é a razão de a relíquia "não estar dando o dano".
-    const a = alvo('fugitivo', 0, 60);
-    const { msm, eventos } = fazerMotor([a]);
-    msm.cast(fazerJogador(), RELIC_DEFS.r44, 0, 60, {});
-
-    vi.advanceTimersByTime(RELIC_DEFS.r44.castMs + 10);
-    expect(tipos(eventos, 'relic_mark_set').map(e => e.targetId)).toContain('fugitivo');
-    expect(levouDano(a), 'a marca não pode bater no instante do carimbo').toBe(false);
-
-    a.x = 0; a.z = 140;                        // ele fugiu — e a marca foi junto
-    vi.advanceTimersByTime(RELIC_DEFS.r44.fuseMs + 50);
-
-    const estouro = tipos(eventos, 'relic_mark_burst').find(e => e.targetId === 'fugitivo');
-    expect(estouro, 'o pavio queimou e nada estourou').toBeDefined();
-    expect(estouro.z).toBe(140);
-    expect(levouDano(a)).toBe(true);
-  });
-
-  it('não carimba ninguém quando não há ninguém no alcance', () => {
-    const longe = alvo('longe', 0, 900);
-    const { msm, eventos } = fazerMotor([longe]);
-    msm.cast(fazerJogador(), RELIC_DEFS.r44, 0, 60, {});
-    vi.runAllTimers();
-    expect(tipos(eventos, 'relic_mark_set')).toHaveLength(0);
-    expect(levouDano(longe)).toBe(false);
-  });
-});
-
-// ═════════════════════════════════════════════════════════════════════════════
-describe('r45 Ninhada Pútrida — o ovo espera, e PULA em quem chega perto', () => {
-  it('põe os ovos no cast sem machucar ninguém ainda', () => {
-    const a = alvo('parado', 0, 300);
-    const { msm, eventos } = fazerMotor([a]);
-    msm.cast(fazerJogador(), RELIC_DEFS.r45, 0, 60, {});
-    vi.advanceTimersByTime(RELIC_DEFS.r45.castMs + 10);
-
-    const ninhada = tipos(eventos, 'relic_brood_lay')[0];
-    expect(ninhada, 'a ninhada não foi posta').toBeDefined();
-    expect(ninhada.eggs).toHaveLength(RELIC_DEFS.r45.count);
-    expect(levouDano(a), 'o cast não pode dar dano — o ovo ainda nem chocou').toBe(false);
-  });
-
-  it('quem passa perto de um ovo o faz pular e leva a explosão', () => {
-    const { msm, eventos } = fazerMotor([]);
-    const jogador = fazerJogador();
-    msm.cast(jogador, RELIC_DEFS.r45, 0, 60, {});
-    vi.advanceTimersByTime(RELIC_DEFS.r45.castMs + 10);
-
-    // Um bicho entra na área DEPOIS de os ovos estarem postos, colado no
-    // primeiro deles. O ovo é uma ameaça paciente: quem chega decide a hora.
-    const ovo = tipos(eventos, 'relic_brood_lay')[0].eggs[0];
-    const bicho = alvo('curioso', ovo.x + 8, ovo.z);
-    msm.ctx.projectileManager.npcs.set(bicho.id, bicho);
-
-    vi.advanceTimersByTime(600);
-    const pulo = tipos(eventos, 'relic_brood_jump')[0];
-    expect(pulo, 'o ovo não reagiu a quem chegou perto').toBeDefined();
-    expect(pulo.targetId).toBe('curioso');
-    expect(levouDano(bicho)).toBe(true);
-  });
-
-  it('o que sobrar estoura sozinho no fim da chocagem', () => {
-    const { msm, eventos } = fazerMotor([]);
-    msm.cast(fazerJogador(), RELIC_DEFS.r45, 0, 60, {});
-    vi.runAllTimers();
-    expect(tipos(eventos, 'relic_brood_burst')).toHaveLength(RELIC_DEFS.r45.count);
-  });
-});
+// As faces jogáveis de r44 e r45 deixaram de existir em 2026-09-04: a marca que
+// anda com a vítima e os ovos que chocam sozinhos são leituras de CHEFE, e do
+// lado do jogador não pediam decisão nenhuma. Viraram invocações (Crânio
+// Faminto e Ninhada à Espreita) — os testes delas moraram para
+// relic-refeitas.test.js. As duas continuam inteiras na mão do BICHO, onde o
+// `special: 'mark'`/`'brood'` do attack-manager nunca foi o problema.
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe('r25/r47 — o anel é PAREDE: ele empurra para dentro', () => {
@@ -306,23 +240,42 @@ describe('canalizadas — o giro tem teto e vai no ar', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-describe('as cinco desativadas saem do drop mas ficam no dado', () => {
-  const DESATIVADAS = ['r35', 'r36', 'r38', 'r39', 'r46'];
+describe('o desativar continua existindo — mas nenhuma está desativada', () => {
+  // Eram cinco em 2026-08-22 (r35, r36, r38, r39, r46). Todas voltaram: três em
+  // 2026-09-03 e as duas últimas em 2026-09-04, cada uma com skill nova — ver
+  // relic-refeitas.test.js. O mecanismo `relicDisabled` fica de pé para a
+  // próxima que precisar sair de cena; o que este guarda cobra é que ninguém
+  // esqueça uma relíquia desligada no dado sem querer.
+  const VOLTARAM = ['r35', 'r36', 'r38', 'r39', 'r46'];
 
-  it.each(DESATIVADAS)('%s está marcada como desativada', (id) => {
-    expect(RELIC_DEFS[id], `${id} sumiu do RELIC_DEFS — desativar não é apagar`).toBeDefined();
-    expect(RELIC_DEFS[id].disabled).toBe(true);
+  it('nenhuma relíquia do bestiário está fora de serviço', () => {
+    const { MONSTER_RELIC_DEFS } = require('../../constants/monster_skills');
+    const paradas = Object.entries(MONSTER_RELIC_DEFS)
+      .filter(([, d]) => d.disabled).map(([id]) => id);
+    expect(paradas, `desativada(s) esquecida(s) no dado: ${paradas.join(', ')}`)
+      .toEqual([]);
   });
 
-  it('nenhuma delas entra no pool de drop de bicho nenhum', () => {
+  it.each(VOLTARAM)('%s voltou: usável e de volta ao pool de drop', (id) => {
     const { SKILLS_BY_SOURCE } = require('../../constants/monster_skills');
     const dropaveis = new Set(Object.values(SKILLS_BY_SOURCE).flat());
-    for (const id of DESATIVADAS) expect(dropaveis.has(id)).toBe(false);
+    expect(RELIC_DEFS[id].disabled).toBe(false);
+    expect(dropaveis.has(id), `${id} voltou a funcionar mas ninguém dropa`).toBe(true);
   });
 
-  it('o bicho continua com o ataque — só a face jogável saiu', () => {
+  it('toda relíquia usável tem um bicho que a larga', () => {
+    const { MONSTER_RELIC_DEFS, SKILLS_BY_SOURCE } = require('../../constants/monster_skills');
+    const dropaveis = new Set(Object.values(SKILLS_BY_SOURCE).flat());
+    for (const [id, d] of Object.entries(MONSTER_RELIC_DEFS)) {
+      if (d.disabled) continue;
+      expect(dropaveis.has(id), `${id} (${d.name}) não cai de bicho nenhum`).toBe(true);
+    }
+  });
+
+  it('o bicho continua com o ataque — a face dele nunca saiu', () => {
     const { MONSTER_ATTACK_DEFS } = require('../../constants/monster_skills');
     expect(MONSTER_ATTACK_DEFS.drake_lightning_web).toBeDefined();
     expect(MONSTER_ATTACK_DEFS.turtle_boss_broadside).toBeDefined();
+    expect(MONSTER_ATTACK_DEFS.charnel_chain_bond).toBeDefined();
   });
 });

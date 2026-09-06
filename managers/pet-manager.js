@@ -25,6 +25,7 @@
 
 const { uid, sendTo } = require('../utils/helpers');
 const { RELIC_DEFS }  = require('../constants/relics');
+const fx = require('../utils/talent-effects');
 
 // ── Definições dos pets (espelhadas do PetData.gd) ────────────────────────────
 // navType:  'perto' | 'medio' | 'longo' — distância de órbita ao redor do barco
@@ -62,7 +63,18 @@ const PET_RANGE = { curto: 25, medio: 80, longo: 150 };
 const RANGE_TOLERANCE = 40; // tolerância na validação server-side (posição do pet é client-side)
 
 // Stats por raridade — épico/lendário "ganham mais status"
-const RARITY_DMG_MULT   = { 0: 0.6, 1: 0.8, 2: 1.0, 3: 1.2 };
+//
+// CORTADO PELA METADE E MEIA (era 0,6 / 0,8 / 1,0 / 1,2 — 2026-09-04). Com o
+// número antigo o pet lançava a relíquia com o dano CHEIO do dono, e um lendário
+// de nível 10 chegava a ×1,74: mais forte que o próprio jogador usando a mesma
+// relíquia. Isso já era demais com três relíquias, e com as vinte do bestiario
+// liberadas viraria "o pet explode todo mundo" — decisão do Luang: ele é
+// SUPORTE, e suporte contribui, não resolve.
+//
+// O teto agora é ~0,59 (lendário nível 10): pouco menos de dois terços do que o
+// dono faria com a mesma relíquia, uma vez a cada 30 s. Continua sendo um ás na
+// manga; deixou de ser uma segunda salva.
+const RARITY_DMG_MULT   = { 0: 0.25, 1: 0.32, 2: 0.40, 3: 0.50 };
 // CD das relíquias do pet POR RARIDADE (qualquer relíquia): comum 60s, raro 54s,
 // épico 45s, lendário 30s — reduzido pelo nível do pet.
 //
@@ -72,7 +84,10 @@ const RARITY_DMG_MULT   = { 0: 0.6, 1: 0.8, 2: 1.0, 3: 1.2 };
 // manga, não uma rotação; com o CD longo, quando ele solta a skill importa.
 const RARITY_CD_MS      = { 0: 60000, 1: 54000, 2: 45000, 3: 30000 };
 const RELIC_SLOTS_BY_RARITY = { 0: 1, 1: 1, 2: 2, 3: 2 };   // comum/raro=1, épico/lendário=2
-const LEVEL_DMG_BONUS   = 0.05;  // +5% dano de relíquia por nível
+// +2% de dano por nível (era +5%). A +5% o nível 10 somava 45% por cima da
+// raridade e desfazia sozinho qualquer corte na tabela acima — o progresso do
+// pet continua existindo, só deixou de ser o eixo dominante dele.
+const LEVEL_DMG_BONUS   = 0.02;
 const LEVEL_CD_BONUS    = 0.02;  // -2% CD por nível (piso 50%)
 
 // Gatilhos defensivos (fração do maxHp APÓS o hit)
@@ -325,7 +340,12 @@ class PetManager {
     const def = PET_DEFS[petId];
     const lv  = this._getLevel(player, petId);
     const lvMult = Math.max(0.5, 1 - (lv - 1) * LEVEL_CD_BONUS);
-    return Math.round((RARITY_CD_MS[def?.rarity ?? 0] || 20000) * lvMult);
+    const base = Math.round((RARITY_CD_MS[def?.rarity ?? 0] || 20000) * lvMult);
+    // Vínculo Selvagem (res_lamparina): desconto PLANO, em ms. Plano e não
+    // percentual porque a recarga do pet já é curta — −5s no talento cheio se
+    // lê igual em qualquer relíquia, enquanto −50% valeria quase nada nas
+    // baratas e demais nas caras. Piso de 2s para não virar disparo contínuo.
+    return Math.max(2000, base - fx.petRelicCooldownReduction(player));
   }
 
   _cdReady(player, instanceId) {
@@ -686,6 +706,9 @@ class PetManager {
       player.petXp[petId]     = 0;
     }
 
+    // Missão diária: domar criatura selvagem.
+    this.onMissionStat?.(player, 'petCaptures', 1);
+
     // Ruína entra em cooldown de 2h a partir da captura
     this.ruinCooldownUntil.set(wild.ruinKey, Date.now() + RUIN_COOLDOWN_MS);
     this._removeWildPet(wild.id, `capturado por ${player.name}`, player.name);
@@ -740,7 +763,9 @@ class PetManager {
       return;
     }
 
-    inventory[foodItem] = Math.max(0, foodAmt - foodNeeded);
+    // Tratador (res_tratador): comida mais eficiente = consome MENOS por tique.
+    const consumo = foodNeeded / Math.max(1, fx.lootMult(player, 'pet_food'));
+    inventory[foodItem] = Math.max(0, foodAmt - consumo);
     player.inventory = inventory;
 
     this._addXp(player, petId, XP_PER_FOOD_TICK);
@@ -784,6 +809,10 @@ class PetManager {
   _addXp(player, petId, amount) {
     if (!player.petXp)     player.petXp     = {};
     if (!player.petLevels) player.petLevels = {};
+
+    // Adestrador (res_impulso): todo XP que o mascote ganha passa por aqui, de
+    // qualquer fonte — é o funil, e por isso o multiplicador mora nele.
+    amount = amount * fx.petXpMult(player);
 
     const currentXp = Number(player.petXp[petId]     || 0);
     const currentLv = Number(player.petLevels[petId] || 1);

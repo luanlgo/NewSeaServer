@@ -30,6 +30,7 @@
 const { uid, rand, broadcast, sendTo, noteKillGold } = require('../utils/helpers');
 const { FLEET_EVENT } = require('../constants');
 const db = require('./db-manager');
+const fx = require('../utils/talent-effects');
 
 class FleetEventManager {
   /**
@@ -262,8 +263,11 @@ class FleetEventManager {
     // igual em qualquer zona amarela.
     const def    = FLEET_EVENT.ships[npc.fleetKey] || {};
     const tier   = npc.fleetTier || 0;
-    const gold   = FLEET_EVENT.atTier(def.bounty?.gold,   tier);
-    const dobrao = FLEET_EVENT.atTier(def.bounty?.dobrao, tier);
+    // Caçador de Recompensas (res_recompensa): o mesmo multiplicador que paga o
+    // contrato de Procurado paga a frota — o texto do talento promete os dois.
+    const bMult  = fx.lootMult(killer, 'bounty');
+    const gold   = Math.round(FLEET_EVENT.atTier(def.bounty?.gold,   tier) * bMult);
+    const dobrao = Math.round(FLEET_EVENT.atTier(def.bounty?.dobrao, tier) * bMult);
 
     if (killer) {
       killer.gold    = (killer.gold    || 0) + gold;

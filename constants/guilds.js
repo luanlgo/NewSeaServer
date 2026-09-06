@@ -7,7 +7,8 @@
 //   • um NOME e uma TAG que aparecem ao lado do pirata
 //   • um COFRE próprio (ouro + dobrões) alimentado por doação e pela taxa
 //   • um NÍVEL (1..25) que sobe com o XP que os membros ganham jogando
-//   • SKILLS que valem para TODOS os membros, limitadas pelo nível da guilda
+//   • SKILLS que fortalecem a PRÓPRIA guilda (nível, cofre, ilha), limitadas
+//     pelo nível dela — nenhuma cola número na ficha do membro
 //
 // ── Por que a taxa é do bolso, e não da renda ────────────────────────────────
 // A taxa cobra uma fatia do ouro que o membro TEM na mão, uma vez por dia. É o
@@ -94,15 +95,32 @@ function xpToNextLevel(level) {
 }
 
 /**
- * As sete skills da guilda. Todas valem para TODOS os membros, online ou não —
- * o bônus é recalculado quando o jogador entra e quando a skill sobe.
+ * As skills da guilda — TODAS voltadas para a IRMANDADE, nenhuma para o bolso
+ * do membro.
+ *
+ * ── A virada de 2026-09-06 ──────────────────────────────────────────
+ * Quatro das sete davam poder direto ao jogador: +% de ouro, de dobrão, de XP e
+ * de vida máxima, para todo membro, online ou não. Elas transformavam a guilda
+ * numa árvore de talentos paralela — entrar numa guilda grande valia mais que
+ * qualquer decisão de build, e quem jogava sozinho ficava para trás por um
+ * motivo que não tinha nada a ver com jogar.
+ *
+ * Agora o eixo é outro: a guilda investe no cofre para a PRÓPRIA guilda crescer
+ * — subir de nível mais rápido, encher o cofre mais rápido, segurar a ilha. O
+ * membro ganha por tabela (ilha defendida, cofre cheio, nível alto destrava
+ * vaga e alíquota), nunca por um número colado na ficha dele.
+ *
+ * As duas primeiras são a espinha: elas mexem na FATIA do que o membro produz
+ * que também vai para a irmandade. Note que a fatia NÃO sai do bolso de ninguém
+ * (ver GUILD_XP_SHARE / GUILD_GOLD_SHARE) — subir essas skills não cobra nada
+ * do membro, só faz a caçada dele render mais para a bandeira.
  *
  * `stat` é a chave que o resto do servidor lê (ver GuildManager.bonusFor), e
  * TODAS têm hoje quem as leia:
- *   gold_pct / dobrao_pct / xp_pct   lootMult      (utils/talent-effects.js)
- *   member_hp_pct                    recalcMaxHp   (utils/talent-logic.js)
- *   tower_hp_pct / tower_dmg_pct     handleBuild   (managers/island-manager.js)
- *   tax_boat_pct                     _zarpar       (managers/tax-boat-manager.js)
+ *   guild_xp_pct / guild_gold_pct   _creditXp / _creditGold  (guild-manager)
+ *   tower_hp_pct / tower_dmg_pct    handleBuild              (island-manager)
+ *   tower_repair_pct                _sweepRepair             (island-manager)
+ *   tax_boat_pct                    _zarpar                  (tax-boat-manager)
  *
  * As de ilha (`island: true`) só produzem efeito enquanto a guilda DOMINA uma
  * ilha — o painel avisa isso no cartão. Não confundir com "não implementada":
@@ -110,25 +128,22 @@ function xpToNextLevel(level) {
  * some sem dar erro nenhum, e nenhuma destas está nessa situação.
  *
  * Custos: `costGold`/`costDobroes` são o preço para comprar o nível N (1 = o
- * primeiro). Linear no nível — valores BASE, feitos para balancear depois.
+ * primeiro). Linear no nível.
  */
 const GUILD_SKILLS = [
   {
-    id: 'gold_pct', icon: '🪙', name: 'Butim Farto',
-    desc: 'Ouro de todo membro da guilda.',
-    stat: 'gold_pct',  pctPerLevel: 0.10,
+    // O caçador continua ganhando o XP dele inteiro; o que cresce é a cópia
+    // que a guilda recebe por ele ter caçado sob a bandeira. É a skill que
+    // encurta a subida de nível, e nível é o que destrava tudo o mais.
+    id: 'guild_xp_pct', icon: '✨', name: 'Crônica da Irmandade',
+    desc: 'XP que a GUILDA ganha com os abates dos membros.',
+    stat: 'guild_xp_pct',   pctPerLevel: 0.10,
     costGold: 200_000, costDobroes: 50,
   },
   {
-    id: 'dobrao_pct', icon: '💰', name: 'Cofre Pirata',
-    desc: 'Dobrões de todo membro da guilda.',
-    stat: 'dobrao_pct', pctPerLevel: 0.10,
-    costGold: 250_000, costDobroes: 80,
-  },
-  {
-    id: 'xp_pct', icon: '✨', name: 'Sabedoria dos Mares',
-    desc: 'Experiência de todo membro da guilda.',
-    stat: 'xp_pct',     pctPerLevel: 0.10,
+    id: 'guild_gold_pct', icon: '🪙', name: 'Quinhão do Cofre',
+    desc: 'Ouro que o COFRE ganha com os abates dos membros.',
+    stat: 'guild_gold_pct', pctPerLevel: 0.10,
     costGold: 200_000, costDobroes: 50,
   },
   {
@@ -146,10 +161,14 @@ const GUILD_SKILLS = [
     island: true,
   },
   {
-    id: 'member_hp_pct', icon: '🛡️', name: 'Casco da Irmandade',
-    desc: 'Vida máxima de todo membro da guilda.',
-    stat: 'member_hp_pct', pctPerLevel: 0.05,
-    costGold: 300_000, costDobroes: 100,
+    // Reparo mais rápido é o contrapeso do cerco: sem ele, uma ilha castigada
+    // durante a noite passa o dia seguinte inteiro voltando ao normal. O ouro
+    // do conserto continua saindo do cofre — a skill acelera, não barateia.
+    id: 'tower_repair_pct', icon: '🔨', name: 'Estaleiro da Ilha',
+    desc: 'Velocidade do conserto das torres.',
+    stat: 'tower_repair_pct', pctPerLevel: 0.10,
+    costGold: 120_000, costDobroes: 25,
+    island: true,
   },
   {
     // O bônus do barco da coleta é da GUILDA, e não do jogador, porque é a
@@ -163,6 +182,36 @@ const GUILD_SKILLS = [
     island: true,
   },
 ];
+
+/**
+ * As que SAÍRAM — e o que elas custavam.
+ *
+ * Guildas já gastaram cofre nelas, e apagar a linha do dado apagaria o
+ * investimento junto: o nível salvo viraria uma chave que `bonusFor` ignora, em
+ * silêncio, para sempre. A tabela existe para o GuildManager devolver ao cofre,
+ * no boot, tudo o que foi pago — uma vez, e aí a chave some do `skills`.
+ *
+ * Os custos têm de ser os que estavam em vigor quando foram compradas; por isso
+ * são cópias congeladas, e não referências ao catálogo vivo.
+ */
+const RETIRED_GUILD_SKILLS = {
+  gold_pct:      { name: 'Butim Farto',         costGold: 200_000, costDobroes: 50 },
+  dobrao_pct:    { name: 'Cofre Pirata',        costGold: 250_000, costDobroes: 80 },
+  xp_pct:        { name: 'Sabedoria dos Mares', costGold: 200_000, costDobroes: 50 },
+  member_hp_pct: { name: 'Casco da Irmandade',  costGold: 300_000, costDobroes: 100 },
+};
+
+/** O que devolver ao cofre por uma skill aposentada que está no nível `lvl`. */
+function retiredRefund(id, lvl) {
+  const def = RETIRED_GUILD_SKILLS[id];
+  const n = Math.max(0, Math.floor(Number(lvl) || 0));
+  if (!def || n <= 0) return null;
+  // O preço é linear no nível (nível k custou base × k), então o total pago até
+  // o nível n é base × n(n+1)/2.
+  const soma = (n * (n + 1)) / 2;
+  return { name: def.name, level: n,
+           gold: def.costGold * soma, dobroes: def.costDobroes * soma };
+}
 
 /** Índice por id — o manager valida `skillId` por aqui. */
 const GUILD_SKILL_BY_ID = Object.fromEntries(GUILD_SKILLS.map(s => [s.id, s]));
@@ -193,6 +242,8 @@ module.exports = {
   DONATE_MIN_DOBROES,
   GUILD_SKILLS,
   GUILD_SKILL_BY_ID,
+  RETIRED_GUILD_SKILLS,
+  retiredRefund,
   memberCap,
   xpToNextLevel,
   skillUpCost,

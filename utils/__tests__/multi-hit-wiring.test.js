@@ -67,9 +67,13 @@ const CHUVA = ['turtle_boss_wreck_field'];
 // (chuva de bile e salva de olhos) deram lugar ao sorvo de mana e ao espelho,
 // ambas `circle`. Se alguma voltar a ser `multi`, o teste de cobertura acima
 // avisa — é para isso que ele existe.
+//
+// As duas do Carniceiro (sentença e ninhada) saíram da lista em 2026-09-05: as
+// faces convergiram para `summons`, que não resolve por sub-áreas sorteadas e
+// sim por criaturas que andam. O teste de cobertura acima é quem garante que a
+// saída foi deliberada — ele reprova qualquer `multi` fora desta lista.
 const SKILLS_MULTI = [
   'crab_boss_mortar', 'crab_boss_tentacles', 'wyrm_pustule_burst',
-  'charnel_death_mark', 'charnel_brood_hatch',
 ];
 
 beforeEach(() => vi.useFakeTimers());

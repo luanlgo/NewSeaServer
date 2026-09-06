@@ -149,7 +149,23 @@ const MONSTER_SKILLS = {
     // ou seja ~58 un no 1,3 s de cast. Com 5 obuses no anel a 62, o cerco fica
     // SELADO até essa distância — varrendo todas as direções, nenhuma escapa a
     // não ser a brecha (a 70 já vazava em 70% dos casos).
-    relic: { manaCost: 6, count: 6, spread: 30, radius: 25, damagePct: 0.40, castMs: 1300 },
+    // ── CHUVA, não salva (a mesma lição do Cemitério de Naufrágios) ──────
+    // Os seis obuses de uma vez fechavam um cerco: dava para ler o anel e
+    // correr para a brecha UMA vez, e depois disso a salva tinha acabado. Cada
+    // obus agora cai sozinho, `dropIntervalMs` depois do anterior, MIRADO em
+    // onde o alvo está naquele instante — quem parou, come as seis. O `spread`
+    // e o `pattern` continuam valendo para a face do BICHO, que mantém o anel.
+    //
+    // O raio caiu de 25 para 20 e o dano de 0,40 para 0,28: seis quedas miradas
+    // acertam muito mais que um anel sorteado, então o pacote inteiro (1,68 de
+    // poder de fogo se TUDO pegar) fica na mesma faixa do que era antes.
+    // `dropWarnMs` 550 é medido: o barco anda ~45 un/s, ou seja ~25 un na janela
+    // — mais que o raio de 20, então quem reage sai, e quem só olha, não. E ela
+    // cabe dentro do `dropIntervalMs` de propósito: com aviso maior que o
+    // intervalo, duas marcações ficam acesas ao mesmo tempo e a leitura de
+    // "uma por vez" — que é o motivo inteiro da mudança — se perde.
+    relic: { manaCost: 6, count: 6, spread: 30, radius: 20, damagePct: 0.28, castMs: 700,
+             dropIntervalMs: 600, dropWarnMs: 550 },
     npc:   { rangeMin: 0, rangeMax: 200, count: 6, spread: 62, radius: 38, damageMult: 2.2, castTime: 1100, cooldown: 15000, weight: 5 },
   },
   crab_boss_tentacles: {
@@ -165,8 +181,19 @@ const MONSTER_SKILLS = {
     // em ~54-74% das vezes; quem lê o desenho escapa — pela brecha larga ou
     // costurando entre dois braços. Selar de verdade pediria um 6º tentáculo e
     // raio 36 (medido: 1% de fuga), o que muda a cara da skill.
-    relic: { manaCost: 7, count: 5, spread: 24, radius: 23, damagePct: 0.30, castMs: 1500,
-             cc: { rootMs: 2500 } },
+    // Mesma vira da Salva de Morteiro: os cinco braços sobem UM DE CADA VEZ,
+    // cada um em cima de onde o alvo está. O anel simultâneo continua do lado
+    // do bicho (`spread`/`pattern` no `npc`).
+    //
+    // O root caiu de 2500 para 900 ms, e não é nerf gratuito: com queda mirada
+    // em sequência, um root de 2,5 s prenderia o alvo debaixo dos três braços
+    // seguintes — agarrou uma vez, agarrou até o fim, sem jogada nenhuma pelo
+    // meio. Com 900 ms de agarrão num intervalo de 900 ms entre braços, quem
+    // foi pego sai solto exatamente quando o próximo está sendo anunciado: dá
+    // para escapar, mas só remando na hora certa.
+    relic: { manaCost: 7, count: 5, spread: 24, radius: 22, damagePct: 0.24, castMs: 700,
+             dropIntervalMs: 900, dropWarnMs: 700,
+             cc: { rootMs: 900 } },
     npc:   { rangeMin: 0, rangeMax: 170, count: 5, spread: 45, radius: 32, damageMult: 1.0, castTime: 1500, cooldown: 18000, weight: 4,
              cc: { rootMs: 2500 } },
   },
@@ -264,7 +291,19 @@ const MONSTER_SKILLS = {
     relic: { manaCost: 7, radius: 95, safeRadius: 22, eruptRadius: 38, damagePct: 1.10, castMs: 2200,
              collapseTo: 34, phaseCount: 10,
              ticks: { count: 10, intervalMs: 220, pct: 0.10 } },
-    npc:   { rangeMin: 0, rangeMax: 230, radius: 230, safeRadius: 60, eruptRadius: 95, damageMult: 3.2, castTime: 2200, cooldown: 20000, weight: 3,
+    // `damageMult` 3,2 → 0,30 e `burstMult` novo (2026-09-05). NÃO é um corte de
+    // dificuldade: é o preço de o `collapse` passar a EXISTIR deste lado. Como
+    // aro parado, o anel de raio 230 quase nunca encostava em ninguém e os
+    // 3,2 × 10 levas eram teóricos; com a parede varrendo de verdade seriam 32×
+    // o canhão do bicho num golpe só. A proporção segue a face da relíquia
+    // (ticks 0,10 contra damagePct 1,10): o aperto é o preço, o miúlo é o golpe.
+    // `atCaster`: o cerco fecha em volta do BICHO. Sem isto o aro nasce em cima
+    // do jogador — ou seja, centrado em quem deveria estar fugindo dele: o
+    // aperto nao aperta ninguém (você já está no meio) e o miúlo cai na sua
+    // cabeça sem saída. Do lado da relíquia quem escolhe o centro é o cursor.
+    npc:   { rangeMin: 0, rangeMax: 230, radius: 230, safeRadius: 60, eruptRadius: 95,
+             atCaster: true, damageMult: 0.30, burstMult: 2.4, phaseCount: 10,
+             castTime: 2200, cooldown: 20000, weight: 3,
              ticks: { count: 10, intervalMs: 220 } },
   },
 
@@ -423,48 +462,81 @@ const MONSTER_SKILLS = {
              drainHealPct: 0.50, ticks: { count: 8, intervalMs: 400 } },
   },
   turtle_boss_broadside: {
-    relicId: 'r35', name: 'Salva de Bombordo', icon: '💥', rarity: 'épico',
-    // ⛔ RELIQUIA DESATIVADA (playtest 2026-08-22) — ver `relicDisabled` no topo.
-    // A leitura "ache o RITMO, nao o lugar" nao passa na mao do jogador: os
-    // setores giram em volta do PROPRIO barco e quem lanca nao tem como ler o
-    // desenho de cima. Fica de pe do lado do BICHO, onde a camera de fora
-    // mostra os setores; a versao jogavel volta quando tiver leitura propria.
-    relicDisabled: true,
-    vfx: 'turtle_boss_broadside', source: 'tartaruga_boss', shape: 'circle',
-    // `atCaster`: a area nasce NO LANCADOR e ACOMPANHA ele a cada leva, em vez
-    // de ficar plantada onde o alvo estava no cast. E o que a skill sempre
-    // quis dizer — sao os canhoes do CASCO disparando em setores; centrada no
-    // alvo, o boss podia sair de dentro da propria salva. Seguindo o casco, a
-    // leitura vira "circule o boss no setor certo" em vez de "saia do circulo".
-    atCaster: true,
-    desc: 'Os canhoes do casco disparam em setores alternados, e a salva anda COM ele. Ache o RITMO, nao o lugar.',
-    relic: { manaCost: 8, radius: 90, sectorCount: 4, cycleCount: 6, accel: 0.88, castMs: 2200,
-             ticks: { count: 6, intervalMs: 800, pct: 0.35 } },
-    npc:   { rangeMin: 0, rangeMax: 240, radius: 240, sectorCount: 4, cycleCount: 6, accel: 0.88, damageMult: 1.1, castTime: 2200, cooldown: 21000, weight: 3,
-             ticks: { count: 6, intervalMs: 800 } },
+    relicId: 'r35', name: 'Cardume de Torpedos', icon: '🐟', rarity: 'épico',
+    // ══ CONVERGIDA (2026-09-05) ═════════════════════════
+    // Esta skill já foi duas: o bicho fazia a Salva de Bombordo (canhões do
+    // casco em setores alternados) e a relíquia, os torpedos. A salva em
+    // setores está no git — decisão do Luang de que o bestiario inteiro mostre
+    // a MESMA skill que a relíquia dele entrega.
+    //
+    // A identidade agora mora toda no TOPO (nome, ícone, vfx, forma, special) e
+    // os blocos `relic`/`npc` guardam só números. É assim que uma skill fica
+    // igual nas duas mãos: divergir passa a exigir um override explícito.
+    vfx: 'turtle_torpedo_swarm', source: 'tartaruga_boss', shape: 'circle',
+    special: 'torpedo',
+    // Sem `atCaster`: a âncora do desenho fica PLANTADA onde o cast começou.
+    // Cada torpedo carrega a própria origem (o casco no instante do disparo), e
+    // um quad que andasse junto arrastaria os torpedos em voo com ele.
+    desc: 'Seis torpedos saem do casco em sequência e CURVAM até quem estiver à frente. Saia do cone, ou ganhe a corrida.',
+    // ── Por que quase nunca acertavam (playtest 2026-09-04) ─────────────
+    // O alvo era travado no DISPARO e o torpedo voava até aquele ponto FIXO. A
+    // 45 un/s o alvo andava ~22 un no voo contra um estouro de raio 15: quem
+    // navegava saia da explosão por construção, e só quem estava parado levava.
+    // O conserto foi voo mais curto, raio maior e `homing` — na CHEGADA o
+    // torpedo re-mira se o alvo continua dentro de `homingRadius` do ponto
+    // anunciado. O cliente curva o desenho pelo MESMO critério, então o que se
+    // vê e o que bate continuam sendo a mesma coisa.
+    relic: {
+      manaCost: 7, count: 6, radius: 22, length: 95, angle: 60,
+      damagePct: 0.24, castMs: 400,
+      salvoMs: 150, travelMs: 320, fanAngle: 40,
+      homing: true, homingRadius: 55,
+    },
+    // Escala de bicho: cone e alcance maiores (ele mira de longe), voo um pouco
+    // mais lento e raio de estouro proporcional. 6 × 1,05 = 6,3 se TUDO pegar —
+    // a mesma exposição dos 6 × 1,1 da salva em setores que saiu daqui, com a
+    // diferença de que esta dá para esquivar e aquela não dava.
+    npc:   { rangeMin: 0, rangeMax: 240, count: 6, radius: 30, length: 200,
+             angle: 70, fanAngle: 45, damageMult: 1.05,
+             castTime: 1400, cooldown: 21000, weight: 3,
+             salvoMs: 180, travelMs: 400, homing: true, homingRadius: 70 },
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 7. DRAKE MARINHO — mob ágil/elétrico (mapa 2). Primeiro conjunto elétrico.
   // ═══════════════════════════════════════════════════════════════════════════
   drake_chain_arc: {
-    relicId: 'r36', name: 'Descarga em Cadeia', icon: '⚡', rarity: 'incomum',
-    // ⛔ RELIQUIA DESATIVADA (playtest 2026-08-22).
-    relicDisabled: true,
-    vfx: 'drake_chain_arc', source: 'cobra', shape: 'chain',
-    // `jumpCastMs`: cada pulo é ANUNCIADO antes de bater. A cadeia deixou de ser
-    // um estouro instantâneo e virou uma sequência que dá para ler — quem está
-    // no próximo elo tem essa janela para sair do raio.
-    desc: 'O raio pula entre até 4 alvos próximos, perdendo 25% de força a cada pulo. Cada pulo é marcado antes de cair.',
-    // `seekRadius` é a tolerância de mira do PRIMEIRO elo (ver _chainTargets).
-    // Antes esse papel era do `radius` (5 un!): era preciso clicar a 5 un do
-    // centro do bicho para a cadeia sequer começar, e por isso a relíquia
-    // "não fazia nada". `jumpRange` subiu de 35 para 60 pelo mesmo motivo — a
-    // 35 un dois bichos quase nunca estão perto o bastante para o raio pular.
-    relic: { manaCost: 4, count: 4, jumpRange: 60, seekRadius: 45, radius: 14,
-             damagePct: 0.70, falloff: 0.75, castMs: 1000 },
-    npc:   { rangeMin: 0, rangeMax: 140, count: 4, jumpRange: 90, radius: 15, damageMult: 2.0, falloff: 0.75, castTime: 1200, cooldown: 15000, weight: 5,
-             jumpCastMs: 550 },
+    relicId: 'r36', name: 'Rastilho de Raios', icon: '⚡', rarity: 'incomum',
+    // ══ CONVERGIDA (2026-09-05) ═════════════════════════
+    // O bicho fazia a Descarga em Cadeia (o raio pulando entre alvos próximos).
+    // Cadeia é boa leitura de bicho e péssima de jogador — não há mira, o
+    // servidor escolhe tudo — e por isso a relíquia virou rastilho. Agora o
+    // bicho também arma a linha, e quem apanha responde do mesmo jeito que
+    // responderia à própria relíquia: SAIA DE LADO, não para trás.
+    vfx: 'drake_bolt_trail', source: 'cobra', shape: 'line',
+    desc: 'Uma linha reta com seis raios caindo um após o outro, cada um um passo mais longe. Saia DE LADO.',
+    // ── A forma: `line` com `stepCount` ───────────────────────────
+    // O mesmo motor da Barragem Rolante: a cada leva o acerto é SÓ a faixa
+    // daquele passo (`band` de espessura, `width` de largura lateral), a
+    // `firstDistance + k×stepDistance` do casco. `ticks.count` TEM de bater com
+    // `stepCount`, senão sobram passos sem raio — ou raios repetindo o último.
+    //
+    // O dano por raio parece alto, mas cada alvo costuma comer UM: as faixas
+    // não se sobrepõem, então só quem correr AO LONGO da linha leva duas. É o
+    // oposto de uma área que soma tudo.
+    relic: {
+      manaCost: 5, width: 26, band: 22, radius: 13,
+      stepCount: 6, stepDistance: 17, firstDistance: 20, castMs: 500,
+      cc: { slowPct: 0.25, slowMs: 1500 },
+      ticks: { count: 6, intervalMs: 140, pct: 0.42 },
+    },
+    // Escala de bicho: 30 + 5×34 = 200 un de alcance, que é o próprio
+    // `rangeMax`. 6 × 0,75 = 4,5 só para quem comer a linha inteira.
+    npc:   { rangeMin: 0, rangeMax: 200, width: 40, band: 30, radius: 20,
+             stepCount: 6, stepDistance: 34, firstDistance: 30,
+             damageMult: 0.75, castTime: 1000, cooldown: 15000, weight: 5,
+             cc: { slowPct: 0.30, slowMs: 1500 },
+             ticks: { count: 6, intervalMs: 200 } },
   },
   drake_hunter_orb: {
     relicId: 'r37', name: 'Orbe Caçadora', icon: '🔮', rarity: 'épico',
@@ -485,35 +557,62 @@ const MONSTER_SKILLS = {
              orbTickMs: 400, orbTickPct: 0.18, cc: { stunMs: 1000 } },
   },
   drake_static_field: {
-    relicId: 'r38', name: 'Campo Estático', icon: '🌩️', rarity: 'raro',
-    // ⛔ RELIQUIA DESATIVADA (playtest 2026-08-22). O `special: 'static'` nunca
-    // chegou a existir no motor — o campo resolvia como um circulo comum e a
-    // promessa ("so pune QUEM SE MEXER") nunca foi verdade em lugar nenhum.
-    relicDisabled: true,
-    vfx: 'drake_static_field', source: 'cobra', shape: 'circle', special: 'static',
-    desc: 'Campo de 4 s que só pune QUEM SE MEXER dentro dele. Não é lugar, é estado.',
-    // Raio reduzido à METADE (era 75/150): o campo cobria meia tela e, sendo um
-    // efeito de ESTADO (só pune quem se mexe), a área grande não acrescentava
-    // decisão nenhuma — só poluía a leitura de tudo o mais que estivesse na
-    // mesma região.
-    relic: { manaCost: 6, radius: 38, castMs: 1200, moveThreshold: 6,
-             ticks: { count: 8, intervalMs: 500, pct: 0.25 } },
-    npc:   { rangeMin: 0, rangeMax: 200, radius: 75, damageMult: 0.8, castTime: 1200, cooldown: 16000, weight: 5,
-             moveThreshold: 10, ticks: { count: 8, intervalMs: 500 } },
+    relicId: 'r38', name: 'Campo Voltaico', icon: '🌩️', rarity: 'raro',
+    // ══ CONVERGIDA (2026-09-05) ═════════════════════════
+    // O `special: 'static'` ("só pune quem se mexer") nunca chegou a existir em
+    // motor nenhum: dos dois lados o campo resolvia como círculo comum, e a
+    // promessa era só texto. Ele saiu do dado — um `special` que ninguém
+    // implementa é pior que campo ausente, porque passa por implementado numa
+    // auditoria e some em silêncio na execução.
+    //
+    // As duas faces são o CAMPO VOLTÁICO: um círculo que se arma em volta do
+    // próprio casco e, no fim da carga, dispara uma descarga do casco para cada
+    // um que ficou dentro. Defensiva por natureza (quem chega perto, paga) e a
+    // leitura para o outro lado é só uma: saia do círculo a tempo.
+    vfx: 'drake_voltaic_field', source: 'cobra', shape: 'circle',
+    // `atCaster`: o laço de levas re-lê a posição de quem lançou, então o
+    // círculo ACOMPANHA quem navega durante a carga em vez de ficar plantado.
+    atCaster: true,
+    desc: 'Um campo se arma em volta do casco e, no fim da carga, descarrega em todos que ficaram dentro. Saia a tempo.',
+    // O desenho é o que há de novo: os arcos saem do casco até cada alvo
+    // atingido, e quem os posiciona é a lista de `hits` do próprio golpe —
+    // nada de adivinhação do lado do cliente.
+    relic: {
+      manaCost: 6, radius: 92, castMs: 1100, damagePct: 0.85,
+      cc: { slowPct: 0.35, slowMs: 2000 },
+    },
+    // UMA leva, como a relíquia — e é essa a convergência que importa aqui: as
+    // 8 levas antigas faziam do campo uma poça de permanência, que é o oposto
+    // da carga única que a relíquia entrega. 2,6 num golpe contra os 0,8 × 8 de
+    // antes: menos no total, e todo ele numa hora que dá para prever.
+    npc:   { rangeMin: 0, rangeMax: 200, radius: 110, damageMult: 2.6,
+             castTime: 1200, cooldown: 16000, weight: 5,
+             cc: { slowPct: 0.35, slowMs: 2000 } },
   },
   drake_lightning_web: {
-    relicId: 'r39', name: 'Teia de Raios', icon: '🕸️', rarity: 'épico', star: true, // ⭐
-    // ⛔ RELIQUIA DESATIVADA (playtest 2026-08-22) — marcada para REFAZER.
-    // O `shape: 'circle'` bate o disco inteiro: os seis nos e os feixes entre
-    // eles sao so desenho, nao existe grafo nenhum no acerto. "Leia o grafo e
-    // ache a folga" e uma promessa que o motor nunca cumpriu.
-    relicDisabled: true,
-    vfx: 'drake_lightning_web', source: 'cobra', shape: 'circle',
-    desc: 'Seis nós ligados por feixes que trocam de par 3 vezes. Leia o grafo e ache a folga.',
-    relic: { manaCost: 7, radius: 85, nodeCount: 6, phaseCount: 3, beamWidth: 10, collapseRadius: 22, castMs: 2200,
-             ticks: { count: 3, intervalMs: 1400, pct: 0.55 } },
-    npc:   { rangeMin: 0, rangeMax: 230, radius: 230, nodeCount: 6, phaseCount: 3, beamWidth: 20, collapseRadius: 55, damageMult: 1.6, castTime: 2200, cooldown: 22000, weight: 3,
-             ticks: { count: 3, intervalMs: 1400 } },
+    relicId: 'r39', name: 'Tarrafa de Raios', icon: '🕸️', rarity: 'épico', star: true, // ⭐
+    // ══ CONVERGIDA (2026-09-05) ═════════════════════════
+    // O bicho fazia a Teia de Raios: seis nós ligados por feixes que trocavam
+    // de par. Bonito de fora e impossível de cumprir — o `shape: 'circle'`
+    // batia o disco inteiro, então "leia o grafo e ache a folga" nunca foi
+    // verdade em motor nenhum, nem do lado do bicho.
+    //
+    // As duas faces são a TARRAFA: a rede cai do céu como um raio e PRENDE. Uma
+    // skill de controle limpa, sem grafo para o motor ter de entender.
+    vfx: 'drake_thunder_net', source: 'cobra', shape: 'circle',
+    desc: 'A rede cai do céu como um raio e PRENDE quem ela cobrir. O dano é o de menos.',
+    // A força não está no dano e sim nos segundos em que o alvo não navega. Por
+    // isso o dano é baixo e o cast, longo o bastante para dar saída: um stun
+    // sem janela de fuga seria a coisa mais forte do bestiario.
+    relic: {
+      manaCost: 6, radius: 54, damagePct: 0.85, castMs: 900,
+      cc: { stunMs: 2000, slowPct: 0.30, slowMs: 2500 },
+    },
+    // Stun mais curto do lado do bicho (1,6 s contra 2 s) de propósito: perder
+    // o barco é pior do que perder um alvo, e a cobra usa isto a cada 22 s.
+    npc:   { rangeMin: 0, rangeMax: 230, radius: 70, damageMult: 2.2,
+             castTime: 1400, cooldown: 22000, weight: 3,
+             cc: { stunMs: 1600, slowPct: 0.30, slowMs: 2500 } },
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -590,37 +689,93 @@ const MONSTER_SKILLS = {
   //    a área é uma PESSOA, não um lugar.
   // ═══════════════════════════════════════════════════════════════════════════
   charnel_death_mark: {
-    relicId: 'r44', name: 'Sentença do Crânio', icon: '💀', rarity: 'épico',
-    vfx: 'charnel_death_mark', source: 'leviata_boss', shape: 'multi', special: 'mark',
-    desc: 'Carimba 3 alvos; a marca ANDA COM ELES e estoura em 4 s onde estiverem.',
-    relic: { manaCost: 7, count: 3, spread: 60, radius: 22, damagePct: 1.00, castMs: 1000, fuseMs: 4000 },
-    npc:   { rangeMin: 0, rangeMax: 200, count: 3, spread: 150, radius: 60, damageMult: 3.0, castTime: 1000, cooldown: 20000, weight: 4, fuseMs: 4000 },
+    relicId: 'r44', name: 'Crânio Faminto', icon: '💀', rarity: 'épico',
+    // ══ CONVERGIDA (2026-09-05) ═════════════════════════
+    // O chefe fazia a Sentença do Crânio: três carimbos que ANDAVAM com a
+    // vítima e estouravam em 4 s onde ela estivesse. Era boa leitura de chefe
+    // (quem apanha olha para o próprio barco e corre) e não pedia nada na mão do
+    // jogador — marcar três e esperar quatro segundos não é jogada, é espera.
+    //
+    // As duas faces são o CRÂNIO FAMINTO: três crânios sobem do mar e CAÇAM.
+    // O `special: 'mark'` saiu do jogo junto (está no git).
+    vfx: 'charnel_skull_hunter', source: 'leviata_boss', shape: 'circle',
+    special: 'summons', summonMode: 'hunt',
+    // Nascem em volta do CASCO de quem lançou, não no ponto mirado. Numa skill
+    // cuja graça é a perseguição, nascer longe troca a ameaça por um teste de
+    // pontaria que a skill nem quer cobrar — saindo de baixo do casco, a mira
+    // volta a ser só a DIREÇÃO da caçada.
+    spawnAtCaster: true,
+    desc: 'Três crânios sobem do mar e perseguem quem estiver mais perto por 5 s. Correr funciona — e quem foge não atira.',
+    // `moveSpeed` fica ABAIXO dos ~45 un/s do barco em nenhum dos lados: eles
+    // alcançam, mas devagar o bastante para dar três ou quatro segundos de
+    // fuga. É aí que a skill cobra — no tempo em que você não está atirando.
+    relic: {
+      manaCost: 7, count: 3, radius: 24, damagePct: 0.55, castMs: 700,
+      lifeMs: 5000, moveSpeed: 62, catchRadius: 16, spread: 26,
+      summonTickMs: 160,
+    },
+    // 3 × 1,6 = 4,8 se as três alcançarem, contra os 3,0 de um carimbo só que
+    // era inescapável. Mais teto, e agora existe resposta.
+    npc:   { rangeMin: 0, rangeMax: 200, count: 3, radius: 34, damageMult: 1.6,
+             castTime: 1000, cooldown: 20000, weight: 4,
+             lifeMs: 5000, moveSpeed: 58, catchRadius: 18, spread: 34,
+             summonTickMs: 160 },
   },
   charnel_brood_hatch: {
-    relicId: 'r45', name: 'Ninhada Pútrida', icon: '🥚', rarity: 'raro',
-    vfx: 'charnel_brood_hatch', source: 'leviata_boss', shape: 'multi', special: 'brood',
-    desc: 'Cinco ovos com 6 s de chocagem. Cada ovo destruído a tempo é uma explosão a menos.',
-    // `triggerRadius` é BEM maior que o raio de dano (26 contra 9): o ovo tem
-    // de reagir a quem se aproxima, não a quem já passou por cima dele — senão
-    // o pulo aconteceria tarde demais para ser visto, que é metade da leitura.
-    // `radius` subiu de 9 para 16 pelo mesmo motivo do morteiro: 9 un é uma
-    // marcação que só pune quem estiver parado no pixel.
-    relic: { manaCost: 6, count: 5, spread: 65, radius: 16, damagePct: 0.50, castMs: 1100, hatchMs: 6000,
-             triggerRadius: 26, jumpMs: 350 },
-    npc:   { rangeMin: 0, rangeMax: 200, count: 5, spread: 180, radius: 22, damageMult: 1.6, castTime: 1100, cooldown: 19000, weight: 4, hatchMs: 6000 },
+    relicId: 'r45', name: 'Ninhada à Espreita', icon: '🥚', rarity: 'raro',
+    // ══ CONVERGIDA (2026-09-05) ═════════════════════════
+    // O chefe punha cinco ovos com 6 s de chocagem, e o relógio decidia tudo. A
+    // emboscada troca o relógio pela DECISÃO de quem passa: as crias nascem no
+    // mar e dormem; quem chegar perto é que acorda a ninhada. Mesma fantasia,
+    // pergunta outra. O `special: 'brood'` saiu do jogo junto (está no git).
+    vfx: 'charnel_brood_ambush', source: 'leviata_boss', shape: 'circle',
+    special: 'summons', summonMode: 'ambush',
+    desc: 'Cinco crias nascem espalhadas e DORMEM. Quem passar perto acorda a ninhada — e aí elas são mais rápidas que o barco.',
+    // `moveSpeed` acima do barco de propósito: acordou, alcançou. O que dá
+    // saída é VER o ninho e contornar, não correr depois.
+    relic: {
+      manaCost: 6, count: 5, spread: 55, radius: 20, damagePct: 0.50, castMs: 800,
+      lifeMs: 5000, moveSpeed: 78, catchRadius: 14, triggerRadius: 48,
+      summonTickMs: 160,
+    },
+    // Espalhamento maior do lado do chefe (a arena é maior) e 5 × 1,1 = 5,5 de
+    // teto — que na prática ninguém paga inteiro: acordar as cinco exigiria
+    // passar por dentro do ninho todo.
+    npc:   { rangeMin: 0, rangeMax: 200, count: 5, spread: 90, radius: 26,
+             damageMult: 1.1, castTime: 1100, cooldown: 19000, weight: 4,
+             lifeMs: 5000, moveSpeed: 74, catchRadius: 16, triggerRadius: 55,
+             summonTickMs: 160 },
   },
   charnel_chain_bond: {
-    relicId: 'r46', name: 'Grilhões do Ossuário', icon: '⛓️', rarity: 'épico',
-    // ⛔ RELIQUIA DESATIVADA (playtest 2026-08-22). O `special: 'bond'` nunca
-    // foi implementado — nao ha par, nao ha corrente e nao ha sangramento por
-    // esticar. Sobrava um circulo de dano com nome de mecanica.
-    relicDisabled: true,
-    vfx: 'charnel_chain_bond', source: 'leviata_boss', shape: 'circle', special: 'bond',
-    desc: 'Acorrenta inimigos em pares por 6 s: quem esticar a corrente sangra junto com o par.',
-    relic: { manaCost: 7, radius: 55, pairCount: 2, maxLength: 45, castMs: 1200, durationMs: 6000,
-             ticks: { count: 12, intervalMs: 500, pct: 0.20 } },
-    npc:   { rangeMin: 0, rangeMax: 140, radius: 140, pairCount: 2, maxLength: 120, damageMult: 0.7, castTime: 1200, cooldown: 22000, weight: 4,
-             durationMs: 6000, ticks: { count: 12, intervalMs: 500 } },
+    relicId: 'r46', name: 'Escolta de Ossos', icon: '🦴', rarity: 'épico',
+    // ══ CONVERGIDA (2026-09-05) ═════════════════════════
+    // O `special: 'bond'` (acorrentar em pares, sangrar quem esticasse) nunca
+    // teve implementação em motor nenhum, e a relíquia ficou desativada por isso
+    // em 2026-08-22. Ela virou ESCOLTA; agora o chefe usa a mesma.
+    //
+    // É a única do bestiario sem alvo próprio: ela não abre uma jogada, ela
+    // AMPLIFICA o que quem lançou já estava fazendo. Na mão do chefe isso vira
+    // uma ameaça pendente — enquanto as caveiras estiverem em órbita, todo
+    // golpe dele vale mais, e dá para ver isso antes de sentir.
+    vfx: 'charnel_bone_escort', source: 'leviata_boss', shape: 'circle',
+    special: 'summons', summonMode: 'escort',
+    desc: 'Três caveiras ficam em órbita do casco e SALTAM juntas sempre que quem as invocou acerta alguma coisa.',
+    // A janela (`durationMs`) só começa a contar no PRIMEIRO salto — guardar a
+    // escolta para a briga certa é jogada, não desperdício.
+    //
+    // As três saltam JUNTAS, e o dano é o da SALVA inteira, não de cada caveira.
+    // Antes cada acerto gastava uma, o que lia como "a skill está falhando":
+    // você via três na órbita e só uma reagia. A recarga entre salvas existe
+    // para uma bordada de quatro balas não gastar a skill inteira num piscar.
+    relic: {
+      manaCost: 7, count: 3, radius: 22, damagePct: 0.60, castMs: 400,
+      durationMs: 10000, leapCooldownMs: 1500, orbitRadius: 26,
+    },
+    // Recarga maior do lado do chefe: os golpes dele acertam área, e a 1,5 s a
+    // escolta sairia junto com cada leva de canalizada. ~5 salvas em 10 s.
+    npc:   { rangeMin: 0, rangeMax: 140, count: 3, radius: 30, damageMult: 0.9,
+             castTime: 900, cooldown: 22000, weight: 4,
+             durationMs: 10000, leapCooldownMs: 1800, orbitRadius: 34 },
   },
   charnel_funeral_march: {
     relicId: 'r47', name: 'Marcha Fúnebre', icon: '⚰️', rarity: 'lendário', star: true, // ⭐
@@ -633,10 +788,27 @@ const MONSTER_SKILLS = {
     // clímax do desenho — não batia em nada.
     special: 'collapse', burstAtCenter: true,
     desc: 'A arena aperta em 4 passos de espinho e no fim o MIOLO explode. Deixe-se apertar, e saia do centro no fim.',
+    // `tangible`: os espinhos entram no wallManager e viram PAREDE de verdade,
+    // replantados a cada passo. O empurrão por posição sozinho reposicionava uma
+    // vez por leva e dava para remar de volta para fora no intervalo — a coroa
+    // que a tela mostra fechando não segurava ninguém. Os dois se completam: o
+    // empurrão é o aperto, a parede é o que impede de escapar dele.
     relic: { manaCost: 10, radius: 120, finalRadius: 30, collapseRadius: 45, phaseCount: 4, damagePct: 1.60, castMs: 2600,
-             collapseTo: 30,
+             collapseTo: 30, tangible: true, spikeCount: 14,
              ticks: { count: 8, intervalMs: 500, pct: 0.18 } },
-    npc:   { rangeMin: 0, rangeMax: 320, radius: 320, finalRadius: 80, collapseRadius: 120, phaseCount: 4, damageMult: 5.0, castTime: 2600, cooldown: 28000, weight: 2,
+    // Mesma história da Espiral, e aqui foi onde o playtest bateu: o Carniceiro
+    // apertava a arena no desenho e no dado, e não apertava nada no motor.
+    // 5,0 × 8 levas era um número que só podia existir porque nenhuma pegava;
+    // agora são 0,55 por leva e 4,0 no miúlo (≈ 8,4× no pior caso, na faixa da
+    // Sobrecarga do Núcleo, que é a outra lendária de chefe).
+    //
+    // `tangible` aqui e NÃO na Espiral de propósito: a Marcha é a ⭐ do chefe
+    // final e a arena fechando É a skill. Um mob de mapa aberto levantando 18
+    // caixas de colisão a cada 20 s seria opressivo pelo motivo errado.
+    npc:   { rangeMin: 0, rangeMax: 320, radius: 320, finalRadius: 80, collapseRadius: 120,
+             atCaster: true, phaseCount: 4, damageMult: 0.55, burstMult: 4.0,
+             tangible: true, spikeCount: 18,
+             castTime: 2600, cooldown: 28000, weight: 2,
              ticks: { count: 8, intervalMs: 500 } },
   },
 
@@ -674,6 +846,18 @@ const MONSTER_SKILLS = {
     // ninguém a skill terminava em SILÊNCIO, sem dano, sem aviso, sem nada.
     // 58 continua sendo o alcance mais curto do conjunto (é uma mordida), mas
     // agora é um alcance que existe.
+    // ── `atCaster`: a bocarra E O PEITO de quem lança ────────────────────
+    // Os DOIS motores sempre mediram a área a partir do LANÇADOR (o
+    // `dist2D(npc, p)` do _runSwallow, o `player.x/player.z` do _castSwallow) —
+    // e o dado não dizia isso a ninguém. Sem a marca, o cliente ancora círculo
+    // no PONTO MIRADO: o desenho nascia em cima do alvo (onde ele estava no
+    // instante do cast) enquanto o dano era medido do bicho. Dois círculos de
+    // raio 75 a até 75 un um do outro — quase disjuntos. Era o "às vezes estou
+    // dentro e não tomo dano, às vezes estou fora e tomo".
+    //
+    // Ancorada no lançador a área ainda ANDA com ele durante o cast, que é o
+    // que a mordida precisa: o bicho fecha a distância enquanto escancara.
+    atCaster: true,
     relic: { manaCost: 6, radius: 58, holdMs: 2000, spitDist: 55, castMs: 900,
              ticks: { count: 5, intervalMs: 400, pct: 0.42 } },
     npc:   { rangeMin: 0, rangeMax: 75, radius: 75, holdMs: 2000, spitDist: 95, damageMult: 1.5, castTime: 900, cooldown: 18000, weight: 7,
@@ -743,22 +927,36 @@ const MONSTER_SKILLS = {
   // pergunta de "onde vai cair?" para "onde ELE está indo?".
   // ═══════════════════════════════════════════════════════════════════════════
   alien_boss_face_choir: {
-    relicId: 'r52', name: 'Coro dos Rostos', icon: '😱', rarity: 'lendário',
-    vfx: 'alien_boss_face_choir', source: 'alien_boss', shape: 'circle', special: 'silence',
-    desc: 'Os rostos presos na carne gritam juntos: você fica SEM RELÍQUIAS por 2 s.',
-    // ── `silence`: o eixo que faltava ──────────────────────────────────────
+    relicId: 'r52', name: 'Coro dos Afogados', icon: '😱', rarity: 'lendário',
+    // ══ CONVERGIDA (2026-09-05) ═════════════════════════
     // Os rostos humanos embutidos no corpo dele são o detalhe mais perturbador
-    // do modelo, e são gente que ele comeu. A skill é essa gente gritando.
+    // do modelo, e são gente que ele comeu. A skill é essa gente gritando — e
+    // agora ela SAI do casco em vez de só gritar de dentro dele.
     //
-    // Silêncio é duro de propósito, e por isso é CURTO (2 s) e vem com o
-    // telegraph mais longo do conjunto (1,8 s): dá para sair. Você continua
-    // navegando e atirando de canhão — perde o botão, não o barco. Um silêncio
-    // longo num jogo construído sobre relíquias viraria tempo morto.
-    //
-    // `atCaster` porque o grito sai DELE: a zona segura é longe, não em volta.
-    atCaster: true,
-    relic: { manaCost: 8, radius: 70, silenceMs: 2000, damagePct: 0.90, castMs: 1800 },
-    npc:   { rangeMin: 0, rangeMax: 190, radius: 190, silenceMs: 2000, damageMult: 2.2, castTime: 1800, cooldown: 24000, weight: 5 },
+    // O `special: 'silence'` era a forma de resolução da face do chefe; virou
+    // apenas o campo `silenceMs`, que é o que ele sempre foi: um debuff no
+    // acerto, não um jeito de resolver área. O eixo continua no jogo — e agora
+    // é cada rosto que encosta em você que o aplica.
+    vfx: 'alien_face_volley', source: 'alien_boss', shape: 'circle',
+    special: 'summons', summonMode: 'volley',
+    desc: 'Cinco rostos se desprendem do casco e voam no alvo mais perto. Cada um pode atordoar — e, na boca do chefe, calar.',
+    // O stun é SORTEIO por rosto e não garantia: cinco chances de 10% são ~41%
+    // de pelo menos um, o que dá à skill um teto alto sem transformá-la em
+    // controle confiável.
+    relic: {
+      manaCost: 8, count: 5, radius: 20, damagePct: 0.45, castMs: 700,
+      lifeMs: 4000, moveSpeed: 88, catchRadius: 15, spread: 18,
+      summonTickMs: 150, stunChance: 0.10, stunMs: 900,
+    },
+    // `silenceMs` só do lado do chefe, e curto: tirar o botão de quem apanha
+    // muda a luta, mas NPC não usa relíquia — na mão do jogador o silêncio
+    // seria uma linha de texto sem efeito. Você continua navegando e atirando de
+    // canhão: perde o botão, não o barco.
+    npc:   { rangeMin: 0, rangeMax: 190, count: 5, radius: 26, damageMult: 0.9,
+             castTime: 1200, cooldown: 24000, weight: 5,
+             lifeMs: 4000, moveSpeed: 84, catchRadius: 17, spread: 22,
+             summonTickMs: 150, stunChance: 0.10, stunMs: 900,
+             silenceMs: 1100 },
   },
   alien_boss_cortex_mirror: {
     relicId: 'r53', name: 'Espelho do Córtex', icon: '🪞', rarity: 'épico',
@@ -797,7 +995,11 @@ const MONSTER_SKILLS = {
     // `rays` gira em volta de quem lançou (spinSpeed em rad/s) — o acerto
     // acompanha o desenho pelo crownSpin(). Poucos raios, brechas largas: a
     // skill é sobre andar junto com o giro, não sobre fugir dele.
-    relic: { manaCost: 6, length: 95, angle: 26, rayCount: 5, spinSpeed: 1.15, castMs: 1200,
+    // `length` 95 → 58: a coroa girava com raio de BICHO na mão do jogador e
+    // cobria meia tela — não havia "andar junto com o giro", havia estar
+    // dentro. 58 é quatro cascos de raio: as brechas passam a caber na tela e
+    // a skill volta a ser sobre acompanhar o sentido do giro.
+    relic: { manaCost: 6, length: 58, angle: 26, rayCount: 5, spinSpeed: 1.15, castMs: 1200,
              ticks: { count: 14, intervalMs: 220, pct: 0.24 } },
     npc:   { rangeMin: 0, rangeMax: 230, length: 230, angle: 26, rayCount: 5, spinSpeed: 1.15, damageMult: 0.85, castTime: 1200, cooldown: 20000, weight: 5,
              ticks: { count: 14, intervalMs: 220 } },
@@ -847,8 +1049,21 @@ const MONSTER_SKILLS = {
     // `seekRadius` é o alcance de BUSCA da relíquia (o bicho usa `rangeMax`, que
     // só existe do lado dele). Sem este número a versão do jogador cairia num
     // default e procuraria alvo num raio que ninguém escolheu.
-    relic: { manaCost: 7, radius: 24, maxTargets: 4, seekRadius: 150, damagePct: 0.80, castMs: 1500 },
-    npc:   { rangeMin: 0, rangeMax: 320, radius: 42, maxTargets: 8, damageMult: 2.6, castTime: 1600, cooldown: 17000, weight: 8 },
+    // `castMs` 1500 → 800 e `radius` 24 → 32. As posições são TRAVADAS no cast,
+    // então o tempo de carga é exatamente a distância que o alvo tem para sair:
+    // a 45 un/s, 1,5 s davam 67 un de fuga contra uma coluna de raio 24 —
+    // nenhum NPC em movimento era atingido, nunca. Com 800 ms são 36 un, e a
+    // coluna mais larga fecha o resto: quem reage escapa, quem está navegando
+    // reto leva. Continua sendo teste de reação, só que com uma reação
+    // possível de perder.
+    relic: { manaCost: 7, radius: 32, maxTargets: 4, seekRadius: 150, damagePct: 0.80, castMs: 800 },
+    // ── Cast 1600 → 950 (2026-09-06) ─────────────────────────────
+    // As colunas TRAVAM a posição no cast (`targetMode`), então o cast É a
+    // distância de fuga. A 45 un/s, 1,6 s davam 72 un contra um raio de 42:
+    // 30 un de sobra — quem já estava navegando saia sem nem perceber. Em 950 ms
+    // a conta fecha em ~43 un, colada no raio: sair passa a exigir estar indo
+    // para o lado certo. Mesmo número que a face da relíquia levou no playtest.
+    npc:   { rangeMin: 0, rangeMax: 320, radius: 42, maxTargets: 8, damageMult: 2.6, castTime: 950, cooldown: 17000, weight: 8 },
   },
   abyss_hunter_lights: {
     relicId: 'r58', name: 'Faróis de Carne', icon: '🕯️', rarity: 'épico',
@@ -879,7 +1094,10 @@ const MONSTER_SKILLS = {
              seekRadius: 150, radius: 60, damagePct: 0.95, castMs: 1000,
              cc: { slowPct: 0.25, slowMs: 1500 } },
     npc:   { rangeMin: 0, rangeMax: 300, lightCount: 3, lifeMs: 5000, lightSpeed: 62, catchRadius: 18,
-             radius: 70, damageMult: 2.2, castTime: 1000, cooldown: 21000, weight: 6,
+             // Cast 1000 → 800 (2026-09-06): aqui o cast nunca foi a esquiva —
+             // as luzes PERSEGUEM depois dele. Encurtar é só ritmo, para o
+             // arauto parar de passar mais tempo carregando que atacando.
+             radius: 70, damageMult: 2.2, castTime: 800, cooldown: 21000, weight: 6,
              cc: { slowPct: 0.25, slowMs: 1500 } },
   },
   abyss_earth_prison: {
@@ -949,29 +1167,58 @@ const MONSTER_SKILLS = {
     // `width` 26 → 34: num corredor que você dirige com o mouse, 13 un de folga
     // para cada lado é menos que o erro de mão em movimento — era a mesma
     // queixa que engrossou o Jato do Pescoço.
+    // `burstPct`: a PANCADA de abertura, no instante em que o raio encosta. Sem
+    // ela o `damagePct` do dado era letra morta — numa canalizada o `ticks.pct`
+    // substitui o dano cheio em todas as levas, inclusive a primeira, e a Lente
+    // lia como dez cutucões. Agora são duas camadas: 0,55 ao acertar + 10 × 0,15
+    // enquanto o alvo ficar no corredor (teto de 2,05 se ele não sair nunca).
     relic: { manaCost: 6, length: 130, width: 34, eruptRadius: 32, damagePct: 1.10,
+             burstPct: 0.55,
              castMs: 1300, travelMs: 180, follow: true,
              ticks: { count: 10, intervalMs: 150, pct: 0.15 } },
-    npc:   { rangeMin: 0, rangeMax: 280, length: 280, width: 46, eruptRadius: 60, damageMult: 2.9, castTime: 1400, cooldown: 15000, weight: 7,
+    // ── Cast 1400 → 900 (2026-09-06) ─────────────────────────────
+    // Era a mais fácil de todas, e o comprimento enganava: de um corredor
+    // ninguém escapa correndo 280 un para a frente — escapa andando 23 (meia
+    // largura) DE LADO. 23 un custam 511 ms; o cast dava 1400. Quase 900 ms de
+    // sobra pura. Em 900 sobram ~390, que é tempo de ver e virar, não de passear.
+    npc:   { rangeMin: 0, rangeMax: 280, length: 280, width: 46, eruptRadius: 60, damageMult: 2.9, castTime: 900, cooldown: 15000, weight: 7,
              travelMs: 200 },
   },
   abyss_herald_embrace: {
-    relicId: 'r60', name: 'Abraço do Arauto', icon: '🫂', rarity: 'lendário', star: true, // ⭐
-    vfx: 'abyss_herald_embrace', source: 'arauto', shape: 'circle',
-    // Os quatro braços são o que o modelo tem de mais próprio, e a leitura sai
-    // deles: a área nasce NELE (`atCaster`), os braços disparam para fora e o
-    // que era distância vira aglomeração. Puxa para o peito e PRENDE ali.
+    relicId: 'r60', name: 'Tromba do Arauto', icon: '🌪️', rarity: 'lendário', star: true, // ⭐
+    // ══ CONVERGIDA (2026-09-05) ═════════════════════════
+    // O Abraço era uma leitura de ARENA: os quatro braços fisgavam todo mundo
+    // por perto e arrastavam para o peito dele, entregando a vítima para a sala
+    // inteira. Isso só vale quando existe sala — no mundo aberto, na mão do
+    // jogador, era um puxa-e-bate como vários outros. As duas faces agora são a
+    // TROMBA. O abraço está no git.
     //
-    // Na arena isso não é só dano: quem foi arrastado aterrissa colado no chefe,
-    // parado, com os outros jogadores por perto — a skill entrega a vítima para
-    // a sala inteira. É o ⭐ do conjunto por isso, e não pelo número.
-    atCaster: true,
-    desc: 'Os quatro braços disparam, fisgam quem estiver por perto e ARRASTAM todo mundo para o peito dele — juntos, presos e no meio do estouro.',
-    relic: { manaCost: 8, radius: 75, damagePct: 1.30, castMs: 1600,
-             cc: { pullTo: 24, rootMs: 1400, slowPct: 0.30, slowMs: 2500 } },
-    npc:   { rangeMin: 0, rangeMax: 210, radius: 210, damageMult: 3.4, castTime: 1700, cooldown: 26000, weight: 4,
-             cc: { rootMs: 2200, slowPct: 0.30, slowMs: 3000 },
-             effects: [{ type: 'pull', pullDistance: 46 }] },
+    // Reaproveita o motor da Orbe Caçadora com uma diferença que muda tudo:
+    // `sticky`. A orbe estoura ao alcançar; a tromba GRUDA e continua moendo até
+    // a vida dela acabar, e só aí estoura. Sem isso, "segue o alvo dando dano
+    // por tique" seria uma promessa de um tique só.
+    vfx: 'abyss_herald_twister', source: 'arauto', shape: 'circle',
+    special: 'orb', sticky: true,
+    // Sem `atCaster`: ela VIAJA. Presa ao casco, o desenho seria arrastado
+    // junto com quem lançou em vez de perseguir.
+    desc: 'Uma tromba d\'água persegue o alvo, gruda nele e mói até se desfazer. Dá para sair — e sair é a jogada.',
+    relic: {
+      manaCost: 9, radius: 46, catchRadius: 12, orbSpeed: 36,
+      lifeMs: 6000, orbTickMs: 400, orbTickPct: 0.14, damagePct: 1.10,
+      castMs: 1200,
+      cc: { slowPct: 0.40, slowMs: 1400 },
+    },
+    // `orbSpeed` abaixo dos ~45 un/s do barco nos dois lados: ela alcança quem
+    // parar ou for lento, e perde de quem decidir remar. O slow é o que torna
+    // essa decisão difícil — e é por ele que ela é a ⭐ do conjunto, não pelo
+    // número. 15 levas × (2,4 × 0,14) + estouro ≈ 7,4 para quem ficar os 6 s.
+    npc:   { rangeMin: 0, rangeMax: 210, radius: 60, catchRadius: 14,
+             orbSpeed: 34, lifeMs: 6000, orbTickMs: 400, orbTickPct: 0.14,
+             // Cast 1400 → 1150 (2026-09-06). Mesma história das luzes: a
+             // tromba GRUDA e persegue, então quem decide se você escapa é a
+             // corrida (34 un/s dela contra 45 do barco), não o aviso.
+             damageMult: 2.4, castTime: 1150, cooldown: 26000, weight: 4,
+             cc: { slowPct: 0.40, slowMs: 1400 } },
   },
 };
 
@@ -985,6 +1232,40 @@ const SKILLS_BY_SOURCE = {};
 const MONSTER_RELIC_DEFS = {};
 /** Entradas prontas para o ATTACK_DEFS (versão usada pelo próprio bicho). */
 const MONSTER_ATTACK_DEFS = {};
+/**
+ * As relíquias do bestiario que o PET pode usar.
+ *
+ * O critério não é gosto: o servidor NÃO SABE ONDE O PET ESTÁ (a posição dele é
+ * do cliente — ver a nota do `_petDist` no pet-manager). Então só entra o que
+ * resolve numa ÁREA APONTADA e não depende de onde o lançador está. Ficam de
+ * fora, por construção:
+ *
+ *   cone / line / rays  — nascem no casco: sairiam do NAVIO, não do bicho
+ *   `follow`            — re-mira no cursor, e o pet não tem mouse
+ *   `atCaster`          — idem: a área é em volta de quem lança
+ *   `dash`              — desloca o lançador
+ *   `targetMode`        — mira todos no alcance; a mira é do pet, não do dono
+ *   escolta / bulwark / mirror / drain / manaburn — dependem do DONO
+ *   sem dano            — prisão e jaula: o pet não teria o que decidir
+ *
+ * O que VOA do casco até o alvo (faróis, crânios, ninhada) fica: é o mesmo
+ * compromisso que o Foguete Naval já faz hoje na mão do pet — sai do navio e
+ * acerta onde o pet mandou.
+ *
+ * `petRange` é 'medio' em todas de propósito. 'longo' está reservado ao trio de
+ * artilharia que já o tinha (foguete e meteoro): dar alcance longo a vinte
+ * relíquias faria o pet abrir briga sozinho, que é o oposto de suporte.
+ */
+//
+// A r48 (Bocarra Torácica) SAIU em 2026-09-06: ela sempre resolveu em volta do
+// LANÇADOR, e como o servidor não sabe onde o pet está, quem mandava o bicho
+// abrir o peito via a bocarra abrir no PRÓPRIO casco. Ela passava no guarda
+// abaixo só porque o dado não declarava o `atCaster` que o motor já praticava.
+const PET_RELIC_IDS = new Set([
+  'r17', 'r19', 'r20', 'r21', 'r24', 'r25', 'r27', 'r29', 'r33', 'r39',
+  'r41', 'r42', 'r43', 'r44', 'r45', 'r47', 'r49', 'r56', 'r58',
+]);
+
 /** relicIds das ⭐ — o que o bicho guarda para a noite e só dropa à noite. */
 const STAR_RELIC_IDS = new Set();
 
@@ -1025,7 +1306,23 @@ for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
     // cast, em vez de uma vez no ponto mirado. `maxTargets` vem de dentro do
     // `relic`/`npc` porque o teto é diferente nos dois lados.
     targetMode: s.targetMode || null,
+    // ── Invocações e perseguição ───────────────────────────────────
+    // `summonMode` escolhe qual das quatro leituras (hunt/ambush/volley/escort),
+    // `spawnAtCaster` diz se as criaturas nascem no casco, `sticky` faz a orbe
+    // GRUDAR no alvo em vez de estourar ao alcançar. Os três moram no topo da
+    // skill (são forma, não balanço) e por isso PRECISAM ser copiados nos dois
+    // builders — campo do topo que só um lado copia some em silêncio, e o outro
+    // cai no default: as quatro invocações viravam 'hunt' e a tromba parava de
+    // grudar, sem erro nenhum. Ver o guarda em npc-special-parity.test.js.
+    summonMode: s.summonMode || null,
+    spawnAtCaster: !!s.spawnAtCaster,
+    sticky: !!s.sticky,
     castTime: s.relic.castMs,
+    // Pet: ver PET_RELIC_IDS acima. Fica ANTES do spread para uma skill poder
+    // sobrescrever — e depois do resto porque nada mais mexe nesses campos.
+    petUsable: PET_RELIC_IDS.has(s.relicId),
+    petTarget: PET_RELIC_IDS.has(s.relicId) ? 'inimigo' : undefined,
+    petRange:  PET_RELIC_IDS.has(s.relicId) ? 'medio' : undefined,
     ...s.relic,
   };
 
@@ -1050,6 +1347,23 @@ for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
     dropWarnMs: s.dropWarnMs || null,
     turnRate: s.turnRate || null,
     targetMode: s.targetMode || null,      // ver a nota no MONSTER_RELIC_DEFS
+    // O miúlo do anel que aperta. Estava SO no MONSTER_RELIC_DEFS: a face do
+    // bicho declarava `collapse` e `collapseRadius` e não levava a flag que
+    // manda o centro explodir, então mesmo depois de o motor ganhar o branch a
+    // Marcha Fúnebre pararia no último passo do aperto. Campo do TOPO da skill
+    // (é forma, não balanço) e por isso precisa ser copiado nos DOIS lados.
+    // ── Invocações e perseguição ───────────────────────────────────
+    // `summonMode` escolhe qual das quatro leituras (hunt/ambush/volley/escort),
+    // `spawnAtCaster` diz se as criaturas nascem no casco, `sticky` faz a orbe
+    // GRUDAR no alvo em vez de estourar ao alcançar. Os três moram no topo da
+    // skill (são forma, não balanço) e por isso PRECISAM ser copiados nos dois
+    // builders — campo do topo que só um lado copia some em silêncio, e o outro
+    // cai no default: as quatro invocações viravam 'hunt' e a tromba parava de
+    // grudar, sem erro nenhum. Ver o guarda em npc-special-parity.test.js.
+    summonMode: s.summonMode || null,
+    spawnAtCaster: !!s.spawnAtCaster,
+    sticky: !!s.sticky,
+    burstAtCenter: !!s.burstAtCenter,
     telegraph: { color: 0xff4400 },
     ...s.npc,
   };
@@ -1057,5 +1371,5 @@ for (const [key, s] of Object.entries(MONSTER_SKILLS)) {
 
 module.exports = {
   MONSTER_SKILLS, MONSTER_RELIC_DEFS, MONSTER_ATTACK_DEFS,
-  SKILLS_BY_SOURCE, STAR_RELIC_IDS,
+  SKILLS_BY_SOURCE, STAR_RELIC_IDS, PET_RELIC_IDS,
 };

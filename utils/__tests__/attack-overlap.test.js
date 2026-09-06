@@ -21,6 +21,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const AttackManager = require('../../managers/attack-manager.js');
 const { ATTACK_DEFS } = require('../../constants/index.js');
+const { CHAIN_ID } = require('./chain-fixture.js');
 
 const MAP = 1;
 /** Pausa aleatória entre ataques que o manager sempre soma (800–2200 ms). */
@@ -58,8 +59,11 @@ describe('busyMs — quanto o golpe ocupa o bicho depois do cast', () => {
     expect(AttackManager.busyMs(d)).toBe(d.lifeMs);
   });
 
-  it('Descarga em Cadeia ocupa até o último elo', () => {
-    const d = ATTACK_DEFS.drake_chain_arc;
+  // A cadeia ficou sem dono quando o Rastilho convergiu (2026-09-05) — nenhuma
+  // skill do jogo usa `shape: 'chain'` hoje. O def sintético do chain-fixture
+  // mantém a geometria coberta em vez de deixar o motor apodrecer calado.
+  it('Cadeia ocupa até o último elo', () => {
+    const d = ATTACK_DEFS[CHAIN_ID];
     expect(d.ticks).toBeUndefined();
     expect(AttackManager.busyMs(d)).toBe((d.count - 1) * d.jumpCastMs);
   });
@@ -76,8 +80,11 @@ describe('busyMs — quanto o golpe ocupa o bicho depois do cast', () => {
 describe('no caminho real, o bicho fica ocupado enquanto a skill acontece', () => {
   for (const [id, quanto] of [
     ['drake_hunter_orb', d => d.lifeMs],
-    ['drake_chain_arc',  d => (d.count - 1) * d.jumpCastMs],
-    ['drake_static_field', d => (d.ticks.count - 1) * d.ticks.intervalMs],
+    [CHAIN_ID,  d => (d.count - 1) * d.jumpCastMs],
+    // Uma canalizada comum, para cobrir o caso do laço de `ticks` puro. Era o
+    // Campo Estático até ele convergir para o Voltáico, que passou a resolver
+    // numa leva só (a carga única é a identidade da skill, não uma poça).
+    ['wyrm_boss_maw_vortex', d => (d.ticks.count - 1) * d.ticks.intervalMs],
   ]) {
     it(`${id}: _nextAttackTime cobre a skill inteira`, () => {
       const def = ATTACK_DEFS[id];
@@ -128,8 +135,8 @@ describe('a segunda skill não entra por cima da primeira', () => {
   });
 
   it('Cadeia: nenhum cast novo antes do último elo', () => {
-    const def = ATTACK_DEFS.drake_chain_arc;
-    const npc = fazerNpc('drake_chain_arc');
+    const def = ATTACK_DEFS[CHAIN_ID];
+    const npc = fazerNpc(CHAIN_ID);
     const jogador = fazerJogador();
 
     const telegraphs = [];
@@ -138,7 +145,7 @@ describe('a segunda skill não entra por cima da primeira', () => {
 
     am.tryAttack(npc, jogador, [jogador], MAP);
     vi.advanceTimersByTime(def.castTime);
-    npc.attacks = ['drake_chain_arc', 'crab_claw_slam'];
+    npc.attacks = [CHAIN_ID, 'crab_claw_slam'];
 
     const elos = (def.count - 1) * def.jumpCastMs;
     for (let t = 0; t < elos; t += 100) {
@@ -148,7 +155,7 @@ describe('a segunda skill não entra por cima da primeira', () => {
 
     // Os avisos de elo são do PRÓPRIO ataque (mesmo attackId) — o que não pode
     // aparecer é um attackId diferente.
-    const novos = telegraphs.filter(t => t.attackId !== 'drake_chain_arc');
+    const novos = telegraphs.filter(t => t.attackId !== CHAIN_ID);
     expect(novos, 'nenhuma skill nova no meio da cadeia').toHaveLength(0);
   });
 });

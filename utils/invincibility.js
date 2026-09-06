@@ -1,5 +1,6 @@
 // utils/invincibility.js
-// Névoa Espectral (r2) — a janela em que nada te machuca.
+// As janelas em que NADA te machuca: a Névoa Espectral (r2) e o período seguro
+// de quem acabou de renascer.
 //
 // ── Duas tentativas, e por que esta é a certa ───────────────────────────────
 // A relíquia nasceu com 5 s de imunidade e isso era resposta boa demais para
@@ -35,4 +36,27 @@ function isInvincible(e, now = Date.now()) {
   return !!(e && e.relicInvincibleExpires && now < e.relicInvincibleExpires);
 }
 
-module.exports = { isInvincible };
+/**
+ * O jogador está no período seguro pós-renascimento?
+ *
+ * ── Por que isto veio morar aqui ────────────────────────────────────────────
+ * Pela MESMA razão do `isInvincible`, e com o mesmo final: a checagem
+ * `p.safeUntil && now < p.safeUntil` estava copiada em doze lugares (tiro,
+ * ataque de bicho, torre, aggro de NPC…) e o motor genérico do bestiário —
+ * que hoje roda as 34 skills E as 34 relíquias feitas a partir delas — nasceu
+ * sem nenhuma delas. Resultado: durante os 30 s de trégua, canhão não te
+ * acertava mas QUALQUER relíquia acertava.
+ *
+ * O playtest achou pelo caminho mais desagradável: morrer para a Bocarra
+ * Torácica, apertar reviver e morrer de novo na mesma mordida.
+ */
+function isSafeAfterRespawn(e, now = Date.now()) {
+  return !!(e && e.safeUntil && now < e.safeUntil);
+}
+
+/** Qualquer uma das duas janelas — é o que todo caminho de dano deve perguntar. */
+function isUntouchable(e, now = Date.now()) {
+  return isInvincible(e, now) || isSafeAfterRespawn(e, now);
+}
+
+module.exports = { isInvincible, isSafeAfterRespawn, isUntouchable };

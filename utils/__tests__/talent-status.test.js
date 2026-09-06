@@ -12,15 +12,20 @@ function player(tal = {}, extra = {}) {
 
 const NOW = 1_700_000_000_000;
 
-// ── A tabela dos 52 ───────────────────────────────────────────────────────────
+// ── A tabela dos 59 ───────────────────────────────────────────────────────────
 
 describe('STATUS_STATS', () => {
-  it('cobre 52 stats, nos cinco regimes', () => {
+  it('cobre 59 stats, nos cinco regimes', () => {
+    // Eram 52 até a leva de talentos de 09/2026. Entraram as duas sequências de
+    // acerto (pilha), o bloqueio, os dois escudos, a precisão, a segunda
+    // perfuração, as duas reduções novas (torre e navio de NPC) e o fragmento
+    // extra; saíram o Vento Próprio, o dano de aríete e a redução de área, que
+    // eram talentos sem sistema.
     const stats = Object.keys(st.STATUS_STATS);
-    expect(stats).toHaveLength(52);
+    expect(stats).toHaveLength(59);
     const kinds = {};
     for (const k of Object.values(st.STATUS_STATS)) kinds[k] = (kinds[k] || 0) + 1;
-    expect(kinds).toEqual({ stack: 4, window: 3, cooldown: 1, cond: 13, hit: 31 });
+    expect(kinds).toEqual({ stack: 6, window: 3, cooldown: 1, cond: 12, hit: 37 });
   });
 
   it('todo stat da tabela pertence a um talento que existe', () => {

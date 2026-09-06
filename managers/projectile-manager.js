@@ -11,10 +11,24 @@ const {
   SHOW_LOG, CANNON_DEFS, MAP_DEFS, difficultyRewardMult,
 } = require('../constants');
 
+// ── Desvio do tiro que ERRA ───────────────────────────────────────
+// Quanto o projétil reprovado na precisão passa AO LADO do ponto mirado. O piso
+// tem de ser maior que o HIT_RADIUS (8) — senão a bala erra "por dentro" do
+// casco, que é a aparência de bug que a rolagem por tiro veio consertar.
+//
+// Encolheu de 14..26 para 10..15 no playtest de 04/09: a bala reprovada saia tao
+// longe do ponto mirado que a salva nao cabia mais no retículo da mira (que
+// desenha o `spreadRadius` e mais nada), e o tiro lia como "espalhado demais".
+// A folga precisa passar do HIT_RADIUS para a bala nao atravessar o casco, mas
+// nao precisa de meio mapa para isso — bastam ~2 un além do raio de acerto.
+const MISS_CLEARANCE = HIT_RADIUS + 2;   // folga mínima, em unidades de mundo
+const MISS_SPREAD    = 5;    // quanto ela ainda pode abrir além da folga
+
 const { SKILLS_BY_SOURCE, MONSTER_SKILLS } = require('../constants/monster_skills');
 const { partyRewardMult } = require('./party-manager');
+const shield = require('../utils/shield');
 const { starDropAllowed } = require('../utils/star-gate');
-const { isInvincible } = require('../utils/invincibility');
+const { isInvincible, isSafeAfterRespawn } = require('../utils/invincibility');
 const { applyGoldShield } = require('../utils/gold-shield');
 
 // Pool de relíquias de um bicho = os ataques que ele REALMENTE usa.
@@ -101,7 +115,6 @@ class ProjectileManager {
 
     this.projectiles = new Map();
     this._hitBatch = new Map();
-    this._lifesteals = new Map();
     this._respawnTimers = new Map(); // Rastrear timers de respawn
 
     this.totalNpcKills = 0;
@@ -125,13 +138,6 @@ class ProjectileManager {
     if (this._hitBatch.size > this._maxBatchSize) {
       console.warn(`⚠️ HitBatch muito grande: ${this._hitBatch.size}, limpando...`);
       this._hitBatch.clear();
-    }
-    
-    // Limpar _lifesteals de jogadores desconectados
-    for (const [playerId] of this._lifesteals) {
-      if (!this.players.has(playerId)) {
-        this._lifesteals.delete(playerId);
-      }
     }
     
     // Limpar DOTs expirados de NPCs
@@ -160,7 +166,12 @@ class ProjectileManager {
     }
   }
 
-  spawn(shooter, targetX, targetZ, lifesteal = 0, damageMult = 1.0, cannonDmg = 0) {
+  /**
+   * Um projétil. `miss` marca o tiro que a rolagem de precisão já reprovou:
+   * ele VOA e cai na água normalmente (o jogador vê a salva sair), mas o
+   * checkHit o ignora — errar tem de parecer errar, não "acertou e não doeu".
+   */
+  spawn(shooter, targetX, targetZ, miss = false, damageMult = 1.0, cannonDmg = 0) {
     const id = projUid();
 
     const dx = targetX - shooter.x;
@@ -180,7 +191,7 @@ class ProjectileManager {
       ownerId:      shooter.id,
       ownerIsNPC:   !!shooter.isNPC,
       ownerMapLevel: shooter.mapLevel || 1,  // zone isolation
-      lifesteal,
+      miss,
       cannonDmg,
       x: shooter.x,
       y: 0,
@@ -327,6 +338,39 @@ class ProjectileManager {
 
     const totalShots = shots.length || 1;
 
+    // ── Precisão: uma rolagem POR TIRO ─────────────────────────────────────
+    // Era uma por SALVA até 2026-09-04, e a troca veio do playtest: "sinto que
+    // estou errando muito mesmo acertando, parece bug". E parecia mesmo — a
+    // bordada inteira passava por dentro do casco sem tirar um ponto de vida.
+    //
+    // A média NÃO muda com isso, e é o que faz a troca ser barata: numa salva de
+    // N tiros com precisão `a`, o valor esperado é N×a acertos dos dois jeitos
+    // (uma vez `a` para os N, ou `a` para cada um dos N). O que muda é a
+    // VARIÂNCIA: sai o cara-ou-coroa de bordada e entra um multiplicador de dano
+    // que se sente. A ficha continua valendo o que promete — 50% é metade do
+    // dano de 100%, só que agora ele chega em pedacinhos em vez de aos trancos.
+    //
+    // A nota antiga dizia que por tiro "o canhão de 50% empata com o de 70%".
+    // Não empata: com 40 tiros são 20 acertos contra 28, uma diferença de 40% de
+    // DPS toda salva. O que some é a sorte, não a diferença.
+    //
+    // Vale só para o JOGADOR. O NPC não tem `cannonAccuracy`, então cai no 1 e
+    // continua acertando como sempre acertou: a precisão é um eixo de progressão
+    // de quem compra canhão, e dar mira aos bichos mudaria o balanço de todos
+    // eles de uma vez, sem ninguém ter pedido.
+    const precisao = shooter.cannonAccuracy ?? 1;
+    let erraram = 0;
+
+    // Base da linha de tiro: `dir` aponta para o alvo, `perp` é o través. A
+    // dispersão é decomposta nela (ver o laço). Normalizada aqui fora — é a
+    // mesma para a salva inteira. Mirar em cima do próprio casco (distance 0)
+    // daria um vetor nulo, então o degenerado vira proa ao norte.
+    const inv   = distance > 0.001 ? 1 / distance : 0;
+    const dirX  = distance > 0.001 ? dx * inv : 0;
+    const dirZ  = distance > 0.001 ? dz * inv : 1;
+    const perpX = -dirZ;
+    const perpZ =  dirX;
+
     // Cluster spread radius around target — scales with distance
     // Close range: tight cluster. Long range: wider spread.
     const spreadRadius = Math.min(12, Math.max(3, distance * 0.08));
@@ -360,27 +404,56 @@ class ProjectileManager {
 
     // Fire each shot — collect into batch, send ONE message
     const spawnedProjs = [];
-    shots.forEach(cid => {
-      let impactX, impactZ;
-      const def = CANNON_DEFS[cid] || {};
-      const ls = def.lifesteal || 0;
+    // O id do canhão não é mais lido aqui: a única coisa que ele trazia por
+    // tiro era o roubo de vida. Dano, alcance e recarga já vêm agregados no
+    // jogador (recalcCannons), e a precisão é uma rolagem por TIRO.
+    shots.forEach(() => {
+      const acertou = Math.random() < precisao;
+      if (!acertou) erraram++;
+      // Cadência Mortal / Broca Corsária: a sequência mora no sorteio da mira,
+      // que é o único lugar do jogo que sabe se o tiro entrou ANTES de ele voar.
+      fx.noteStreakShot(shooter, acertou);
 
+      // Dispersão da salva, decomposta na base do tiro: `aoLongo` no eixo do
+      // disparo, `lateral` no través. Guardar as duas componentes separadas é o
+      // que deixa o desvio do erro SUBSTITUIR a lateral em vez de somar em cima
+      // dela — somando, a bala errada acumulava disco + folga e caía a até 38 un
+      // do ponto mirado, num retículo que desenha 12.
+      let aoLongo, lateral;
       if (totalShots === 1) {
-        const drift = (Math.random() - 0.5) * spreadRadius * 0.4;
-        const perp  = Math.atan2(dx, dz) + Math.PI / 2;
-        impactX = targetX + Math.cos(perp) * drift;
-        impactZ = targetZ + Math.sin(perp) * drift;
+        // Canhão único: não há bordada para espalhar, só uma folga estreita.
+        aoLongo = 0;
+        lateral = (Math.random() - 0.5) * spreadRadius * 0.4;
       } else {
         let rx, rz;
         do {
           rx = (Math.random() * 2 - 1) * spreadRadius;
           rz = (Math.random() * 2 - 1) * spreadRadius;
         } while (rx * rx + rz * rz > spreadRadius * spreadRadius);
-        impactX = targetX + rx;
-        impactZ = targetZ + rz;
+        aoLongo = rx * dirX  + rz * dirZ;
+        lateral = rx * perpX + rz * perpZ;
       }
 
-      const proj = this.spawn(shooter, impactX, impactZ, ls, (shooter.damageMultiplier || 1.0) * gunpowderMult, shooter.cannonDamage || 0);
+      // ── O tiro que erra tem de CAIR NA ÁGUA ─────────────────────────────────
+      // `proj.miss` só desliga a colisão (`checkHit`); o projétil continuava
+      // voando para o MESMO ponto e atravessava o casco sem tirar vida. Com a
+      // rolagem por salva isso passava (a bordada inteira ia embora junto, e o
+      // aviso de "Errou!" explicava), mas por TIRO seria exatamente o bug que o
+      // playtest relatou: bala entrando no navio e número nenhum aparecendo.
+      //
+      // O desvio mora só na LATERAL e TROCA a componente de través da dispersão
+      // em vez de se somar a ela: a bala passa visivelmente ao lado, logo depois
+      // da borda do retículo, e não a duas larguras dele. Empurrar no eixo do
+      // tiro faria ela cair curta ou longa — e curta ainda cruzaria o casco.
+      if (!acertou) {
+        const lado = lateral !== 0 ? Math.sign(lateral) : (Math.random() < 0.5 ? -1 : 1);
+        lateral = lado * (MISS_CLEARANCE + Math.random() * MISS_SPREAD);
+      }
+
+      const impactX = targetX + dirX * aoLongo + perpX * lateral;
+      const impactZ = targetZ + dirZ * aoLongo + perpZ * lateral;
+
+      const proj = this.spawn(shooter, impactX, impactZ, !acertou, (shooter.damageMultiplier || 1.0) * gunpowderMult, shooter.cannonDamage || 0);
       // Salva Cerrada só paga quando o navio despeja a bordada inteira — com um
       // canhão só não há "salva".
       proj.isFullSalvo = totalShots > 1;
@@ -419,6 +492,15 @@ class ProjectileManager {
           p.ws.send(msg);
         }
       });
+    }
+
+    // O aviso ficou só para a salva que errou INTEIRA. Com a rolagem por tiro,
+    // errar um ou outro já se lê sozinho — a bala cai na água ao lado do casco e
+    // as que entraram mostram o número. Mas quando NENHUMA entra (e num navio de
+    // um canhão só isso é metade das bordadas), continuar em silêncio seria
+    // indistinguível de tiro fora de alcance ou de perda de pacote.
+    if (erraram === totalShots && !shooter.isNPC) {
+      sendTo(shooter.ws, { type: 'salvo_miss', x: targetX, z: targetZ });
     }
 
     shooter.lastActionTime = Date.now();
@@ -475,6 +557,15 @@ class ProjectileManager {
       }
     }
 
+    // Escolta de Ossos: o tiro de canhão também faz as caveiras saltarem. O
+    // funil do dano de RELÍQUIA fica do outro lado (MonsterSkillManager._damage)
+    // — são dois caminhos de dano que nunca se encontram, e a skill promete os
+    // dois ("seja outra relíquia ou acertar tiro de canhão"). Vale contra NPC
+    // também, por isso vem ANTES do corte de `targetIsPlayer`.
+    if (shooter && shooter._summonEscort && this.monsterSkills) {
+      this.monsterSkills.notifyPlayerHit(shooter, target);
+    }
+
     if (!targetIsPlayer) return;
 
     fx.onHitTaken(target, now);
@@ -518,6 +609,15 @@ class ProjectileManager {
       }
     }
 
+    // Casco Duplo — escudo ao cruzar 20% de vida para baixo. Vem ANTES do
+    // Segundo Fôlego de propósito: quem tem os dois recebe o escudo na descida e
+    // a cura em 25%, nesta ordem, em vez de a cura desarmar o escudo.
+    const casco = fx.lowHpShieldAmount(target, now);
+    if (casco > 0) {
+      status.noteHit(target, 'low_hp_shield_pct', now);
+      shield.grant(target, casco, fx.LOW_HP_SHIELD_MS, now);
+    }
+
     // Segundo Fôlego — cura ao cruzar 25%, no máximo 1× por minuto.
     const wind = fx.secondWindHeal(target, now);
     if (wind > 0) {
@@ -534,7 +634,7 @@ class ProjectileManager {
   // All network messages are sent once per tick in _flushHitBatch().
   hit(proj, target, isNPC) {
     // ── Imunidade pós-respawn: projéteis de NPCs não acertam jogadores em safe period ──
-    if (!isNPC && proj.ownerIsNPC && target.safeUntil && Date.now() < target.safeUntil) return;
+    if (!isNPC && proj.ownerIsNPC && isSafeAfterRespawn(target)) return;
 
     // ── Zona verde (PVE): dano jogador→jogador desabilitado. O projétil
     //    atravessa sem ser consumido, para ainda acertar NPCs no caminho.
@@ -542,6 +642,37 @@ class ProjectileManager {
     if (!isNPC && !proj.ownerIsNPC && proj.ammoType !== 'bala_cura') {
       const _zone = (MAP_DEFS[target.mapLevel || 1] || {}).pvpZone || 'yellow';
       if (_zone === 'green') return;
+    }
+
+    // ── A escolta da coleta: a guilda dona PROTEGE a nau ────────────────────
+    // Enquanto o barco do imposto navega para a ilha, o papel da guilda dona é
+    // levá-lo inteiro — logo, o tiro dela não pode machucá-lo, e a bala de cura
+    // dela precisa remendá-lo. Antes a nau era alvo neutro: o membro que mirava
+    // no que estava na frente afundava o próprio ouro da semana.
+    //
+    // Fica ANTES de tudo (inclusive do consumo do projétil) para que o tiro
+    // atravesse a escolta em vez de sumir nela — do contrário, atirar num
+    // inimigo do outro lado da nau viraria um tiro perdido.
+    if (isNPC && target.isTaxBoat && !proj.ownerIsNPC) {
+      const escolta = this.players.get(proj.ownerId);
+      if (this.taxBoatManager?.isGuardian(target, escolta)) {
+        if (proj.ammoType !== 'bala_cura') return;   // imune ao fogo amigo
+        if (proj.piercing) proj.hitTargets.add(target.id);
+        else { proj.dead = true; this.projectiles.delete(proj.id); }
+        const ammoCura = AMMO_DEFS['bala_cura'] || {};
+        // Mesma escala da cura entre jogadores (healMult × poder de fogo): uma
+        // nau de 250 mil de vida não se segura com 5 pontos por tiro.
+        const bruto = Math.max(ammoCura.healAmount || 5,
+                               Math.round((escolta.cannonDamage || 0) * (ammoCura.healMult || 3)));
+        const curou = this.taxBoatManager.healBoat(target, escolta, bruto);
+        if (curou > 0) {
+          this._broadcastToMap(target.mapLevel || 1, {
+            type: 'heal', targetId: target.id, amount: curou,
+            x: target.x, z: target.z, hp: target.hp, maxHp: target.maxHp,
+          });
+        }
+        return;
+      }
     }
 
     // ── Bala de cura: cura QUALQUER jogador acertado ────────────────────────
@@ -626,10 +757,16 @@ class ProjectileManager {
     const allyCount = (targetIsPlayer && this.partyManager?.getPartyMembersInZone)
       ? this.partyManager.getPartyMembersInZone(target.id, target.mapLevel || 1, this.players).length
       : 0;
+    // `usesCannons` é o que separa "criatura" de "navio inimigo": frota de
+    // caçadores, guardas de ilha e os navios das masmorras bônus têm o campo, os
+    // bichos do bestiário não. É por ele que a Guarda de Bordada sabe quando
+    // vale (o Escudo de Guerra continua valendo contra os dois).
+    const donoNpc = proj.ownerIsNPC ? this.npcs?.get(proj.ownerId) : null;
     const talentDef = targetIsPlayer ? (1 - fx.damageReduction(target, {
-      fromNPC:    !!proj.ownerIsNPC,
-      fromPlayer: !proj.ownerIsNPC,
-      isCrit:     !!proj.isCrit,
+      fromNPC:     !!proj.ownerIsNPC,
+      fromPlayer:  !proj.ownerIsNPC,
+      fromNpcShip: !!(donoNpc && donoNpc.usesCannons),
+      isCrit:      !!proj.isCrit,
       isStill:    !target.speed,
       inParty:    allyCount > 0,
       allyCount,
@@ -664,6 +801,14 @@ class ProjectileManager {
         // Desvio é evento discreto: só vira ícone quando REALMENTE salvou.
         status.noteHit(target, 'dodge_chance', now);
         this._broadcastToMap(target.mapLevel || 1, { type: 'dodge', targetId: target.id });
+        return;
+      }
+      // Anteparo: bloqueio é anulação, como a esquiva. Sorteado DEPOIS dela e
+      // com aviso próprio, para o jogador saber qual dos dois o salvou.
+      const block = fx.blockChance(target);
+      if (block > 0 && Math.random() < block) {
+        status.noteHit(target, 'block_chance', now);
+        this._broadcastToMap(target.mapLevel || 1, { type: 'block', targetId: target.id });
         return;
       }
     }
@@ -737,7 +882,7 @@ class ProjectileManager {
       }
     }
 
-    target.hp = Math.max(0, target.hp - finalDmg);
+    target.hp = Math.max(0, target.hp - shield.absorb(target, finalDmg).dmg);
 
     // ── Talentos que reagem ao golpe ────────────────────────────────────────
     // Ordem importa: Teimosia e Segundo Fôlego precisam rodar DEPOIS do hp cair,
@@ -865,21 +1010,10 @@ class ProjectileManager {
       if (this._onPlayerDamaged) this._onPlayerDamaged(target, finalDmg);
     }
 
-    // Lifesteal — accumulate per tick, flush via _lifesteals map to avoid 30 msgs/salvo
-    if (proj.lifesteal > 0 && !proj.ownerIsNPC) {
-      const shooter = this.players.get(proj.ownerId);
-      if (shooter && !shooter.dead) {
-        // use finalDmg (after mitigation) so overheal matches actual damage dealt
-        const heal = Math.round(finalDmg * proj.lifesteal);
-        shooter.hp = Math.min(shooter.maxHp, shooter.hp + heal);
-        // Accumulate — flush batched heal in update() every 150ms
-        if (!this._lifesteals) this._lifesteals = new Map();
-        const cur = this._lifesteals.get(proj.ownerId) || { total: 0, shooter };
-        cur.total += heal;
-        cur.shooter = shooter;
-        this._lifesteals.set(proj.ownerId, cur);
-      }
-    }
+    // Aqui morava o roubo de vida do canhão: cada projétil devolvia ao atirante
+    // uma fração do dano que causou. Saiu do jogo — ver a nota do `accuracy` em
+    // constants/cannons.js. Curar agora custa uma escolha (curandeiro no porão
+    // ou bala_cura no slot de munição), em vez de vir de graça junto do dano.
 
     // Skill XP accumulated here (per hit, not per tick — small amounts, OK)
     if (!proj.ownerIsNPC && this.grantSkillXp) {
@@ -930,19 +1064,10 @@ class ProjectileManager {
     if (killer) {
       killer.npcKills = (killer.npcKills || 0) + 1;
 
-      // Carnificina (pilha de dano), Ventania (velocidade 5s) e Colheita de
-      // Almas (mana por abate) — todas penduradas no mesmo evento.
+      // Carnificina (pilha de dano) e Ventania (velocidade por 5s) penduram
+      // no mesmo evento. (A Colheita de Almas dava mana por abate e virou
+      // espólio da Mesa de Exploração.)
       fx.onKill(killer);
-      const manaKill = fx.manaOnKill(killer);
-      if (manaKill > 0 && killer.maxMana) {
-        killer._manaKillAcc = (killer._manaKillAcc || 0) + manaKill;
-        if (killer._manaKillAcc >= 1) {
-          const add = Math.floor(killer._manaKillAcc);
-          killer._manaKillAcc -= add;
-          killer.mana = Math.min(killer.maxMana, (killer.mana || 0) + add);
-          sendTo(killer.ws, { type: 'mana_update', mana: killer.mana, maxMana: killer.maxMana });
-        }
-      }
 
       // Todo bônus de espólio passa por lootMult: ele já soma Pilhador/Estudioso,
       // Sabedoria Antiga (só em chefe) e Tesouro do Abismo numa conta só.
@@ -1038,15 +1163,22 @@ class ProjectileManager {
       }
 
       // Fragment drop (killer recebe sua parte; membros já receberam acima)
-      killer.mapFragments = (killer.mapFragments || 0) + memberFrags;
+      // Faro de Tesouro sorteia UM fragmento a mais, só para quem deu o abate.
+      const extraFrag = Math.random() < fx.fragmentExtraChance(killer) ? 1 : 0;
+      if (extraFrag) status.noteHit(killer, 'fragment_extra_chance');
+      killer.mapFragments = (killer.mapFragments || 0) + memberFrags + extraFrag;
 
       // Relic drop (dificuldade aumenta a chance, com teto de 95%)
-      if (Math.random() < Math.min(0.95, (npc.relicDropChance || 0) * rewardMult)) {
+      if (Math.random() < Math.min(0.95, (npc.relicDropChance || 0) * rewardMult
+                                          * fx.lootMult(killer, 'relic_drop'))) {
         if (!killer.inventory.relics) killer.inventory.relics = [];
         const ownedIds = new Set(killer.inventory.relics.map(r => r.relicId));
         const dropped  = _rollRelicDrop(ownedIds, npc);
         if (dropped) {
           killer.inventory.relics.push(dropped);
+          // Missão diária: conquistar relíquia do bestiario. O gancho é injetado
+          // pelo server.js porque `progressDailyMission` mora lá.
+          this.onMissionStat?.(killer, 'relicDrops', 1);
           const relicDef   = RELIC_DEFS[dropped.relicId];
           const rarityMeta = RELIC_RARITIES[dropped.rarity];
           sendTo(killer.ws, {
@@ -1398,6 +1530,9 @@ class ProjectileManager {
       //    Prevents tunneling when projectile moves 28u/tick vs HIT_RADIUS 8u
       const checkHit = (target, isNPC) => {
         if (p.dead || target.dead || target.id === p.ownerId) return;
+        // Rolagem de precisão já reprovada na saída da salva (ver spawnSalvo):
+        // o projétil segue voando e cai na água, mas não encosta em ninguém.
+        if (p.miss) return;
         if (isNPC && p.ownerIsNPC) return;
         if (p.hitTargets?.has(target.id)) return;
         // Zone isolation — projectiles can't cross map boundaries
@@ -1455,38 +1590,12 @@ class ProjectileManager {
     // Flush hits
     this._flushHitBatch(now);
 
-    // Limpar lifesteals de jogadores desconectados
-    if (this._lifesteals && this._lifesteals.size > 0) {
-      for (const [ownerId] of this._lifesteals) {
-        if (!this.players.has(ownerId)) {
-          this._lifesteals.delete(ownerId);
-        }
-      }
-      
-      // Enviar heals acumulados
-      this._lifesteals.forEach(({ total, shooter }, ownerId) => {
-        if (shooter && this.players.has(ownerId)) {
-          sendTo(this._getPlayerWebSocket(shooter), {
-            type:     'heal',
-            targetId: shooter.id,
-            amount:   total,
-            hp:       shooter.hp,
-            source:   'lifesteal',
-            x:        shooter.x,
-            z:        shooter.z,
-          });
-        }
-      });
-      this._lifesteals.clear();
-    }
-
     // Para debug - mostre a cada 60 segundos
     if (SHOW_LOG &&!this._lastStatsTime || now - this._lastStatsTime > 60000) {
       this._lastStatsTime = now;
       console.log(`📊 [ProjectileManager Stats]
         Projéteis ativos: ${this.projectiles.size}
         HitBatch size: ${this._hitBatch.size}
-        Lifesteals pending: ${this._lifesteals.size}
         Respawn timers: ${this._respawnTimers.size}
         NPCs ativos: ${this.npcs?.size || 0}
         Players ativos: ${this.players?.size || 0}
@@ -1531,7 +1640,6 @@ class ProjectileManager {
     
     // Limpar batches
     this._hitBatch.clear();
-    this._lifesteals.clear();
     
     // Limpar referências
     this.players = null;
@@ -1553,3 +1661,8 @@ class ProjectileManager {
 } // end class ProjectileManager
 
 module.exports = ProjectileManager;
+// Expostos para o teste — e para quem for espelhar o retículo da mira, que
+// precisa dos dois para saber o raio que a bordada inteira ocupa:
+// hypot(spreadRadius, MISS_CLEARANCE + MISS_SPREAD).
+module.exports.MISS_CLEARANCE = MISS_CLEARANCE;
+module.exports.MISS_SPREAD    = MISS_SPREAD;

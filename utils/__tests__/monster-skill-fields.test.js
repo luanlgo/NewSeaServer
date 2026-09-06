@@ -26,6 +26,11 @@ const COPIADAS_DO_TOPO = new Set([
   'follow', 'dash', 'wallPerStep', 'rangeFromCannons', 'pattern', 'gapAngle',
   'expandMs', 'atCaster', 'travelMs', 'dropIntervalMs', 'dropWarnMs', 'turnRate',
   'targetMode', 'burstAtCenter',
+  // Invocações e perseguição. Subiram para o topo na convergência de 2026-09-05
+  // e, na primeira tentativa, NÃO foram acrescentadas aos builders — as quatro
+  // invocações viraram 'hunt' e a tromba parou de grudar, sem erro nenhum.
+  // Foi este teste que pegou.
+  'summonMode', 'spawnAtCaster', 'sticky',
   // `relicDisabled` chega ao RELIC_DEFS com outro nome (`disabled`) e ao
   // SKILLS_BY_SOURCE como ausencia — e propagada, so nao homonimamente.
   'relicDisabled',
@@ -70,9 +75,30 @@ describe('toda skill chega inteira nas duas visões', () => {
     if (s.relic.cc) expect(r.cc, `${key}: cc da relíquia sumiu`).toEqual(s.relic.cc);
     if (s.npc.cc)   expect(a.cc, `${key}: cc do bicho sumiu`).toEqual(s.npc.cc);
 
-    // Forma e VFX são a promessa da tabela: as duas faces desenham o mesmo.
-    expect(r.shape).toBe(a.shape);
-    expect(r.vfx).toBe(a.vfx);
+    // ── As duas faces são A MESMA SKILL (2026-09-05) ───────────────────
+    // Este guarda já permitiu divergência deliberada: um bloco `relic` podia
+    // declarar nome/vfx/forma próprios e a skill se partia em duas — o bicho
+    // fazia uma coisa, a relíquia que ele dropava fazia outra. Nove skills
+    // ficaram assim, e o relato foi direto ao ponto: "matei o chefe e ele está
+    // usando as relíquias antigas".
+    //
+    // A regra agora é a oposta, e é dura: o que o bicho MOSTRA é o que a
+    // relíquia dele ENTREGA. Se uma skill precisar mesmo divergir um dia, o
+    // lugar de decidir isso é aqui — uma lista de exceções explicitada e
+    // justificada, não um override silencioso dentro do `relic`.
+    expect(r.name,  `${key}: nome diverge entre as faces`).toBe(a.name);
+    expect(r.vfx,   `${key}: vfx diverge entre as faces`).toBe(a.vfx);
+    expect(r.shape, `${key}: forma diverge entre as faces`).toBe(a.shape);
+    expect(r.special || null, `${key}: special diverge entre as faces`)
+      .toBe(a.special || null);
+    // E a identidade tem de vir do TOPO, não de um override: é o que impede a
+    // divergência de voltar por descuido.
+    for (const campo of ['name', 'vfx', 'shape', 'special']) {
+      expect(s.relic[campo], `${key}: '${campo}' dentro de relic{} — suba para o topo`)
+        .toBeUndefined();
+      expect(s.npc[campo], `${key}: '${campo}' dentro de npc{} — suba para o topo`)
+        .toBeUndefined();
+    }
   });
 });
 

@@ -279,29 +279,29 @@ describe('Guildas — cofre e skills', () => {
     g.gold = 99_000_000; g.dobroes = 99_000;
     expect(g.level).toBe(1);
 
-    w.gm.handleSkillUp(lider, { skillId: 'gold_pct' });
-    expect(g.skills.gold_pct).toBe(1);
+    w.gm.handleSkillUp(lider, { skillId: 'guild_gold_pct' });
+    expect(g.skills.guild_gold_pct).toBe(1);
 
     // Nível 1 de guilda ⇒ skill não passa de 1 por mais rico que o cofre esteja.
-    w.gm.handleSkillUp(lider, { skillId: 'gold_pct' });
-    expect(g.skills.gold_pct).toBe(1);
+    w.gm.handleSkillUp(lider, { skillId: 'guild_gold_pct' });
+    expect(g.skills.guild_gold_pct).toBe(1);
 
     g.level = 5;
-    w.gm.handleSkillUp(lider, { skillId: 'gold_pct' });
-    expect(g.skills.gold_pct).toBe(2);
+    w.gm.handleSkillUp(lider, { skillId: 'guild_gold_pct' });
+    expect(g.skills.guild_gold_pct).toBe(2);
   });
 
   it('cobra o custo do cofre e recusa quando falta', () => {
     g.level = 10;
-    const custo = skillUpCost('gold_pct', 0);
+    const custo = skillUpCost('guild_gold_pct', 0);
     g.gold = custo.gold; g.dobroes = custo.dobroes;
 
-    w.gm.handleSkillUp(lider, { skillId: 'gold_pct' });
+    w.gm.handleSkillUp(lider, { skillId: 'guild_gold_pct' });
     expect(g.gold).toBe(0);
     expect(g.dobroes).toBe(0);
 
-    w.gm.handleSkillUp(lider, { skillId: 'gold_pct' });
-    expect(g.skills.gold_pct).toBe(1);   // cofre vazio: não subiu
+    w.gm.handleSkillUp(lider, { skillId: 'guild_gold_pct' });
+    expect(g.skills.guild_gold_pct).toBe(1);   // cofre vazio: não subiu
   });
 
   it('só o líder investe o cofre', () => {
@@ -310,8 +310,8 @@ describe('Guildas — cofre e skills', () => {
     w.gm.handleResolveApplication(lider, { playerName: 'Membro', accept: true });
 
     g.level = 10; g.gold = 99_000_000; g.dobroes = 99_000;
-    w.gm.handleSkillUp(membro, { skillId: 'gold_pct' });
-    expect(g.skills.gold_pct).toBeUndefined();
+    w.gm.handleSkillUp(membro, { skillId: 'guild_gold_pct' });
+    expect(g.skills.guild_gold_pct).toBeUndefined();
   });
 
   it('a taxa fica presa no teto de 5%', () => {
@@ -341,27 +341,27 @@ describe('Guildas — o bônus chega ao motor', () => {
     }
   }
 
-  // O lootMult é a função que o projectile-manager, o boss-manager e o caminho
-  // do DoT chamam de verdade. Testar contra ela é o que garante que o bônus
-  // aparece no abate — e não só no painel da guilda.
-  it('ouro, dobrão e XP passam pelo lootMult de verdade', () => {
-    upa('gold_pct', 3);      // +30%
-    upa('xp_pct', 2);        // +20%
-    upa('dobrao_pct', 1);    // +10%
-
-    expect(lootMult(lider, 'gold')).toBeCloseTo(1.30, 5);
-    expect(lootMult(lider, 'xp')).toBeCloseTo(1.20, 5);
-    expect(lootMult(lider, 'dobrao')).toBeCloseTo(1.10, 5);
-    // XP de chefe é XP: recebe o mesmo bônus.
-    expect(lootMult(lider, 'xp_boss')).toBeCloseTo(1.20, 5);
+  // ── As skills pararam de tocar a ficha do jogador (2026-09-06) ────────────
+  // Três delas (+% de ouro, dobrão e XP para todo membro) e mais o Casco da
+  // Irmandade davam poder DIRETO a quem entrasse numa guilda grande. Foram
+  // aposentadas: o eixo virou fortalecer a irmandade. Estes testes travam a
+  // porta por onde elas voltariam sem ninguém perceber — o `lootMult` e o
+  // `recalcMaxHp` são os dois funis por onde poder de jogador passa.
+  it('nenhuma skill de guilda mexe no espólio do membro', () => {
+    upa('guild_gold_pct', 3);
+    upa('guild_xp_pct', 2);
+    for (const kind of ['gold', 'dobrao', 'xp', 'xp_boss']) {
+      expect(lootMult(lider, kind), `${kind} recebeu bônus de guilda`).toBe(1.0);
+    }
   });
 
-  // O retorno seco de 1.0 para quem não tem talentos era exatamente onde o
-  // bônus da guilda se perderia — a maioria dos jogadores novos cai nesse ramo.
-  it('vale também para quem nunca comprou um talento', () => {
-    upa('gold_pct', 2);
-    expect(lider.tal).toBeUndefined();
-    expect(lootMult(lider, 'gold')).toBeCloseTo(1.20, 5);
+  it('nenhuma skill de guilda mexe na vida do membro', () => {
+    const SHIPS = { fragata: { hp: 1000 } };
+    lider.activeShip = 'fragata';
+    upa('guild_gold_pct', 4);
+    upa('tower_hp_pct', 4);
+    recalcMaxHp(lider, SHIPS, {}, null);
+    expect(lider.maxHp, 'a guilda voltou a somar vida').toBe(1000);
   });
 
   it('quem não tem guilda continua em 1,0', () => {
@@ -370,17 +370,86 @@ describe('Guildas — o bônus chega ao motor', () => {
     expect(lootMult(solitario, 'xp')).toBe(1.0);
   });
 
-  it('Casco da Irmandade entra no recalcMaxHp de verdade', () => {
-    const SHIPS = { fragata: { hp: 1000 } };
-    lider.activeShip = 'fragata';
+  // ── O que elas viraram ───────────────────────────────────────────────────
+  it('Crônica da Irmandade engorda a fatia de XP que vai para a GUILDA', () => {
+    // Mede a CONTRIBUIÇÃO do membro, não `g.xp`: a guilda deste teste está no
+    // nível máximo (é o que permite comprar skill), e lá o `_addGuildXp` zera
+    // o XP de propósito — no teto ele não acumula. A contribuição é o mesmo
+    // número, e sobrevive.
+    const ficha = () => g.members.get('Lider');
+    ficha().contribXp = 0;
+    lider._guildXpMark = 0; lider.mapXp = 100_000;
+    w.gm._creditXp(lider);
+    const semSkill = ficha().contribXp;
+    expect(semSkill, 'a fatia base não creditou').toBeGreaterThan(0);
 
-    recalcMaxHp(lider, SHIPS, {}, null);
-    const base = lider.maxHp;
-    expect(base).toBe(1000);
+    upa('guild_xp_pct', 5);                      // +50%
+    ficha().contribXp = 0;
+    lider._guildXpMark = 0; lider.mapXp = 100_000;
+    w.gm._creditXp(lider);
+    expect(ficha().contribXp / semSkill).toBeCloseTo(1.5, 2);
+  });
 
-    upa('member_hp_pct', 4);            // 4 × 5% = +20%
-    recalcMaxHp(lider, SHIPS, {}, null);
-    expect(lider.maxHp).toBe(1200);
+  it('Quinhão do Cofre engorda a fatia de ouro que vai para o COFRE', () => {
+    g.gold = 0;
+    lider._killGold = 100_000;
+    w.gm._creditGold(lider);
+    const semSkill = g.gold;
+    expect(semSkill, 'a fatia base não creditou').toBeGreaterThan(0);
+
+    upa('guild_gold_pct', 5);                    // +50%
+    g.gold = 0;
+    lider._killGold = 100_000;
+    w.gm._creditGold(lider);
+    expect(g.gold / semSkill).toBeCloseTo(1.5, 2);
+  });
+
+  it('a fatia NÃO sai do bolso de quem caçou', () => {
+    // É o que separa "a guilda cresce junto" de "a guilda cobra pedágio".
+    lider.gold = 500_000;
+    lider._killGold = 100_000;
+    upa('guild_gold_pct', 10);
+    w.gm._creditGold(lider);
+    expect(lider.gold, 'o cofre descontou do membro').toBe(500_000);
+  });
+
+  // ── A devolução do que foi gasto nas aposentadas ─────────────────────────
+  // Guildas compraram essas skills com as regras de ontem. Apagar a linha do
+  // catálogo sem devolver faria o cofre gasto sumir em silêncio — o nível
+  // continuaria salvo no JSON e viraria uma chave que ninguém lê.
+  it('devolve ao cofre o que foi gasto nas skills aposentadas', () => {
+    g.gold = 0; g.dobroes = 0;
+    g.skills = { gold_pct: 3, member_hp_pct: 1, tower_hp_pct: 2 };
+
+    w.gm._devolverSkillsAposentadas();
+
+    // gold_pct nv3 = 200k × (1+2+3) = 1,2 M | member_hp_pct nv1 = 300k
+    expect(g.gold).toBe(1_500_000);
+    expect(g.dobroes).toBe(50 * 6 + 100);
+    // A chave morta some; a que continua no catálogo fica intocada.
+    expect(g.skills.gold_pct).toBeUndefined();
+    expect(g.skills.member_hp_pct).toBeUndefined();
+    expect(g.skills.tower_hp_pct).toBe(2);
+  });
+
+  it('a devolução roda uma vez só — ela apaga o próprio gatilho', () => {
+    g.gold = 0; g.dobroes = 0;
+    g.skills = { xp_pct: 2 };
+    w.gm._devolverSkillsAposentadas();
+    const primeira = g.gold;
+    expect(primeira).toBeGreaterThan(0);
+
+    w.gm._devolverSkillsAposentadas();
+    expect(g.gold, 'devolveu de novo no boot seguinte').toBe(primeira);
+  });
+
+  it('guilda que nunca comprou uma aposentada não é tocada', () => {
+    g.gold = 1234; g.dobroes = 7;
+    g.skills = { tower_dmg_pct: 1 };
+    w.gm._devolverSkillsAposentadas();
+    expect(g.gold).toBe(1234);
+    expect(g.dobroes).toBe(7);
+    expect(g.skills).toEqual({ tower_dmg_pct: 1 });
   });
 
   it('as skills de torre são guardadas mesmo sem torre no jogo', () => {
@@ -392,11 +461,11 @@ describe('Guildas — o bônus chega ao motor', () => {
   });
 
   it('sair da guilda apaga o bônus na hora', () => {
-    upa('gold_pct', 3);
-    expect(lootMult(lider, 'gold')).toBeCloseTo(1.30, 5);
+    upa('tower_hp_pct', 3);
+    expect(w.gm.bonusFor(lider).tower_hp_pct).toBeCloseTo(0.30, 5);
 
     w.gm.handleLeave(lider);   // líder sai ⇒ dissolve
-    expect(lootMult(lider, 'gold')).toBe(1.0);
+    expect(w.gm.bonusFor(lider).tower_hp_pct).toBe(0);
   });
 });
 

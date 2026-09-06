@@ -94,4 +94,53 @@ function trimCannons(cannons, maxCannons) {
   };
 }
 
-module.exports = { calcProjectileDamage, calcKillGold, calcKillXp, calcMaxCannons, trimCannons };
+/**
+ * Filtra uma lista de canhões equipados pelo ESTOQUE real do inventário.
+ *
+ * A régua é CONTAGEM, não presença: `inventory.includes(cid)` responde "sim"
+ * para CADA cópia da lista, então um pacote forjado com quatro `c6` passava
+ * inteiro por quem possuía um só — duplicação de canhão, que é o eixo de dano
+ * do jogo. Aqui cada unidade equipada desconta uma do estoque e o excedente
+ * cai; é o mesmo desconto que pirate-manager.handleBoard faz na tripulação.
+ *
+ * Não modifica os arrays recebidos.
+ *
+ * @param {string[]} incoming  — canhões que o cliente diz ter equipado
+ * @param {string[]} inventory — player.inventory.cannons (o que ele possui)
+ * @returns {string[]} novo array, sub-multiconjunto do inventário
+ */
+function filterOwnedCannons(incoming, inventory) {
+  const estoque = new Map();
+  for (const cid of (inventory || [])) estoque.set(cid, (estoque.get(cid) || 0) + 1);
+  const aceitos = [];
+  for (const cid of (incoming || [])) {
+    const n = estoque.get(cid) || 0;
+    if (n <= 0) continue;            // não possui (mais)
+    estoque.set(cid, n - 1);
+    aceitos.push(cid);
+  }
+  return aceitos;
+}
+
+/**
+ * Sobrou unidade deste canhão no porão para equipar mais uma?
+ *
+ * O `equip_cannon` avulso ('add') empilhava sem olhar o inventário nenhuma vez
+ * — pior que o sync, porque nem exigia possuir a primeira. É a mesma regra que
+ * o armazém do cliente já aplica antes de mandar o pacote.
+ *
+ * @param {string}   cannonId
+ * @param {string[]} equipped  — player.cannons
+ * @param {string[]} inventory — player.inventory.cannons
+ * @returns {boolean}
+ */
+function hasSpareCannon(cannonId, equipped, inventory) {
+  const possui = (inventory || []).filter(id => id === cannonId).length;
+  const usados = (equipped  || []).filter(id => id === cannonId).length;
+  return usados < possui;
+}
+
+module.exports = {
+  calcProjectileDamage, calcKillGold, calcKillXp, calcMaxCannons, trimCannons,
+  filterOwnedCannons, hasSpareCannon,
+};

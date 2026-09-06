@@ -9,7 +9,8 @@
  *   • Coroa de Espinhos — a coroa gira em volta de QUEM LANÇOU (é o que o
  *     desenho faz e o que o bicho faz), mas o motor centrava no cursor.
  *   • Descarga em Cadeia — o alcance de engate do 1º elo era o raio de DANO
- *     (5 un): tinha de clicar em cima do centro do bicho.
+ *     (5 un): tinha de clicar em cima do centro do bicho. (A face jogável dela
+ *     virou o Rastilho de Raios em 2026-09-03; ver relic-refeitas.test.js.)
  *   • Orbe Caçadora — `special: 'orb'` não tinha implementação: o dano era um
  *     círculo em cima do próprio barco enquanto o desenho voava.
  *   • Cemitério de Naufrágios — as seis quedas de uma vez em pontos sorteados,
@@ -85,31 +86,11 @@ describe('Coroa de Espinhos — a coroa gira em volta do lançador', () => {
   });
 });
 
-describe('Descarga em Cadeia — engata com a mira do jogo', () => {
-  it('pega o bicho com o cursor fora do centro dele', () => {
-    const alvo = fazerNpc('alvo', 0, 100);
-    const { msm, eventos } = fazerMotor([alvo]);
-    // Clique 30 un fora do centro: é a mira normal de quem clica no casco.
-    msm.cast(fazerJogador(), RELIC_DEFS.r36, 0, 130, {});
-    vi.runAllTimers();
-    expect(dano(eventos).some(h => h.id === 'alvo')).toBe(true);
-  });
-
-  it('o raio de DANO continua pequeno — engate não é área', () => {
-    expect(RELIC_DEFS.r36.seekRadius).toBeGreaterThan(RELIC_DEFS.r36.radius);
-  });
-
-  it('salta para o vizinho dentro do jumpRange', () => {
-    const a = fazerNpc('a', 0, 100);
-    const b = fazerNpc('b', 40, 120);            // ~45 un de A
-    const { msm, eventos } = fazerMotor([a, b]);
-    msm.cast(fazerJogador(), RELIC_DEFS.r36, 0, 100, {});
-    vi.runAllTimers();
-    const ids = dano(eventos).map(h => h.id);
-    expect(ids).toContain('a');
-    expect(ids).toContain('b');
-  });
-});
+// A Descarga em Cadeia jogável deixou de existir em 2026-09-03: virou o
+// Rastilho de Raios, e os testes dela moraram para relic-refeitas.test.js. A
+// cadeia continua viva na mão do BICHO (drake_chain_arc), onde o `seekRadius`
+// corrigido aqui nunca foi o problema — lá quem escolhe o primeiro elo é o
+// próprio alvo do ataque, não um clique.
 
 describe('Orbe Caçadora — a orbe que se vê é a que machuca', () => {
   it('viaja e estoura EM CIMA do alvo, não no lançador', () => {

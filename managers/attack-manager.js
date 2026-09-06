@@ -14,11 +14,35 @@
 const { dist2D } = require('../utils/helpers');
 const { ATTACK_DEFS, MAP_DEFS } = require('../constants');
 const { starAttackAllowed } = require('../utils/star-gate');
-const { isInvincible } = require('../utils/invincibility');
+const { isInvincible, isSafeAfterRespawn } = require('../utils/invincibility');
 const { applyGoldShield } = require('../utils/gold-shield');
 // Geometria compartilhada com as relíquias do bestiário: o ataque do bicho e a
 // relíquia que ele dropa precisam acertar EXATAMENTE a mesma área.
 const MonsterSkillManager = require('./monster-skill-manager');
+const shield = require('../utils/shield');
+const { sonarSweep } = require('../utils/sonar-sweep');
+
+/**
+ * Specials que rodam o PROPRIO relogio depois do cast.
+ *
+ * O laco de `ticks` do _beginCast chama _resolveAttack uma vez por leva. Para
+ * quem simula a si mesmo isso abriria uma simulacao INTEIRA por leva — oito
+ * apertos de arena sobrepostos, cinco ninhadas, cinco cargas de 5 s. Eles
+ * resolvem uma vez so e se agendam por dentro.
+ *
+ * Entrar aqui e obrigatorio ao criar um special com timeline propria. Esquecer
+ * nao da erro: da a skill acontecendo N vezes.
+ */
+const SELF_RUN = new Set([
+  'orb', 'sonar', 'collapse', 'charge', 'summons', 'torpedo',
+  // `swallow` entrou tarde e pagou o preco descrito acima: o _runSwallow ja
+  // agenda as proprias 5 levas, e o laco de fora o chamava 5 vezes. Eram CINCO
+  // bocarras sobrepostas por cast — 25 levas de dano no lugar de 5, cinco
+  // presas escolhidas em janelas diferentes e cinco cuspidas. Do lado de quem
+  // apanhava a leitura era so ruido: a area redecidia a cada 400 ms enquanto o
+  // desenho ficava parado. Ver _runSwallow.
+  'swallow',
+]);
 
 class AttackManager {
   /**
@@ -56,10 +80,13 @@ class AttackManager {
     if (attack.special === 'orb') {
       busy = Math.max(busy, attack.lifeMs || 4000);
     }
-    // Sonar: as ondas correm por (rings-1)*intervalo + expansao da ultima.
+    // Sonar: as ondas correm por (rings-1)*intervalo + expansao da ultima. A
+    // ultima faixa da varredura pode cair depois de `expandMs` (ver
+    // utils/sonar-sweep.js) — quem manda e a que terminar por ultimo.
     if (attack.special === 'sonar') {
       const rings = attack.ringCount || count;
-      busy = Math.max(busy, (rings - 1) * step + (attack.expandMs || 1600));
+      const corrida = Math.max(attack.expandMs || 1600, sonarSweep(attack).endMs);
+      busy = Math.max(busy, (rings - 1) * step + corrida);
     }
     // Chuva de destrocos: uma queda por `dropIntervalMs`, mais o aviso da ultima.
     if (attack.dropIntervalMs) {
@@ -70,6 +97,12 @@ class AttackManager {
     // Muralha de Maré: a onda corre por `travelMs` depois do cast.
     if (attack.special === 'tidewall') {
       busy = Math.max(busy, attack.travelMs || 1200);
+    }
+    // Bocarra: a presa fica presa por `holdMs` e só é cuspida no fim. Abrir
+    // outro golpe com alguém ainda dentro do peito é o bicho fazendo duas
+    // coisas ao mesmo tempo — e o hold é MAIOR que a canalizada (2000 > 1600).
+    if (attack.special === 'swallow') {
+      busy = Math.max(busy, attack.holdMs || 2000);
     }
     // Faróis de Carne: as luzes existem no mundo até implodir, igual à orbe. O
     // arauto fica ocupado esse tempo todo de propósito — abrir outro golpe por
@@ -82,6 +115,27 @@ class AttackManager {
     if (attack.shape === 'chain') {
       busy = Math.max(busy,
         (Math.max(1, attack.count || 3) - 1) * (attack.jumpCastMs || 550));
+    }
+    // Anel que aperta: o miôlo explode DEPOIS da última leva do aperto, então a
+    // ocupação é uma leva a mais que a canalizada comum.
+    if (attack.special === 'collapse') {
+      busy = Math.max(busy, count * step);
+    }
+    // Invocações: as criaturas existem no mar até alcançar alguém ou expirar.
+    // A ESCOLTA é a exceção — ela não tem relógio próprio, fica esperando o
+    // bicho acertar, e prender o bicho por 10 s esperando seria travar o chefe.
+    if (attack.special === 'summons' && attack.summonMode !== 'escort') {
+      busy = Math.max(busy, attack.lifeMs || 5000);
+    }
+    // Torpedos: a última saída da salva mais o voo dela.
+    if (attack.special === 'torpedo') {
+      busy = Math.max(busy, (Math.max(1, attack.count || 6) - 1) * (attack.salvoMs || 150)
+                            + (attack.travelMs || 480));
+    }
+    // Carga: o bicho fica preso os 5 s inteiros — é a janela em que atirar
+    // nele CANCELA o golpe, e abrir outra skill por cima apagaria essa leitura.
+    if (attack.special === 'charge') {
+      busy = Math.max(busy, attack.chargeMs || 5000);
     }
     return busy;
   }
@@ -100,7 +154,7 @@ class AttackManager {
   tryAttack(npc, target, allPlayers, mapLevel) {
     if (npc._currentCast) return; // já está em cast
     if (npc.dead || target.dead)  return;
-    if (target.safeUntil && Date.now() < target.safeUntil) return; // imunidade pós-respawn
+    if (isSafeAfterRespawn(target)) return; // imunidade pós-respawn
     if (npc._nextAttackTime && Date.now() < npc._nextAttackTime) return; // cooldown entre ataques
 
     const dist     = dist2D(npc, target);
@@ -185,7 +239,7 @@ class AttackManager {
       const _now = Date.now();
       const inRange = allPlayers.filter(p =>
         p.mapLevel === mapLevel && !p.dead &&
-        !(p.safeUntil && _now < p.safeUntil) && dist2D(npc, p) <= range
+        !isSafeAfterRespawn(p, _now) && dist2D(npc, p) <= range
       );
       if (inRange.length > 0) {
         // `maxTargets`: teto de marcações simultâneas (Pilares do Juízo: 8).
@@ -333,7 +387,7 @@ class AttackManager {
     // Specials que simulam o PROPRIO ritmo (a orbe voa, as ondas do sonar
     // correm) resolvem uma vez so: o laco de ticks abriria uma simulacao
     // inteira POR LEVA — 4 sonares sobrepostos, 15 acertos onde deviam ser 4.
-    const selfRun   = attack.special === 'orb' || attack.special === 'sonar';
+    const selfRun   = SELF_RUN.has(attack.special);
     const tickCount = selfRun ? 1 : Math.max(1, ticks ? (ticks.count || 1) : 1);
     const tickStep  = ticks ? (ticks.intervalMs || 400) : 0;
     // Ocupação REAL do golpe (não só o laço de ticks) — ver busyMs().
@@ -534,6 +588,34 @@ class AttackManager {
       return;
     }
 
+    // ── Os specials que o BICHO declarava e nunca executava ─────────────
+    // O dado destas skills sempre trouxe `special`, `phaseCount`, `fuseMs`,
+    // `chargeMs`, `pairCount` — e este motor não tinha branch nenhum para eles.
+    // `special` sem branch NÃO DÁ ERRO: cai na resolução comum e vira um círculo
+    // ou um aro parado. É por isso que o Carniceiro do Ossuário, cujas QUATRO
+    // skills caem aqui, parecia estar usando as versões antigas de tudo: ele
+    // nunca chegou a usar versão nenhuma. Ver a nota gorda no _runCollapsingRing.
+    //
+    // Os `_*Burst` são guardas de reentrância: cada um destes métodos volta a
+    // chamar _resolveAttack para aplicar o dano pelo caminho comum (escudo,
+    // pet, carapaça, morte), e sem a marca ele se re-lançaria em loop.
+    if (attack.special === 'collapse' && !attack._collapseStep) {
+      this._runCollapsingRing(npc, attack, targetX, targetZ, allPlayers, mapLevel);
+      return;
+    }
+    if (attack.special === 'summons' && !attack._summonHit) {
+      this._runSummons(npc, attack, targetX, targetZ, allPlayers, mapLevel);
+      return;
+    }
+    if (attack.special === 'torpedo' && !attack._torpedoHit) {
+      this._runTorpedoes(npc, attack, targetX, targetZ, allPlayers, mapLevel);
+      return;
+    }
+    if (attack.special === 'charge' && !attack._chargeBurst) {
+      this._runCharge(npc, attack, targetX, targetZ, allPlayers, mapLevel);
+      return;
+    }
+
     // Chuva de destrocos: uma queda por vez, mirada ao vivo. Ver _runWreckRain.
     if (attack.dropIntervalMs && !attack._drop) {
       this._runWreckRain(npc, attack, allPlayers, mapLevel);
@@ -657,7 +739,7 @@ class AttackManager {
     const hits = [];
     const _hitNow = Date.now();
     const mapPlayers = allPlayers.filter(p =>
-      p.mapLevel === mapLevel && !p.dead && !(p.safeUntil && _hitNow < p.safeUntil)
+      p.mapLevel === mapLevel && !p.dead && !isSafeAfterRespawn(p, _hitNow)
     );
 
     const goldStealRatio = (MAP_DEFS[mapLevel] || {}).goldStealRatio || 0;
@@ -675,6 +757,16 @@ class AttackManager {
 
     for (const p of mapPlayers) {
       if (this._isHit(p, attack, targetX, targetZ, castOrigin)) {
+        // ── Onda que VARRE: uma parede, um acerto ────────────────────────
+        // O Sonar amostra a MESMA onda nove vezes enquanto ela corre. Que ela
+        // não pudesse cobrar duas vezes era um acidente da aritmética (as
+        // faixas não se sobrepunham) e só valia para quem estava PARADO: fugir
+        // para fora junto com a parede mantinha o barco dentro dela por vários
+        // passos. O conjunto é por ONDA e nasce no _runSonar.
+        if (attack._sweepSeen) {
+          if (attack._sweepSeen.has(p.id)) continue;
+          attack._sweepSeen.add(p.id);
+        }
         // Névoa Espectral: invencível bloqueia também ataques em área
         // (antes só projéteis respeitavam — necessário para a defensiva do pet).
         if (isInvincible(p, _hitNow)) {
@@ -694,6 +786,19 @@ class AttackManager {
         // Aplica debuff de defesa se ativo
         const defDebuff = p.activeDebuffs?.find(d => d.type === 'defense_buff' && d.expiresAt > Date.now());
         if (defDebuff) dmg = Math.round(dmg * (1 + Math.abs(defDebuff.value)));
+        // ── Habilidade Defesa (Capitão → Habilidades) ──────────────────────
+        // Ela reduzia o TIRO (o projectile-manager sempre a aplicou) e não
+        // reduzia nada do bestiário — que é a maior parte do dano que um
+        // jogador leva de bicho. Do lado de quem sobe a habilidade isso lia
+        // como "o número não faz nada": vinte níveis de Defesa e o mesmo
+        // estrago da investida, do morteiro e de toda skill de área.
+        //
+        // Só a habilidade entra aqui. A redução de TALENTO e a plana da
+        // Carapaça de Kraken continuam de fora deste caminho de propósito —
+        // ligá-las junto mexe no balanço de todo bicho do jogo de uma vez, e é
+        // a leva de balanceamento que a nota do utils/player-defense.js
+        // descreve. Uma coisa de cada vez.
+        if (p.skillDefense > 0) dmg = Math.round(dmg * (1 - p.skillDefense));
         // Escudo de Ouro (r5): mesma conta dos outros dois caminhos de dano —
         // ver utils/gold-shield.js.
         {
@@ -730,7 +835,7 @@ class AttackManager {
             continue;
           }
         }
-        p.hp = Math.max(0, p.hp - dmg);
+        p.hp = Math.max(0, p.hp - shield.absorb(p, dmg).dmg);
         p.lastCombatTime = Date.now();
 
         // Roubo de ouro (goldStealRatio definido no MAP_DEFS do mapa)
@@ -743,10 +848,21 @@ class AttackManager {
 
         hits.push({ id: p.id, hp: p.hp, dmg, goldStolen });
 
+        // Escolta de Ossos: o bicho acertou — as caveiras saltam. Este é o
+        // ÚNICO funil de dano do bestiario (os chefes de skill não atiram
+        // canhão), então um gancho aqui cobre a promessa inteira. O guarda de
+        // reentrância mora no notifyNpcHit: o próprio salto passa por aqui.
+        if (dmg > 0 && npc._summonEscort) this.notifyNpcHit(npc, p, mapLevel);
+
         // ── Coro dos Rostos: SILÊNCIO ──────────────────────────────────────
         // Trava o uso de relíquia (lido por handleUseRelic). Curto de propósito
         // — o jogador continua navegando e atirando de canhão.
-        if (attack.special === 'silence' && attack.silenceMs) {
+        // O `special: 'silence'` saiu do dado quando o Coro convergiu
+        // (2026-09-05): silêncio nunca foi um jeito de RESOLVER área, é um
+        // debuff no acerto — e amarrado ao `special` ele morreria junto com a
+        // convergência, levando um eixo inteiro do conjunto alienígena embora.
+        // Agora quem o aplica é cada rosto que encosta em você.
+        if (attack.silenceMs) {
           p._silencedUntil = Math.max(p._silencedUntil || 0, Date.now() + attack.silenceMs);
           this.addEvent({ type: 'silenced', targetId: p.id, durationMs: attack.silenceMs },
                         mapLevel);
@@ -820,9 +936,34 @@ class AttackManager {
       }
     }
 
+    // ── Sanguessuga: parte do dano volta como VIDA ─────────────────────
+    // Espelha o `special: 'drain'` do motor da relíquia. Do lado do bicho ele
+    // não existia: o Sorvo da Tartaruga e a Tripa do Alígena declaravam
+    // `drainHealPct` e nunca curavam um ponto — a mecânica que dá nome à skill
+    // (e que faz o jogador ter de SAIR da poça em vez de trocar dano) era só
+    // desenho. É também o que torna a corrida de dano do chefe uma decisão.
+    if (attack.special === 'drain' && hits.length > 0 && !npc.dead) {
+      const sorvido = hits.reduce((s, h) => s + (h.dmg || 0), 0);
+      const cura = Math.round(sorvido * (attack.drainHealPct || 0.5));
+      if (cura > 0) {
+        const antes = npc.hp;
+        npc.hp = Math.min(npc.maxHp || npc.hp, npc.hp + cura);
+        // Só anuncia o que ENTROU: com a vida cheia a skill continua doendo,
+        // mas mostrar "+0" faria parecer que ela curou quando não curou.
+        if (npc.hp > antes) {
+          this.addEvent({
+            type: 'npc_drain_heal', npcId: npc.id, amount: npc.hp - antes,
+            hp: npc.hp, maxHp: npc.maxHp, vfx: attack.vfx,
+          }, mapLevel);
+        }
+      }
+    }
+
     // A simulacao fina do Sonar roda dezenas de passos por cast; anunciar leva
     // vazia enche a rede e faz o cliente contar levas que nao aconteceram.
-    if ((attack._frontRadius != null || attack._frontDistance != null)
+    // `_quiet`: mesma história para os passos do aperto, os ovos e a corrente —
+    // eles resolvem dezenas de vezes e a maioria não pega ninguém.
+    if ((attack._frontRadius != null || attack._frontDistance != null || attack._quiet)
         && hits.length === 0) return;
 
     this.addEvent({
@@ -838,6 +979,479 @@ class AttackManager {
       // splitDamage: quantos rachavam a conta — o cliente mostra "Dividido ×N"
       splitCount:   attack.splitDamage ? splitDiv : null,
     }, mapLevel);
+  }
+
+  /**
+   * `setTimeout` que se RETIRA da lista quando dispara.
+   *
+   * `npc._tickTimers` é o que o cancelCast limpa quando o bicho morre no meio
+   * de uma canalizada. Empilhar sem tirar faz a lista crescer a cada golpe pela
+   * vida inteira do chefe — e o cancelCast passa a varrer milhares de ids
+   * mortos. O resto do arquivo já faz esse `filter` à mão em cada agendamento;
+   * os cinco specials novos usam este atalho em vez de repetir a linha oito
+   * vezes.
+   */
+  _agenda(npc, fn, ms) {
+    const t = setTimeout(() => {
+      if (npc._tickTimers) npc._tickTimers = npc._tickTimers.filter(x => x !== t);
+      fn();
+    }, ms);
+    (npc._tickTimers ||= []).push(t);
+    return t;
+  }
+
+  /**
+   * Anel que APERTA (`special: 'collapse'`) — Espiral do Abismo e Marcha Fúnebre.
+   *
+   * Este é o golpe que o playtest pegou: o bicho declarava `collapse`,
+   * `phaseCount`, `finalRadius` e `collapseRadius`, e este motor não tinha
+   * nenhum branch para eles. Sem branch a skill não falha — ela cai na
+   * resolução comum e vira um ARO PARADO no raio inicial. Num raio de 320 isso
+   * quer dizer uma coroa finíssima lá na borda: quem lutava com o chefe ficava
+   * perto dele, no meio, e a lendária dele não encostava em ninguém.
+   *
+   * O aperto acontece em `phaseCount` PASSOS, não numa rampa contínua — é o
+   * compasso que o desenho 2D mostra e o que dá tempo de ler para onde correr.
+   * Cada leva cobra a ÁREA VARRIDA (do raio anterior até o de agora), não uma
+   * faixa fina: com faixa fina um passo de 60 un sobre uma banda de 12 deixaria
+   * 80% do caminho sem tocar em nada. A geometria é a MESMA do lado da
+   * relíquia (_castCollapsingRing), de propósito.
+   *
+   * O que é DIFERENTE do lado do bicho, e de propósito: o `damageMult` do dado
+   * é o dano POR LEVA, e aqui as levas passaram a acertar de verdade. Os
+   * números antigos (5,0 × 8) valiam enquanto quase nenhuma pegava; cobradas
+   * todas seriam 40× o canhão do bicho num golpe só. Por isso a face do bicho
+   * ganhou `burstMult`: leva barata, miúlo caro — a mesma proporção que a
+   * relíquia já usava entre `ticks.pct` e `damagePct`.
+   */
+  _runCollapsingRing(npc, attack, targetX, targetZ, allPlayers, mapLevel) {
+    const ticks  = attack.ticks || { count: 8, intervalMs: 500 };
+    const total  = Math.max(1, ticks.count || 8);
+    const step   = ticks.intervalMs || 500;
+    const deR    = attack.radius || 200;
+    const ateR   = attack.collapseTo || attack.finalRadius || attack.eruptRadius || 60;
+    const banda  = attack.band || Math.max(12, (deR - ateR) / total);
+    const passos = Math.max(1, attack.phaseCount || total);
+    // Último PASSO em que a coroa de espinhos foi (re)plantada. -1 = nenhum.
+    let passoPlantado = -1;
+
+    for (let i = 0; i < total; i++) {
+      this._agenda(npc, () => {
+        if (npc.dead) return;
+        const passo = passos === 1 ? 0 : Math.floor((i * passos) / total) / (passos - 1);
+        const raio  = deR + (ateR - deR) * Math.min(1, passo);
+        // Onde a parede estava no passo ANTERIOR — no primeiro ela vem de fora.
+        const passoAnt = passos === 1 ? 0
+          : Math.max(0, Math.floor((i * passos) / total) - 1) / (passos - 1);
+        const raioAnt = i === 0 ? deR : deR + (ateR - deR) * Math.min(1, passoAnt);
+
+        this._resolveAttack(npc, {
+          ...attack,
+          shape: 'ring',
+          radius: Math.max(raioAnt, raio) + banda / 2,
+          safeRadius: Math.max(0, raio - banda / 2),
+          _collapseStep: true, _quiet: true, _tickIndex: i,
+        }, targetX, targetZ, allPlayers, mapLevel);
+
+        // ── Espinhos TANGÍVEIS ────────────────────────────────────
+        // As mesmas caixas do Muro de Pedra e da Jaula, respeitadas por jogador
+        // e por bicho no mesmo ponto de colisão. Plantadas uma vez por PASSO
+        // (não por leva): reposicionar uma dúzia de caixas a cada 500 ms dá
+        // tranco no barco. Elas expiram sozinhas no fim do passo — ninguém
+        // fica preso depois que o golpe acaba.
+        //
+        // O ÚLTIMO passo NÃO planta: é a janela que a descrição promete ("saia do
+        // centro no fim"). Com a coroa selada até o último instante, o miúlo
+        // vira dano garantido e a skill deixa de ter jogada — só aperta e
+        // cobra. Sem a última coroa sobra ~1 s para remar os ~45 un que
+        // separam a borda de dentro do raio da explosão. É apertado de
+        // propósito: é a ⭐ do chefe final.
+        const passoIdx = Math.floor((i * passos) / total);
+        if (attack.tangible && this.wallManager && passoIdx !== passoPlantado
+            && passoIdx < passos - 1) {
+          passoPlantado = passoIdx;
+          const n = Math.max(6, Math.min(24, attack.spikeCount || 14));
+          // Meia-largura que SELA o anel: o arco entre dois vizinhos (2πR/n)
+          // tem de caber no comprimento de um. O 1,06 é a folga contra o
+          // vazamento fino na quina de duas caixas.
+          const meia = (Math.PI * raio / n) * 1.06;
+          const esp  = Math.max(3, banda * 0.25);
+          const dura = Math.ceil((step * total) / Math.max(1, passos)) + 150;
+          const stamp = Date.now();
+          for (let k = 0; k < n; k++) {
+            const a = (k / n) * Math.PI * 2;
+            // Tangente ao círculo: o eixo do COMPRIMENTO da caixa é
+            // basis.x = (cos rot, −sin rot); igualar a (−sin a, cos a) dá
+            // rot = −(a + π/2). Errar aqui põe os espinhos radiais e o anel vaza.
+            this.wallManager.addWall(mapLevel, {
+              id: 'collapse_' + npc.id + '_' + stamp + '_' + k,
+              x: targetX + Math.cos(a) * raio, z: targetZ + Math.sin(a) * raio,
+              hw: meia, hh: esp, rot: -(a + Math.PI / 2), durationMs: dura,
+            });
+          }
+        }
+
+        // ── E o empurrão ────────────────────────────────────────
+        // Quem ficou além do anel é trazido para a borda de dentro. Os dois se
+        // completam em vez de competir: o empurrão É o aperto, a parede é o que
+        // impede de sair de novo.
+        const agora = Date.now();
+        const empurrados = [];
+        for (const pl of allPlayers) {
+          if (pl.mapLevel !== mapLevel || pl.dead) continue;
+          if (isSafeAfterRespawn(pl, agora) || isInvincible(pl, agora)) continue;
+          const dx = pl.x - targetX, dz = pl.z - targetZ;
+          const d = Math.hypot(dx, dz);
+          if (d <= raio || d > deR + banda * 2 || d < 0.001) continue;
+          pl.x = targetX + (dx / d) * raio;
+          pl.z = targetZ + (dz / d) * raio;
+          empurrados.push({ id: pl.id, x: pl.x, z: pl.z });
+        }
+
+        // Mesmo evento do lado da relíquia: o cliente já sabe desenhar o aro
+        // fechando e o rastro de quem foi arrastado, e não liga se o `casterId`
+        // é de um jogador ou de um bicho.
+        this.addEvent({
+          type: 'relic_collapse_step', casterId: npc.id, skill: attack.skill,
+          vfx: attack.vfx, originX: targetX, originZ: targetZ,
+          radius: raio, band: banda, step: i, stepCount: total,
+          pushed: empurrados,
+        }, mapLevel);
+      }, i * step);
+    }
+
+    // ── O miúlo ──────────────────────────────────────────────
+    // A explosão central que a descrição sempre prometeu. `burstMult` no lugar
+    // de `damageMult`: o aperto foi o preço de chegar até aqui, o miúlo é O golpe.
+    if (attack.burstAtCenter) {
+      this._agenda(npc, () => {
+        if (npc.dead) return;
+        const raio = attack.collapseRadius || attack.eruptRadius || ateR;
+        this._resolveAttack(npc, {
+          ...attack, shape: 'circle', radius: raio, safeRadius: 0,
+          damageMult: attack.burstMult || attack.damageMult,
+          _collapseStep: true,
+        }, targetX, targetZ, allPlayers, mapLevel);
+        this.addEvent({
+          type: 'relic_collapse_burst', casterId: npc.id, skill: attack.skill,
+          vfx: attack.vfx, originX: targetX, originZ: targetZ, radius: raio,
+        }, mapLevel);
+      }, total * step);
+    }
+  }
+
+  /**
+   * BICHOS INVOCADOS (`special: 'summons'`) — quatro leituras, um motor só.
+   *
+   * Espelho do `_castSummons` do lado da relíquia. O golpe não é uma forma que
+   * resolve num instante: são CRIATURAS que existem no mar por alguns segundos,
+   * andam por conta própria e batem quando encostam. Isso troca a pergunta que a
+   * skill faz — de "onde vai cair?" para "para onde eu corro agora?".
+   *
+   *   hunt    — nascem no casco do bicho e CAÇAM o jogador mais perto.
+   *   ambush  — nascem espalhadas e ficam PARADAS; só investem quando alguém
+   *             entra no `triggerRadius`. Vira campo minado com paciência.
+   *   volley  — saem do casco em salva e voam no alvo mais perto de uma vez.
+   *   escort  — ficam em órbita do bicho e só saltam quando ELE acerta alguém
+   *             (ver notifyNpcHit). Não tem relógio próprio.
+   *
+   * Três mecanicas só do bicho morreram para isto nascer (`mark`, `brood`,
+   * `bond`, 2026-09-05): eram as versões ANTIGAS destas mesmas três skills, de
+   * quando as duas faces divergiam. Estão no git — decisão do Luang de que o
+   * bestiario inteiro mostre a mesma skill que a relíquia dele entrega.
+   *
+   * O alvo é reavaliado a cada leva, então a criatura não "trava" numa presa que
+   * morreu: procura outra. E o cliente só DESENHA — a posição chega em
+   * `relic_summon_move`, a mesma divisão da Orbe e dos Faróis de Carne. Os
+   * eventos são os MESMOS da relíquia: o handler do cliente não liga se o
+   * `casterId` é jogador ou bicho.
+   */
+  _runSummons(npc, attack, targetX, targetZ, allPlayers, mapLevel) {
+    if ((attack.summonMode || 'hunt') === 'escort') {
+      return this._armSummonEscort(npc, attack, mapLevel);
+    }
+    const modo    = attack.summonMode || 'hunt';
+    const n       = Math.max(1, attack.count || 3);
+    const tickMs  = attack.summonTickMs || 180;
+    const life    = attack.lifeMs || 5000;
+    const speed   = attack.moveSpeed || 55;
+    const raio    = attack.radius || 20;
+    const catchR  = attack.catchRadius || 14;
+    const gatilho = attack.triggerRadius || 45;
+    const spread  = attack.spread || 0;
+
+    // De onde nascem: o mar apontado (emboscada) ou o próprio casco. A salva
+    // sempre sai de dentro do bicho; a caçada também, quando o dado pede
+    // (`spawnAtCaster`) — numa skill cuja graça é a PERSEGUIÇÃO, nascer longe
+    // troca a ameaça por um teste de pontaria que a skill nem quer cobrar.
+    const noCasco = modo === 'volley' || attack.spawnAtCaster;
+    const ox = noCasco ? npc.x : targetX;
+    const oz = noCasco ? npc.z : targetZ;
+
+    for (let i = 0; i < n; i++) {
+      const ang  = (i / n) * Math.PI * 2 + Math.random() * 0.5;
+      const dist = spread > 0 ? spread * Math.sqrt(0.25 + Math.random() * 0.75) : 0;
+      const cria = {
+        x: ox + Math.cos(ang) * dist,
+        z: oz + Math.sin(ang) * dist,
+        // A emboscada nasce DORMINDO — ela não persegue, ela espera.
+        acordada: modo !== 'ambush',
+        fim: 0,
+      };
+
+      const fim = (bateu) => {
+        this.addEvent({
+          type: 'relic_summon_end', casterId: npc.id, index: i,
+          skill: attack.skill, vfx: attack.vfx, x: cria.x, z: cria.z,
+          radius: raio, hit: !!bateu,
+        }, mapLevel);
+      };
+
+      const bater = () => {
+        // Chance de atordoar POR CRIATURA (o Coro): é sorteio por rosto, não um
+        // stun garantido. Entra pelo `cc` porque é o caminho que já respeita a
+        // convenção de quem pode e quem não pode ser atordoado.
+        const azar = attack.stunChance > 0 && Math.random() < attack.stunChance;
+        this._resolveAttack(npc, {
+          ...attack, shape: 'circle', radius: raio, _summonHit: true, _quiet: true,
+          cc: azar ? { ...(attack.cc || {}), stunMs: attack.stunMs || 900 } : attack.cc,
+        }, cria.x, cria.z, allPlayers, mapLevel);
+      };
+
+      const passo = () => {
+        if (npc.dead || (this.pm?.npcs && !this.pm.npcs.has(npc.id))) return;
+        if (Date.now() >= cria.fim) return fim(false);
+
+        let alvo = null, melhor = Infinity;
+        const agora = Date.now();
+        for (const pl of allPlayers) {
+          if (pl.mapLevel !== mapLevel || pl.dead) continue;
+          if (isSafeAfterRespawn(pl, agora) || isInvincible(pl, agora)) continue;
+          const d = Math.hypot(pl.x - cria.x, pl.z - cria.z);
+          if (d < melhor) { melhor = d; alvo = pl; }
+        }
+
+        // Emboscada: acorda quando alguém chega perto o bastante — e aí não
+        // dorme mais, mesmo que o sujeito se afaste.
+        if (alvo && !cria.acordada && melhor <= gatilho) cria.acordada = true;
+
+        if (alvo && cria.acordada) {
+          const dx = alvo.x - cria.x, dz = alvo.z - cria.z;
+          const d  = Math.hypot(dx, dz) || 1;
+          const avanco = speed * (tickMs / 1000);
+          if (d <= avanco || d <= catchR) {
+            cria.x = alvo.x; cria.z = alvo.z;
+            bater();
+            return fim(true);
+          }
+          cria.x += (dx / d) * avanco;
+          cria.z += (dz / d) * avanco;
+        }
+        this.addEvent({
+          type: 'relic_summon_move', casterId: npc.id, index: i,
+          x: cria.x, z: cria.z, awake: cria.acordada,
+        }, mapLevel);
+        this._agenda(npc, passo, tickMs);
+      };
+
+      cria.fim = Date.now() + life;
+      this.addEvent({
+        type: 'relic_summon_spawn', casterId: npc.id, index: i,
+        skill: attack.skill, vfx: attack.vfx, x: cria.x, z: cria.z,
+        radius: raio, lifeMs: life, mode: modo, awake: cria.acordada,
+      }, mapLevel);
+      passo();
+    }
+  }
+
+  /**
+   * ESCOLTA — as criaturas ficam em órbita do bicho esperando ELE acertar.
+   *
+   * Não têm relógio próprio: a janela (`durationMs`) só começa a contar no
+   * PRIMEIRO salto. Do lado do jogador isso é uma decisão (guardar a escolta
+   * para a briga certa); do lado do bicho é o que faz a skill ser uma AMEAÇA
+   * PENDENTE — enquanto as caveiras estiverem lá, todo golpe dele vale mais, e
+   * quem está lutando vê isso na tela antes de sentir.
+   *
+   * Por isso ela também não entra no `busyMs`: prender o chefe 10 s esperando
+   * um acerto que talvez não venha o deixaria parado no meio da luta.
+   */
+  _armSummonEscort(npc, attack, mapLevel) {
+    npc._summonEscort = {
+      // Quantas caveiras estão em órbita. NÃO são cargas gastas uma a uma:
+      // saltam todas juntas a cada salva (ver notifyNpcHit).
+      vivas:     Math.max(1, attack.count || 3),
+      janelaMs:  attack.durationMs || 10000,
+      recargaMs: attack.leapCooldownMs || 1500,
+      expira:    0,          // 0 = a janela ainda nem abriu
+      proximo:   0,
+      saltando:  false,
+      attack,
+    };
+    this.addEvent({
+      type: 'relic_summon_spawn', casterId: npc.id, index: 0,
+      skill: attack.skill, vfx: attack.vfx, x: npc.x, z: npc.z,
+      radius: attack.radius || 22, orbitRadius: attack.orbitRadius || 26,
+      lifeMs: 0, mode: 'escort', count: npc._summonEscort.vivas,
+    }, mapLevel);
+  }
+
+  /**
+   * O bicho acertou alguém — a escolta salta.
+   *
+   * `saltando` é a trava de reentrância, e não é zelo excessivo: o próprio salto
+   * causa dano, que volta ao laço de acerto do _resolveAttack, que chamaria aqui
+   * de novo — recursão infinita até a pilha estourar.
+   */
+  notifyNpcHit(npc, alvo, mapLevel) {
+    const e = npc._summonEscort;
+    if (!e || e.saltando || e.vivas <= 0) return;
+    if (!alvo || alvo.dead || alvo.mapLevel !== mapLevel) return;
+
+    const agora = Date.now();
+    // A janela abre AGORA — e só agora.
+    if (e.expira === 0) e.expira = agora + e.janelaMs;
+    if (agora >= e.expira) { npc._summonEscort = null; return; }
+    if (agora < e.proximo) return;
+
+    e.proximo  = agora + e.recargaMs;
+    e.saltando = true;
+    this.addEvent({
+      type: 'relic_summon_leap', casterId: npc.id, skill: e.attack.skill,
+      vfx: e.attack.vfx, targetId: alvo.id, x: alvo.x, z: alvo.z,
+      count: e.vivas,
+    }, mapLevel);
+    // As três saltam JUNTAS e o `damageMult` é o dano da SALVA inteira — não de
+    // cada caveira, senão o golpe triplicaria de valor junto com a leitura.
+    this._resolveAttack(npc, {
+      ...e.attack, shape: 'circle', radius: e.attack.radius || 22,
+      _summonHit: true, _quiet: true,
+    }, alvo.x, alvo.z, [alvo], mapLevel);
+    e.saltando = false;
+  }
+
+  /**
+   * CARDUME DE TORPEDOS (`special: 'torpedo'`): a salva sai do casco em
+   * sequência, cada torpedo com voo próprio e mira teleguiada.
+   *
+   * Espelho do `_castTorpedoes`. O que faz a skill acertar é a RE-MIRA na
+   * chegada: o alvo andou durante o voo, e se ele continua perto do ponto
+   * anunciado o estouro sai em cima dele. O `homingRadius` é a corda — quem
+   * fugiu mais que isso ganhou a corrida, e aí o torpedo estoura onde foi
+   * anunciado (o desenho concorda, porque o cliente para de seguir pelo mesmo
+   * critério).
+   */
+  _runTorpedoes(npc, attack, targetX, targetZ, allPlayers, mapLevel) {
+    const n       = Math.max(1, attack.count || 6);
+    const gapMs   = attack.salvoMs || 150;
+    const flyMs   = attack.travelMs || 480;
+    const alcance = attack.length || 95;
+    const meio    = ((attack.angle || 60) * Math.PI / 180) / 2;
+    const leque   = ((attack.fanAngle || 40) * Math.PI / 180) / 2;
+    let bdx = targetX - npc.x, bdz = targetZ - npc.z;
+    const bl = Math.hypot(bdx, bdz) || 1;
+    bdx /= bl; bdz /= bl;
+    const base = Math.atan2(bdz, bdx);
+
+    for (let i = 0; i < n; i++) {
+      this._agenda(npc, () => {
+        if (npc.dead) return;
+        const fx = npc.x, fz = npc.z;
+        const alvo = this._coneTargetPlayer(fx, fz, bdx, bdz, alcance, meio,
+                                            allPlayers, mapLevel);
+
+        // Leque simétrico: 0, +1, -1, +2, -2… normalizado pelo número de tiros.
+        const lado = (i % 2 === 0 ? 1 : -1) * Math.ceil(i / 2);
+        const ang  = base + (n > 1 ? (lado / Math.ceil(n / 2)) * leque : 0);
+        const tx = alvo ? alvo.x : fx + Math.cos(ang) * alcance;
+        const tz = alvo ? alvo.z : fz + Math.sin(ang) * alcance;
+
+        this.addEvent({
+          type: 'relic_torpedo', casterId: npc.id, skill: attack.skill,
+          vfx: attack.vfx, index: i, side: lado >= 0 ? 1 : -1,
+          fromX: fx, fromZ: fz, toX: tx, toZ: tz,
+          travelMs: flyMs, radius: attack.radius || 15, homed: !!alvo,
+          targetId: alvo ? alvo.id : null,
+          homingRadius: attack.homing ? (attack.homingRadius || 55) : 0,
+        }, mapLevel);
+
+        this._agenda(npc, () => {
+          if (npc.dead) return;
+          let ax = tx, az = tz;
+          if (attack.homing && alvo && !alvo.dead && alvo.mapLevel === mapLevel
+              && Math.hypot(alvo.x - tx, alvo.z - tz) <= (attack.homingRadius || 55)) {
+            ax = alvo.x; az = alvo.z;
+          }
+          this._resolveAttack(npc, {
+            ...attack, shape: 'circle', radius: attack.radius || 15,
+            _torpedoHit: true, _quiet: true,
+          }, ax, az, allPlayers, mapLevel);
+        }, flyMs);
+      }, i * gapMs);
+    }
+  }
+
+  /** Jogador mais perto dentro de um cone à frente do bicho — a mira do torpedo. */
+  _coneTargetPlayer(ox, oz, dx, dz, reach, halfAngle, allPlayers, mapLevel) {
+    const agora = Date.now();
+    let best = null, bestD = Infinity;
+    for (const p of allPlayers) {
+      if (p.mapLevel !== mapLevel || p.dead) continue;
+      if (isSafeAfterRespawn(p, agora) || isInvincible(p, agora)) continue;
+      const rx = p.x - ox, rz = p.z - oz;
+      const d = Math.hypot(rx, rz);
+      if (d > reach || d < 0.001 || d >= bestD) continue;
+      const cosA = (rx * dx + rz * dz) / d;
+      if (Math.acos(Math.max(-1, Math.min(1, cosA))) > halfAngle) continue;
+      bestD = d; best = p;
+    }
+    return best;
+  }
+
+  /**
+   * Sobrecarga do Núcleo (`special: 'charge'`): carrega por `chargeMs` e detona
+   * a tela inteira — a menos que alguém o INTERROMPA.
+   *
+   * Sem o branch, os 5 s de carga não existiam: o chefe soltava a explosão no
+   * fim do cast de 800 ms, sem janela nenhuma e sem como cancelar. A skill
+   * inteira é a janela — `interruptDamage: 1` quer dizer que UM ponto de dano
+   * cancela tudo, ou seja o golpe mais assustador do chefe é também o único que
+   * o jogador desliga só de continuar atirando.
+   *
+   * O segundo telegraph é o que torna isso jogável: sem ele o jogador via um
+   * aviso de 800 ms, cinco segundos de nada, e a tela explodindo. Vai SEM `vfx`
+   * de propósito (o círculo genérico do TelegraphSystem), senão o cliente
+   * recomeçaria a animação inteira da skill por cima da que já está rodando —
+   * ver a mesma nota no elo seguinte da Descarga em Cadeia.
+   */
+  _runCharge(npc, attack, targetX, targetZ, allPlayers, mapLevel) {
+    const charge = attack.chargeMs || 5000;
+    const limite = Math.max(1, attack.interruptDamage || 1);
+    const hpIni  = npc.hp;
+
+    npc._charging = true;
+    this.addEvent({
+      type: 'npc_telegraph', npcId: npc.id, attackId: attack.id,
+      attackName: attack.name || attack.id, shape: 'circle',
+      npcX: npc.x, npcZ: npc.z, x: targetX, z: targetZ,
+      radius: attack.radius, duration: charge,
+      color: attack.telegraph?.color,
+    }, mapLevel);
+
+    this._agenda(npc, () => {
+      npc._charging = false;
+      if (npc.dead) return;
+      if (npc.hp <= hpIni - limite) {
+        this.addEvent({
+          type: 'monster_skill_interrupted', casterId: npc.id,
+          skill: attack.skill, vfx: attack.vfx, originX: npc.x, originZ: npc.z,
+        }, mapLevel);
+        return;
+      }
+      this._resolveAttack(npc, {
+        ...attack, shape: 'circle', _chargeBurst: true,
+      }, targetX, targetZ, allPlayers, mapLevel);
+    }, charge);
   }
 
   /**
@@ -891,10 +1505,16 @@ class AttackManager {
         const stepDist = speed * (tickMs / 1000);
         if (d <= stepDist || d <= catchR) {          // alcançou
           orb.x = prey.x; orb.z = prey.z;
-          return burst(orb.x, orb.z);
+          // `sticky`: alcançar NÃO acaba o golpe — a coisa GRUDA no alvo e
+          // continua moendo até a vida dela terminar. É o que separa um
+          // projetil teleguiado (a Orbe) de uma tromba d'água que persegue: se
+          // estourasse ao encostar, "segue o alvo dando dano por tique" seria
+          // uma promessa de um tique só.
+          if (!attack.sticky) return burst(orb.x, orb.z);
+        } else {
+          orb.x += (dx / d) * stepDist;
+          orb.z += (dz / d) * stepDist;
         }
-        orb.x += (dx / d) * stepDist;
-        orb.z += (dz / d) * stepDist;
       }
 
       this.addEvent({ type: 'npc_orb_move', npcId: npc.id, x: orb.x, z: orb.z, radius }, mapLevel);
@@ -938,7 +1558,7 @@ class AttackManager {
 
     const alive = () => allPlayers.filter(p =>
       p.mapLevel === mapLevel && !p.dead && !hitIds.has(p.id) &&
-      !(p.safeUntil && Date.now() < p.safeUntil));
+      !isSafeAfterRespawn(p));
 
     const fireLink = (k, markX, markZ) => {
       if (npc.dead || (this.pm?.npcs && !this.pm.npcs.has(npc.id))) return;
@@ -1009,51 +1629,57 @@ class AttackManager {
    * nunca era atingido**. O jogador via o anel passar por cima dele sem nada
    * acontecer, e levava dano parado num ponto onde nao havia anel nenhum.
    *
-   * O passo da simulacao sai da propria faixa (`expandMs * band / radius`):
-   * assim a frente avanca exatamente `band` por passo — a varredura fica
-   * CONTINUA (sem buraco) e ninguem leva a mesma onda duas vezes, entao o dano
-   * total continua sendo um por onda, como era.
+   * A varredura vem do `sonarSweep`: `ceil(radius/band)` faixas encostadas,
+   * amostradas no centro de cada uma. Ler a nota do utils/sonar-sweep.js — o
+   * relogio que estava aqui antes deixava a ULTIMA faixa de fora e quem ficava
+   * parado na borda escapava do golpe inteiro de vez em quando.
+   *
+   * `_sweepSeen`: uma onda so cobra UMA vez de cada barco. Isso era um acidente
+   * da aritmetica (o passo valia `band`, entao as faixas nao se sobrepunham) e
+   * so valia para quem estava PARADO — fugir para fora junto com a parede
+   * mantinha o barco dentro dela por varios passos e cobrava o dobro.
    */
   _runSonar(npc, attack, targetX, targetZ, allPlayers, mapLevel) {
     const rings  = attack.ringCount || attack.ticks?.count || 4;
     const gapMs  = attack.ticks?.intervalMs || 850;
-    const expand = attack.expandMs || 1600;
-    const radius = attack.radius || 90;
-    const band   = attack.band || 20;
-    const stepMs = Math.max(60, Math.round((expand * band) / Math.max(radius, 1)));
-    const total  = (rings - 1) * gapMs + expand;
-    const start  = Date.now();
+    const { steps, stepMs, fronts, timeAt } = sonarSweep(attack);
     // Centrado no ALVO do cast e PLANTADO ali — e onde o cliente ancora o
     // desenho (`ring` nao e from_caster). Recentrar no bicho poria as ondas
     // do dano num lugar e as desenhadas em outro.
     const ox = targetX, oz = targetZ;
     const gapFacing = npc._castGapFacing;
 
-    const step = () => {
+    // Uma cadeia de timers POR ONDA: as ondas saem defasadas de `gapMs`, que
+    // nao e multiplo de `stepMs` — num relogio unico so a onda 0 cairia nos
+    // instantes certos, e as outras amostrariam a frente onde a divisao
+    // deixasse (era o que abria o buraco na borda).
+    const sweep = (i, k, seen) => {
       if (npc.dead || (this.pm?.npcs && !this.pm.npcs.has(npc.id))) return;
-      const el = Date.now() - start;
+      this._resolveAttack(npc, {
+        ...attack,
+        shape: 'ring',
+        _frontRadius: fronts[k],
+        _ringIndex: i,
+        _gapFacing: gapFacing,
+        _sweepSeen: seen,
+      }, ox, oz, allPlayers, mapLevel);
 
-      for (let i = 0; i < rings; i++) {
-        const t = el - i * gapMs;
-        if (t < 0 || t > expand) continue;          // ainda nao saiu / ja acabou
-        const front = radius * (t / expand);
-        this._resolveAttack(npc, {
-          ...attack,
-          shape: 'ring',
-          _frontRadius: front,
-          _ringIndex: i,
-          _gapFacing: gapFacing,
-        }, ox, oz, allPlayers, mapLevel);
-      }
-
-      if (el >= total) return;
+      if (k + 1 >= steps) return;
       const tm = setTimeout(() => {
         if (npc._tickTimers) npc._tickTimers = npc._tickTimers.filter(x => x !== tm);
-        step();
+        sweep(i, k + 1, seen);
       }, stepMs);
       (npc._tickTimers ||= []).push(tm);
     };
-    step();
+
+    for (let i = 0; i < rings; i++) {
+      const seen = new Set();
+      const tm = setTimeout(() => {
+        if (npc._tickTimers) npc._tickTimers = npc._tickTimers.filter(x => x !== tm);
+        sweep(i, 0, seen);
+      }, i * gapMs + timeAt(0));
+      (npc._tickTimers ||= []).push(tm);
+    }
   }
 
   /**
@@ -1084,7 +1710,7 @@ class AttackManager {
 
     const perto = allPlayers
       .filter(p => p.mapLevel === mapLevel && !p.dead
-                && !(p.safeUntil && agora < p.safeUntil)
+                && !isSafeAfterRespawn(p, agora)
                 && !isInvincible(p, agora)
                 && dist2D(npc, p) <= raio)
       .sort((a, b) => dist2D(npc, a) - dist2D(npc, b));
@@ -1101,10 +1727,15 @@ class AttackManager {
     for (let i = 0; i < total; i++) {
       const tm = setTimeout(() => {
         if (npc.dead || presa.dead) return;
+        // ⚠️ `presa.dead` volta a ser `false` no instante em que o jogador
+        // aperta reviver, e as levas que faltavam caíam em cima do barco novo,
+        // com 10% de vida. A trégua é o que distingue "ainda está sendo
+        // mastigado" de "já morreu e voltou" — o `dead` sozinho não distingue.
+        if (isSafeAfterRespawn(presa)) return;
         presa.x = npc.x;
         presa.z = npc.z;
         const dmg = Math.max(1, Math.floor((npc.cannonDmg || 1) * attack.damageMult));
-        presa.hp = Math.max(0, presa.hp - dmg);
+        presa.hp = Math.max(0, presa.hp - shield.absorb(presa, dmg).dmg);
         presa.lastCombatTime = Date.now();
         this.addEvent({
           type: 'npc_attack_hit', npcId: npc.id, attackId: attack.id,
@@ -1307,7 +1938,7 @@ class AttackManager {
 
     const candidatos = allPlayers.filter(p =>
       p.mapLevel === mapLevel && !p.dead &&
-      !(p.safeUntil && _now < p.safeUntil) && dist2D(npc, p) <= range
+      !isSafeAfterRespawn(p, _now) && dist2D(npc, p) <= range
     );
     if (candidatos.length === 0) return;
 
@@ -1451,7 +2082,7 @@ class AttackManager {
         npc,
         npc.x + Math.sin(ang) * d,
         npc.z + Math.cos(ang) * d,
-        0,
+        false,                    // miss: o bicho não rola precisão (ver spawnSalvo)
         attack.damageMult,
         npc.cannonDmg || 0
       );
@@ -1615,7 +2246,7 @@ class AttackManager {
       const radius = auraDef.radius || 200;
       const _auraNow = Date.now();
       const mapPlayers = allPlayers.filter(p =>
-        p.mapLevel === mapLevel && !p.dead && !(p.safeUntil && _auraNow < p.safeUntil)
+        p.mapLevel === mapLevel && !p.dead && !isSafeAfterRespawn(p, _auraNow)
       );
       const hits = [];
 

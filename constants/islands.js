@@ -318,7 +318,11 @@ const ISLAND_NPC_HULL = {
 const ISLAND_NPC_STATS = {
   count:        12,
   baseHp:       400_000,
-  baseDamage:   25_000,
+  // ×2 (2026-09-06): mesma leva que dobrou o dano de NPC do mapa 4 em
+  // diante. As três ilhas de guilda são os mapas 12/13/14 e herdam daqui —
+  // deixá-las de fora faria a patrulha das ilhas ser o trecho MAIS fácil do
+  // fim do jogo, logo depois do Mar dos Renegados.
+  baseDamage:   50_000,
   xpPerKill:    900,
   goldMin:      25_000,
   goldMax:      40_000,

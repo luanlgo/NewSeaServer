@@ -3,8 +3,9 @@ const { uid, rand, clamp, dist2D } = require('../utils/helpers');
 const { pushOutOfIslands, pushOutOfWalls } = require('../utils/collision');
 const { MAX_HP, SHIP_SPEED, NPC_COUNT, MAP_DEFS, WORLD_BOSS_DEF, HIT_RADIUS, difficultyMult } = require('../constants');
 const { bloodMoonFactor } = require('../utils/world-state');
-const { isInvincible } = require('../utils/invincibility');
+const { isInvincible, isSafeAfterRespawn } = require('../utils/invincibility');
 const fx = require('../utils/talent-effects');
+const shield = require('../utils/shield');
 
 // ── Equilíbrio de aggro dos NPCs normais (navios piratas / monstros) ─────────
 // Bosses ignoram estes limites (perseguem sem distância máxima).
@@ -417,7 +418,7 @@ class NPCManager {
         let nearestDist_ = Infinity;
         
         for (const p of playersMap.values()) {
-          if (!p.dead && !p.isPeaceful && !(p.safeUntil && now < p.safeUntil)) {
+          if (!p.dead && !p.isPeaceful && !isSafeAfterRespawn(p, now)) {
             // Sombra do Mar (def_sombra): o bicho enxerga o jogador mais longe
             // do que ele realmente está, então desiste dele mais cedo. Dividir a
             // distância percebida é o jeito de encolher o alcance de percepção
@@ -800,6 +801,11 @@ class NPCManager {
                   if (p.dead) continue;
                   if (dist2D(npc, p) > (atk.damageRadius || 220)) continue;
                   let dmg = Math.round((atk.damage || 200) * (npc.dmgMult || 1));
+                  // A habilidade Defesa (Capitão → Habilidades) vale aqui como
+                  // vale no tiro e na área do bicho: o emerge do chefe é o
+                  // golpe mais forte que um jogador leva, e era o único que
+                  // ignorava a linha inteira de defesa que ele comprou.
+                  if (p.skillDefense > 0) dmg = Math.round(dmg * (1 - p.skillDefense));
                   // Invencível (Névoa) + defensiva do pet valem aqui também.
                   // A Névoa apara este golpe e se gasta nele.
                   if (isInvincible(p)) continue;
@@ -808,7 +814,7 @@ class NPCManager {
                     dmg = petMgr.interceptOwnerDamage(p, dmg);
                     if (dmg <= 0) continue;
                   }
-                  p.hp = Math.max(0, p.hp - dmg);
+                  p.hp = Math.max(0, p.hp - shield.absorb(p, dmg).dmg);
                   // Antes só marcava `dead` — sem ruína e sem entity_dead, o
                   // jogador morria pelo emerge do boss e nem via a tela de morte.
                   this.projectileManager?.onPlayerKilled?.(p, npc.id);
@@ -911,7 +917,7 @@ class NPCManager {
                     npc,
                     npc.x + Math.sin(ang) * projDist,
                     npc.z + Math.cos(ang) * projDist,
-                    0, 1.0, npc.cannonDmg || 0
+                    false, 1.0, npc.cannonDmg || 0   // miss: bicho não rola precisão
                   );
                 }
               }

@@ -43,28 +43,71 @@ const BONUS_MAPS = [
   { id: 'bonus_map_3', name: 'Abismo dos Afundados',      icon: '🌊',  pieceId: 'mapa_abismo',    requiredPieces: 50 },
 ];
 
-// ── WORLD_BOSS_DEF — boss mundial que surge após N bosses de zona mortos ──────
+// ── WORLD_BOSS_DEF — o chefe mundial, evento de servidor ──────────────────
+//
+// Surge depois de N chefes de zona mortos (contagem GLOBAL, não por jogador),
+// é anunciado para todo mundo com 5 s de antecedência e fica no mar por
+// `expireDelay` sem tomar dano antes de ir embora.
+//
+// ── Revisão de 2026-09-06 ────────────────────────────────────────────
+// Os números aqui eram os da versão de NAVEGADOR e nunca foram tocados desde a
+// migração. 25.000 de vida quando a Viúva Afogada tem 10.000.000 e um NPC do
+// Mar dos Renegados tem 3.000.000 (×10 na dificuldade extrema): o "DEUS DO MAR"
+// morria mais rápido que o bicho comum do mapa 4.
+//
+// ⚠️ A DIFICULDADE MÉDIA DOS JOGADORES ONLINE MULTIPLICA VIDA E DANO (×1 no
+// fácil, ×10 no extremo — ver difficultyMult e o `spawn` do world-boss-manager).
+// Os números abaixo são o PISO, não o que aparece no mar: com o servidor no
+// meio da tabela (×4) esta vida vira ~32 milhões, e no extremo, 80.
+//
+// A régua usada: ele tem de ser o alvo mais duro do jogo (é um evento de
+// servidor, todo mundo é chamado), mas tem de CABER na janela em que fica no
+// mar. Daí a vida ficar abaixo da Viúva, que não tem prazo, e o `expireDelay`
+// ter subido para 15 min — 10 não davam nem para atravessar o mapa e chegar.
 const WORLD_BOSS_DEF = [
   {
     name:                'Legendary ghost Pirate Ship',
     icon:                '🦑',
-    spawnAfterBossKills:  5,
+    // 5 → 10: com três chefes de mapa em rotação, cinco abates aconteciam rápido
+    // demais para uma coisa chamada DEUS DO MAR. Evento raro é evento.
+    spawnAfterBossKills:  10,
     spawnChance:          1.0,
-    baseHp:               25000,
-    baseDamage:           4000,
-    regenPerSec:          250,
+    baseHp:               8000000,
+    // Contra os 90.000 de vida do maior casco do jogo: o `cannon_shot` dele tem
+    // damageMult 3, então são 42.000 por tiro no piso da dificuldade — meio
+    // navio. Quem entra sozinho no evento morre, e essa é a intenção.
+    baseDamage:           14000,
+    // 0,15% da vida por segundo. O valor antigo (250) era 1% da vida ANTIGA por
+    // segundo; mantido em proporção, ele só pune raide que trava, sem virar uma
+    // corrida de DPS mínimo.
+    regenPerSec:          12000,
     regenDelay:           20000,
-    expireDelay:          600000,
+    expireDelay:          900000,
     hitRadius:            16,
     fireInterval:         4000,
-    dobraoMin:            500,
-    dobraoMax:            600,
+    // O espolio é dividido por DANO entre todos que participaram, então o
+    // número cheio só vai para quem lutou sozinho. Na escala de hoje um NPC do
+    // mapa 11 larga 10.000–25.000 dobrões — o chefe mundial precisava valer
+    // mais que um bicho comum, e valia menos.
+    dobraoMin:            8000,
+    dobraoMax:            12000,
     mapFragments:         500,
-    xpPerKill:            5000,
+    // 5.000 era menos que quatro abates do mapa 11 (1.200 cada). 250.000 põe o
+    // evento na faixa de "vale largar o que estava fazendo".
+    xpPerKill:            250000,
     hullColor:            0x050505,
     sailColor:            0x220011,
     attacks:              ['cannon_shot', 'cannon_burst', 'poison_spit', 'ghost_soul_pillars'],
-    mapLevel:             [1, 2],
+    // ── Onde ele nasce ─────────────────────────────────────────────
+    // Era [1, 2] — os dois mapas iniciais. Duas coisas erradas de uma vez: um
+    // chefe que bate 42.000 aparecia onde o jogador tem barco de 1.000 de vida,
+    // e o único conteúdo de servidor do jogo ficava num lugar onde ninguém com
+    // nível para lutar contra ele ainda navega.
+    //
+    // Agora é 4 / 6 / 10: meio e fim de jogo, todos zona AMARELA (sem PvP, para
+    // o evento não virar emboscada) e todos alcançáveis. O mapa 6 é o melhor
+    // palco — não tem NPC nenhum, então a briga é só contra ele.
+    mapLevel:             [4, 6, 10],
     model:               '/models/ships/legendary_ghost_pirate_ship.glb',
     scale:               2.1,
     yOffset:             3,

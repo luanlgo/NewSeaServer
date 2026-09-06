@@ -1,19 +1,50 @@
 // constants/cannons.js — Canhões, munições, velas e custos de pesquisa
 
+// ── Precisão do canhão ────────────────────────────────────────────────────────
+// `accuracy` é FRAÇÃO (0.65 = 65% de chance de a salva acertar), e o teto que
+// qualquer combinação de canhão + pesquisa pode alcançar é o CANNON_ACCURACY_MAX.
+//
+// ── O que este campo era, e por que deixou de ser ────────────────────────────
+// Era `lifesteal`: cada projétil curava o atirante numa fração do dano que
+// causou (c6 em 30%). O problema não era a frequência, era a cura ser uma
+// FRAÇÃO DO DANO — quanto mais dano o jogador construía, mais ele se curava, e
+// sem teto. No fim de jogo uma salva crítica de 100 mil devolvia ~40 mil de
+// vida, e nenhum ajuste de porcentagem conserta isso: a conta escala junto com
+// o eixo que ela deveria custar.
+//
+// Roubo de vida saiu do jogo. As duas curas que sobram são as que EXIGEM uma
+// escolha: o curandeiro embarcado (ocupa peso no porão) e a bala_cura (ocupa o
+// slot de munição e é comprada em dobrão). Curar deixou de ser uma consequência
+// automática de bater forte.
+//
+// A precisão ocupa a mesma vaga na ficha do canhão e é o oposto disso: um teto
+// no que o canhão entrega, não um bônus que cresce com o dano.
+//
+// ⚠️ Ela NÃO é a única perda de tiro do jogo. A dispersão da salva já derruba
+//    parte dos projéteis por geometria (spreadRadius no projectile-manager, ~31%
+//    a 120 unidades), e as duas se multiplicam. Antes de mexer nestes números,
+//    conte as duas.
+const CANNON_ACCURACY_MAX = 0.70;
+
 // ── CANNON_DEFS ───────────────────────────────────────────────────────────────
 const CANNON_DEFS = {
-  c1: { name: 'Canhão enferrujado',                  price: 59,   currency: 'gold',   damage: 10, range: 80,  cooldown: 5000, lifesteal: 0,   doubleShot: false },
-  c2: { name: 'Canhão do marinheiro',                price: 150,  currency: 'gold',   damage: 14, range: 100, cooldown: 4500, lifesteal: 0,   doubleShot: false },
-  c3: { name: 'Canhão da tempestade de ferro',       price: 500,  currency: 'gold',   damage: 18, range: 120, cooldown: 4000, lifesteal: 0,   doubleShot: false },
-  c4: { name: 'Quebrador de Leviatãs',               price: 1000, currency: 'gold',   damage: 20, range: 120, cooldown: 3200, lifesteal: 0.1, doubleShot: false },
+  c1: { name: 'Canhão enferrujado',                  price: 59,   currency: 'gold',   damage: 10, range: 80,  cooldown: 5000, accuracy: 0.50, doubleShot: false },
+  c2: { name: 'Canhão do marinheiro',                price: 150,  currency: 'gold',   damage: 14, range: 100, cooldown: 4500, accuracy: 0.52, doubleShot: false },
+  c3: { name: 'Canhão da tempestade de ferro',       price: 500,  currency: 'gold',   damage: 18, range: 120, cooldown: 4000, accuracy: 0.55, doubleShot: false },
+  c4: { name: 'Quebrador de Leviatãs',               price: 1000, currency: 'gold',   damage: 20, range: 120, cooldown: 3200, accuracy: 0.58, doubleShot: false },
   // Elite — vendidos apenas na Ilha do Comércio (Mapa 3).
   // `doubleShot` foi desligado nos dois: ele dobrava os PROJÉTEIS da salva, mas
   // o cliente só desenha 10 por dono a cada 200 ms, então num casco de 40
   // canhões o segundo tiro nunca aparecia na tela — só na conta do dano e no
   // consumo de munição. O dano subiu junto para compensar em parte a metade de
   // projéteis que deixou de sair (não compensa por inteiro: ver o histórico).
-  c5: { name: 'Canhão de fogo abissal', price: 300,  currency: 'dobrao', damage: 30, range: 120, cooldown: 3000, lifesteal: 0.2, doubleShot: false, isElite: true },
-  c6: { name: 'Ruína dos Sete Mares',   price: 2000, currency: 'dobrao', damage: 40, range: 120, cooldown: 3000, lifesteal: 0.3, doubleShot: false, isElite: true },
+  //
+  // O c6 para em 0.65 de propósito: os 0.05 que faltam para o teto são a
+  // pesquisa `cannon_accuracy_upgrade` (constants/maps.js). Um canhão que já
+  // nascesse no máximo tornaria a pesquisa dinheiro jogado fora — o mesmo
+  // cuidado que o crítico e o dano tomam.
+  c5: { name: 'Canhão de fogo abissal', price: 300,  currency: 'dobrao', damage: 30, range: 120, cooldown: 3000, accuracy: 0.62, doubleShot: false, isElite: true },
+  c6: { name: 'Ruína dos Sete Mares',   price: 2000, currency: 'dobrao', damage: 40, range: 120, cooldown: 3000, accuracy: 0.65, doubleShot: false, isElite: true },
 };
 
 // ── AMMO_DEFS ─────────────────────────────────────────────────────────────────
@@ -58,4 +89,4 @@ const CANNON_RESEARCH_COSTS = [
   { ironPlates: 150, dobroes:  10000 }, // nível 3
 ];
 
-module.exports = { CANNON_DEFS, AMMO_DEFS, SAIL_DEFS, CANNON_RESEARCH_COSTS };
+module.exports = { CANNON_DEFS, CANNON_ACCURACY_MAX, AMMO_DEFS, SAIL_DEFS, CANNON_RESEARCH_COSTS };

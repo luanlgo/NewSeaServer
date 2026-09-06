@@ -42,12 +42,30 @@ describe('Loja Geral — a prateleira', () => {
   });
 
   it('os recursos de ofício estão à venda pelo preço combinado', () => {
-    const preco = { ironPlates: 1000, goldDust: 500, gunpowder: 1000 };
+    // Chapa e pó viraram DOBRÃO em 09/2026 (decisão do Luang): em ouro eles
+    // eram a torneira barata do sistema que a Mesa de Exploração deveria
+    // alimentar. A pólvora ficou em ouro — ela é consumo de salva, não
+    // material de ofício.
+    const preco = {
+      ironPlates: { price: 500,  currency: 'dobrao' },
+      goldDust:   { price: 100,  currency: 'dobrao' },
+      gunpowder:  { price: 1000, currency: 'gold'   },
+    };
     for (const [id, esperado] of Object.entries(preco)) {
       const item = SHOP.geraisMap[id];
       expect(item, `${id} não está na prateleira`).toBeTruthy();
-      expect(item.price).toBe(esperado);
-      expect(item.currency).toBe('gold');
+      expect(item.price, `${id}: preço`).toBe(esperado.price);
+      expect(item.currency, `${id}: moeda`).toBe(esperado.currency);
+    }
+  });
+
+  // O handler cobra em `player.dobroes`, mas a ficha do item diz `dobrao` — os
+  // dois nomes são diferentes de propósito (um é o campo do jogador, o outro é
+  // a moeda). Se a ficha ganhasse um terceiro nome, a compra sairia de graça:
+  // `player['dobrao']` é undefined, `undefined || 0` é 0, e 0 >= 0 passa.
+  it('a moeda de todo item é um dos dois nomes que o handler entende', () => {
+    for (const item of SHOP.gerais) {
+      expect(['gold', 'dobrao'], `${item.id} com moeda desconhecida`).toContain(item.currency);
     }
   });
 

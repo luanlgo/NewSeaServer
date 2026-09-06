@@ -47,6 +47,12 @@ function jogador(id, nivel, extra = {}) {
 const EM_COMBATE   = { lastCombatTime: AGORA };
 const FORA_COMBATE = { lastCombatTime: AGORA - fx.OUT_OF_COMBAT_MS - 1 };
 const FERIDO       = { hp: 20, maxHp: 100 };
+// Abaixo dos 20% que armam o Casco Duplo (e ainda dentro dos 25% do Segundo
+// Fôlego, que é o outro talento de vida baixa).
+const QUASE_MORTO  = { hp: 15, maxHp: 100 };
+// A sequência de acertos é compartilhada pelos dois nós de streak; 99 é acima
+// de qualquer teto, então cada nó conta até o próprio (2 × nível).
+const EM_SEQUENCIA = { _streakStacks: 99 };
 
 // ── As sondas ────────────────────────────────────────────────────────────────
 // sobe: o número tem de AUMENTAR do nível 0 para o nível máximo.
@@ -60,6 +66,11 @@ const SONDAS = {
   atk_golpecerteiro: { sobe: p => fx.critMult(p, 1.5, 0.5) },
   atk_bateria:       { sobe: p => p.talentCannonBonus },
   atk_perfurante:    { sobe: p => fx.armorPen(p) },
+  atk_investida:     { sobe: p => fx.armorPen(p) },
+  // Os dois nós de sequência leem a MESMA pilha; o que muda é o que fazem com
+  // ela. Sem pilha os dois valem zero — é o `extra` que liga a máquina.
+  atk_rastro:        { extra: EM_SEQUENCIA, sobe: p => fx.outgoingDamageMult(p, {}) },
+  atk_bordolivre:    { extra: EM_SEQUENCIA, sobe: p => fx.armorPen(p) },
   atk_cacafera:      { sobe: p => fx.outgoingDamageMult(p, { targetIsNPC: true }) },
   atk_arrancada:     { extra: { _moveStartedAt: AGORA }, sobe: p => fx.speedMult(p, { now: AGORA }) },
   atk_corsario:      { sobe: p => fx.outgoingDamageMult(p, { targetIsPlayer: true }) },
@@ -80,7 +91,7 @@ const SONDAS = {
   atk_miralonga:     { sobe: p => fx.slowOnHit(p) },
   atk_abordagem:     { sobe: p => fx.outgoingDamageMult(p, { dist: 50 }) },
   atk_bombardeio:    { sobe: p => fx.outgoingDamageMult(p, { targetHasCC: true }) },
-  atk_deriva:        { sobe: p => fx.turnRateMult(p, true) },
+  atk_deriva:        { sobe: p => fx.cannonAccuracyBonus(p) },
   atk_tiroduplo:     { sobe: p => fx.doubleShotChance(p) },
   atk_cascata:       { sobe: p => { fx.noteCritRoll(p, true); return fx.critChance(p, 0); } },
   atk_balacorrente:  { sobe: p => fx.pierceChance(p) },
@@ -97,15 +108,16 @@ const SONDAS = {
   // ══ DEFESA ═════════════════════════════════════════════════════════════════
   def_cascoferro:    { sobe: p => maxHp(p) },
   def_armadura:      { sobe: p => fx.damageReduction(p, {}) },
-  def_calafate:      { sobe: p => fx.hpRegenPerSec(p, AGORA) },
+  def_calafate:      { sobe: p => fx.healingReceivedMult(p, AGORA) },
   def_leme:          { sobe: p => fx.turnRateMult(p, false) },
   def_reforcado:     { sobe: p => maxHp(p) },
   def_esquiva:       { sobe: p => fx.dodgeChance(p, false) },
   def_escudoguerra:  { sobe: p => fx.damageReduction(p, { fromNPC: true }) },
   def_couraca:       { sobe: p => fx.damageReduction(p, { fromPlayer: true }) },
-  def_cascoliso:     { sobe: p => fx.dragReduction(p) },
+  def_cascoliso:     { extra: QUASE_MORTO, sobe: p => fx.lowHpShieldAmount(p, AGORA) },
+  def_anteparo:      { sobe: p => fx.blockChance(p) },
   def_vontade:       { desce: p => fx.ccDurationMult(p) },
-  def_reparo:        { extra: FORA_COMBATE, sobe: p => fx.hpRegenPerSec(p, AGORA) },
+  def_reparo:        { extra: FORA_COMBATE, sobe: p => fx.healingReceivedMult(p, AGORA) },
   def_bombeamento:   { extra: FERIDO,       sobe: p => fx.hpRegenPerSec(p, AGORA) },
   def_escorregadio:  { desce: p => fx.slowStrengthMult(p) },
   def_espinhos:      { sobe: p => fx.thornsDamage(p, 1000) },
@@ -113,15 +125,16 @@ const SONDAS = {
   def_ancoraviva:    { sobe: p => fx.damageReduction(p, { isStill: true }) },
   def_vigia:         { sobe: p => fx.damageReduction(p, { isCrit: true }) },
   def_fuga:          { extra: FERIDO, sobe: p => fx.speedMult(p, { now: AGORA }) },
-  def_ancoragem:     { desce: p => fx.stopTimeMult(p) },
+  def_ancoragem:     { sobe: p => fx.damageReduction(p, { fromTower: true }) },
+  def_tregua:        { sobe: p => fx.respawnImmunityBonus(p) },
   def_madeiranobre:  { sobe: p => maxHp(p) },
   def_barreira:      { sobe: p => fx.relicShieldAmount(p) },
   def_moral:         { sobe: p => fx.damageReduction(p, { inParty: true, allyCount: 3 }) },
   def_lobodomar:     { sobe: p => fx.damageReduction(p, { inParty: false }) },
-  def_recuperacao:   { sobe: p => fx.healingReceivedMult(p) },
+  def_recuperacao:   { sobe: p => fx.healingReceivedMult(p, AGORA) },
   def_teimosia:      { sobe: p => fx.deathSaveChance(p) },
   def_alvodificil:   { sobe: p => fx.dodgeChance(p, true) },
-  def_marchare:      { sobe: p => fx.reverseSpeedMult(p) },
+  def_marchare:      { sobe: p => fx.damageReduction(p, { fromNpcShip: true }) },
   def_fortaleza:     { sobe: p => fx.damageReduction(p, {}) },
   def_absorcao:      { sobe: p => fx.manaOnHit(p) },
   def_sanguessuga:   { sobe: p => fx.lifestealAmount(p, 1000) },
@@ -132,6 +145,8 @@ const SONDAS = {
   def_sentinela:     { extra: { _sentinelStacks: fx.SENTINEL_MAX_STACKS },
                        sobe: p => fx.damageReduction(p, {}) },
   def_sombra:        { desce: p => fx.stealthRangeMult(p) },
+  def_maresia:       { sobe: p => fx.damageReduction(p, { isDot: true }) },
+  def_retorno:       { sobe: p => fx.respawnHpFrac(p) },
   // Espírito do Vento promete velocidade E esquiva.
   def_espiritovento: { sobe: p => fx.speedMult(p, { now: AGORA }),
                        sobe2: p => fx.dodgeChance(p, false) },
@@ -146,14 +161,27 @@ const SONDAS = {
   res_velas:         { sobe: p => fx.speedMult(p, { now: AGORA }) },
   res_manaflow:      { sobe: p => fx.manaRegenMult(p, AGORA) },
   res_reservatorio:  { sobe: p => fx.maxManaBonus(p) },
-  res_impulso:       { sobe: p => fx.accelMult(p) },
+  res_impulso:       { sobe: p => fx.petXpMult(p) },
+  res_negociante:    { desce: p => fx.shopPriceMult(p) },
+  res_colecionador:  { sobe: p => fx.lootMult(p, 'relic_drop') },
+  res_contratado:    { sobe: p => fx.lootMult(p, 'mission') },
+  res_recompensa:    { sobe: p => fx.lootMult(p, 'bounty') },
+  res_tratador:      { sobe: p => fx.lootMult(p, 'pet_food') },
+  res_passagem:      { desce: p => fx.archCooldownMult(p) },
+  res_espolio:       { sobe: p => fx.lootMult(p, 'party_loot') },
+  res_sorte:         { sobe: p => fx.lootMult(p, 'rare') },
+  res_seguro:        { desce: p => fx.deathPenaltyMult(p) },
+  res_ritual:        { desce: p => fx.relicCooldownMult(p) },
+  // Os dois nós da Mesa de Exploração + o fragmento extra por abate.
+  res_ventoproprio:  { sobe: p => fx.fragmentExtraChance(p) },
+  res_porao:         { sobe: p => fx.explorationDoubleChance(p) },
   res_correnteza:    { extra: FORA_COMBATE, sobe: p => fx.speedMult(p, { now: AGORA }) },
   res_economia:      { desce: p => fx.relicManaCostMult(p) },
   res_concentracao:  { extra: FORA_COMBATE, sobe: p => fx.manaRegenMult(p, AGORA) },
   res_sabedoria:     { sobe: p => fx.lootMult(p, 'xp_boss') },
   res_cofreduplo:    { sobe: p => fx.dobraoDoubleChance(p) },
   res_veiadeouro:    { sobe: p => fx.goldDoubleChance(p) },
-  res_colheita:      { sobe: p => fx.manaOnKill(p) },
+  res_colheita:      { sobe: p => fx.explorationLootMult(p) },
   res_esquadra:      { sobe: p => fx.partySpeedAura(p) },
   res_tesouroabissal:{ sobe: p => fx.lootMult(p, 'gold') },
 
@@ -162,10 +190,7 @@ const SONDAS = {
   // Almirante), e a força de abordagem soma outros dois (Mestre de Abordagem +
   // a outra metade do Almirante) — por isso o Almirante tem duas sondas.
   res_saqueador:     { sobe: p => fx.spoilLootPct(p) },
-  // O efeito da lamparina é aplicado no cliente (ver EFEITO_NO_CLIENTE em
-  // talent-callsites.test.js), mas o valor que o cliente consome sai daqui —
-  // então a sonda vale: prova que investir o ponto aumenta o número enviado.
-  res_lamparina:     { sobe: p => fx.visionBoostBonus(p) },
+  res_lamparina:     { sobe: p => fx.petRelicCooldownReduction(p) },
   res_alistamento:   { sobe: p => fx.pirateCapacityBonus(p, 20) },
   res_abordagem:     { sobe: p => fx.pirateBattlePowerPct(p) },
   res_disciplina:    { sobe: p => fx.pirateCasualtyReductionPct(p) },
@@ -229,10 +254,13 @@ describe('cobertura das sondas', () => {
   it('o número de ligados bate com o que o painel promete', () => {
     // Se este número mudar sem querer, alguém ligou ou desligou um talento sem
     // reparar — e o painel passa a mentir na etiqueta "efeito não aplicado".
-    // 97 desde que o "Pescador Experiente" (fishing_yield_pct, sem sistema de
-    // pesca no jogo) deu lugar à "Lamparina Reforçada", que é ligada.
-    expect(LIGADOS.length).toBe(97);
-    expect(Object.values(TALENT_DEFS).filter(d => !d.wired).length).toBe(23);
+    //
+    // 116 desde a leva de 09/2026: 19 dos 23 desligados ganharam efeito (uns
+    // por call-site que faltava, outros trocando de função). Sobraram QUATRO,
+    // e cada um por um motivo diferente — ver a lista dos desligados no fim
+    // deste arquivo.
+    expect(LIGADOS.length).toBe(116);
+    expect(Object.values(TALENT_DEFS).filter(d => !d.wired).length).toBe(4);
   });
 });
 

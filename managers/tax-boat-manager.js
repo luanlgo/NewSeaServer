@@ -597,6 +597,47 @@ class TaxBoatManager {
     trip.damage.set(atirador.name, (trip.damage.get(atirador.name) || 0) + Math.round(dano));
   }
 
+  /**
+   * Este jogador é da ESCOLTA desta nau?
+   *
+   * A guilda dona da ilha não é mais uma espectadora do próprio evento: o
+   * papel dela na travessia é PROTEGER o barco, e quem protege não pode
+   * afundar. Sem esta regra a coleta era um alvo neutro para todo mundo,
+   * inclusive para a irmandade que ia receber o dinheiro — e um membro
+   * distraído mirando no que estava na frente jogava fora o imposto da semana
+   * inteira. Do lado da escolta o barco fica IMUNE (nem tiro, nem queimadura,
+   * nem relíquia) e a bala de cura passa a fazer efeito nele.
+   *
+   * A comparação é pela guilda REGISTRADA NA VIAGEM (`trip.guildId`), não pela
+   * dona atual da ilha: a ilha pode trocar de mão no meio da travessia, e o
+   * ouro que está no mar é da guilda que o mandou zarpar.
+   *
+   * @param {object} boat   a nau (precisa do `islandId`)
+   * @param {object} player quem atirou
+   * @returns {boolean}
+   */
+  isGuardian(boat, player) {
+    if (!boat?.isTaxBoat || !player) return false;
+    const trip = this.trips.get(boat.islandId);
+    if (!trip || !trip.guildId) return false;
+    return this.guilds?.guildOf(player)?.id === trip.guildId;
+  }
+
+  /**
+   * Cura da escolta: devolve quanto entrou de fato (0 se a nau já estava
+   * cheia, se quem curou não é da escolta, ou se a viagem já acabou).
+   *
+   * O teto é o `maxHp` da nau como qualquer outra entidade — a escolta segura
+   * o barco de pé, não o transforma num alvo que não afunda.
+   */
+  healBoat(boat, player, amount) {
+    if (!(amount > 0) || !this.isGuardian(boat, player)) return 0;
+    if (boat.dead || boat.hp >= boat.maxHp) return 0;
+    const antes = boat.hp;
+    boat.hp = Math.min(boat.maxHp, boat.hp + Math.round(amount));
+    return boat.hp - antes;
+  }
+
   /** Chamado pelo projectile-manager quando o barco chega a zero. */
   onBoatSunk(boat) {
     const trip = this.trips.get(boat?.islandId);

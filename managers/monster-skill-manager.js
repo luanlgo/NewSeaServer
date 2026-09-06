@@ -20,8 +20,10 @@
 'use strict';
 
 const { MONSTER_SKILLS } = require('../constants/monster_skills');
-const { isInvincible } = require('../utils/invincibility');
+const { isInvincible, isSafeAfterRespawn } = require('../utils/invincibility');
 const { applyGoldShield } = require('../utils/gold-shield');
+const shield = require('../utils/shield');
+const { sonarSweep } = require('../utils/sonar-sweep');
 
 class MonsterSkillManager {
   /**
@@ -40,6 +42,15 @@ class MonsterSkillManager {
   constructor(ctx) {
     this.ctx = ctx;
   }
+
+  // ── NUNCA espalhe `effectPayload` num addEvent ──────────────────────────
+  // Ele é a resposta PRIVADA ao lançador (`sendTo`), e começa com
+  // `type: 'relic_used'`. Espalhado num evento de mapa ele entra por ÚLTIMO e
+  // SOBRESCREVE o `type` do próprio evento: o `monster_skill_strike` chegava no
+  // cliente como `relic_used` e ia parar no handler errado, sem número de dano
+  // nenhum. Foi o que apagou o dano dos Pilares do Juízo e dos Faróis de Carne,
+  // e o que fazia as paredes da Prisão de Terra nunca serem desenhadas — três
+  // sintomas sem nada em comum, uma linha só de origem.
 
   // ── Geometria ──────────────────────────────────────────────────────────────
 
@@ -282,12 +293,27 @@ class MonsterSkillManager {
 
   // ── Alvos ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Este NPC é alvo legítimo do lançador?
+   *
+   * Espelha o `relicCanHitPlayer` do lado de lá: aqui o único caso hoje é a
+   * nau da coleta, que a guilda dona da ilha ESCOLTA — para ela o barco não é
+   * inimigo, e uma skill do bestiário que o pegasse de raspão afundaria o
+   * imposto da própria irmandade. Sem o gancho ligado (testes, contexto
+   * mínimo), tudo continua sendo alvo, como era antes.
+   */
+  _podeAcertarNpc(player, npc) {
+    const pode = this.ctx.relicCanHitNpc;
+    return pode ? pode(player, npc) : true;
+  }
+
   /** Todos os inimigos válidos do caster dentro da forma. */
   _targetsIn(player, def, shape, ox, oz, dx, dz, pts) {
     const { projectileManager, players, relicCanHitPlayer } = this.ctx;
     const out = [];
     projectileManager.npcs.forEach(npc => {
       if (npc.dead) return;
+      if (!this._podeAcertarNpc(player, npc)) return;
       if ((npc.mapLevel || 1) !== (player.mapLevel || 1)) return;
       if (MonsterSkillManager.inShape(def, shape, ox, oz, dx, dz, pts, npc)) {
         out.push({ e: npc, isNPC: true });
@@ -307,7 +333,8 @@ class MonsterSkillManager {
     const { projectileManager, players, relicCanHitPlayer } = this.ctx;
     const pool = [];
     projectileManager.npcs.forEach(npc => {
-      if (!npc.dead && (npc.mapLevel || 1) === (player.mapLevel || 1)) pool.push({ e: npc, isNPC: true });
+      if (npc.dead || !this._podeAcertarNpc(player, npc)) return;
+      if ((npc.mapLevel || 1) === (player.mapLevel || 1)) pool.push({ e: npc, isNPC: true });
     });
     players.forEach(p => { if (relicCanHitPlayer(player, p)) pool.push({ e: p, isNPC: false }); });
 
@@ -366,6 +393,18 @@ class MonsterSkillManager {
     // relíquias defensivas simplesmente "não funcionavam" — a queixa do
     // playtest. Os outros dois caminhos (tiro e área de bicho) já faziam isto.
     if (!t.isNPC) {
+      // ⚠️ A trégua tem de ser checada AQUI, e não só no `_targetsIn`.
+      //
+      // As skills de várias levas (Bocarra Torácica, canalizadas, chuvas)
+      // escolhem o alvo UMA vez e depois disparam N `setTimeout` guardando a
+      // referência dele. O guarda de cada leva era `if (e.dead) return`, e
+      // `dead` volta a ser `false` no instante em que o jogador aperta reviver
+      // — então as levas que faltavam caíam em cima do barco recém-nascido,
+      // com 10% de vida. Era literalmente "morri, revivi, morri de novo".
+      if (isSafeAfterRespawn(e)) {
+        this.ctx.addEvent({ type: 'shield_block', targetId: e.id }, e.mapLevel || 1);
+        return { id: e.id, hp: e.hp, isNPC: false, dmg: 0, blocked: true };
+      }
       if (isInvincible(e)) {
         this.ctx.addEvent({ type: 'shield_block', targetId: e.id }, e.mapLevel || 1);
         return { id: e.id, hp: e.hp, isNPC: false, dmg: 0, blocked: true };
@@ -379,7 +418,11 @@ class MonsterSkillManager {
       }
     }
 
-    e.hp = Math.max(0, e.hp - dmg);
+    e.hp = Math.max(0, e.hp - shield.absorb(e, dmg).dmg);
+    // Escolta de Ossos: qualquer dano de relíquia do lançador também aciona um
+    // salto. Fica aqui porque este é o funil por onde TODO dano de relíquia
+    // passa — pendurar em cada `special` daria uma lista para esquecer.
+    if (dmg > 0 && player && player._summonEscort) this.notifyPlayerHit(player, e);
     if (t.isNPC) {
       e.lastDamageTime = Date.now();
       if (e.isBoss) {
@@ -487,8 +530,12 @@ class MonsterSkillManager {
     // `rays` no caster) e o que o bicho faz (attack-manager: origin = cast.x/z).
     // Centrada no cursor, o jogador via os raios girando no próprio barco e o
     // dano caía num círculo lá longe — a queixa de "não está causando dano".
+    // `torpedo` entra pelo mesmo motivo da Orbe: os torpedos NASCEM no casco
+    // e viajam. Ancorado no cursor, o desenho apareceria lá e os torpedos
+    // sairiam de um ponto que nada tem a ver com o barco.
     const fromCaster = (shape === 'cone' || shape === 'line' || shape === 'rays'
-                     || def.special === 'orb' || def.atCaster);
+                     || def.special === 'orb' || def.special === 'torpedo'
+                     || def.atCaster);
     const ox = fromCaster ? player.x : cx;
     const oz = fromCaster ? player.z : cz;
 
@@ -516,7 +563,7 @@ class MonsterSkillManager {
     // N quedas miradas, cada uma com o próprio aviso. Sai ANTES do broadcast do
     // campo inteiro, que é justamente o que desenhava os seis de uma vez.
     if (def.dropIntervalMs) {
-      return this._castWreckRain(player, def, cx, cz, castMs, effectPayload);
+      return this._castAimedRain(player, def, cx, cz, castMs, effectPayload);
     }
 
     // 1. Aviso imediato — todo mundo no mapa vê o telegraph com o tempo certo.
@@ -555,6 +602,22 @@ class MonsterSkillManager {
         // Extensão VISUAL (não o raio de dano): a cadeia alcança
         // count×jumpRange e a orbe viaja orbSpeed×lifeMs. Sem estes o cliente
         // dimensionava o quad pelo raio de dano (8 un!) e cortava o efeito.
+        // Cardume de Torpedos: o compasso da salva e a abertura do leque. O
+        // desenho precisa dos dois para dimensionar o quad e para a marcação
+        // do casco pulsar no ritmo em que os tubos vão disparar.
+        salvoMs: def.salvoMs, fanAngle: def.fanAngle,
+        // Invocações: o desenho precisa saber QUANTOS bichos e de que jeito eles
+        // se comportam para montar a cena do cast (o círculo de emergência, a
+        // órbita da escolta). O voo de cada um chega depois, por evento.
+        summonMode: def.summonMode, orbitRadius: def.orbitRadius,
+        triggerRadius: def.triggerRadius,
+        // Tarrafa de Raios: a malha fica no chão exatamente o tempo do stun. O
+        // `cc` inteiro não vai no payload (é mecânica, não desenho), mas ESTE
+        // número é as duas coisas — sem ele a rede sumia antes de o alvo soltar.
+        stunMs: def.cc && def.cc.stunMs,
+        // Tromba do Arauto: diz ao cliente que a coisa GRUDA, e por isso o quad
+        // dela não precisa (nem pode) cobrir o percurso inteiro.
+        sticky: def.sticky || false,
         jumpRange: def.jumpRange, orbSpeed: def.orbSpeed, lifeMs: def.lifeMs,
         burstRadius: def.burstRadius, stepDistance: def.stepDistance,
         stepCount: def.stepCount, firstDistance: def.firstDistance,
@@ -604,6 +667,12 @@ class MonsterSkillManager {
     if (def.special === 'swallow') return this._castSwallow(player, def, ox, oz, castMs, effectPayload);
     if (def.special === 'mirror')  return this._castMirror(player, def, cx, cz, castMs, effectPayload);
     if (def.special === 'orb') return this._castHunterOrb(player, def, cx, cz, castMs, effectPayload);
+    // Cardume de Torpedos: a salva sai em sequência, cada torpedo com o próprio
+    // alvo e o próprio relógio — não cabe no laço de levas, que resolve sempre
+    // a mesma forma no mesmo lugar.
+    if (def.special === 'torpedo') return this._castTorpedoes(player, def, dx, dz, castMs, effectPayload);
+    // Bichos INVOCADOS: quatro leituras diferentes com um motor só (ver lá).
+    if (def.special === 'summons') return this._castSummons(player, def, cx, cz, castMs, effectPayload);
     if (def.special === 'bulwark') return this._castBulwark(player, def, castMs, effectPayload);
     if (def.special === 'obstacles') this._castObstacles(player, def, ox, oz, pts, castMs, dx, dz);
     if (def.special === 'charge')   return this._castCharge(player, def, ox, oz, dx, dz, pts, effectPayload);
@@ -629,16 +698,6 @@ class MonsterSkillManager {
     // esquisito, não parece estar acertando quando devia".
     if (def.special === 'sonar') {
       this._runSonar(player, def, ox, oz, castMs, gapFacing, effectPayload);
-      return;
-    }
-    // Sentença do Crânio: as marcas ANDAM com quem foi carimbado.
-    if (def.special === 'mark') {
-      this._castMark(player, def, cx, cz, castMs, pts, effectPayload);
-      return;
-    }
-    // Ninhada Pútrida: ovos que chocam — ou pulam em quem passar perto.
-    if (def.special === 'brood') {
-      this._castBrood(player, def, cx, cz, castMs, pts, effectPayload);
       return;
     }
     // Prisão de Terra: só as 4 paredes, dano nenhum.
@@ -734,6 +793,22 @@ class MonsterSkillManager {
         const batch = this._resolveOnce(player, tickDef, shape, tox, toz, tdx, tdz, pts, ticks, i);
         for (const h of batch) hits.push(h);
 
+        // ── Golpe de ABERTURA ─────────────────────────────────────
+        // Numa canalizada, `ticks.pct` SUBSTITUI o `damagePct` em todas as
+        // levas — inclusive na primeira. Quem quer o par "pancada ao encostar +
+        // corrosão enquanto dura" (a Lente do Abismo) não tinha como pedir: o
+        // número grande do dado ficava morto e a skill lia como um cutucão
+        // repetido. `burstPct` é essa primeira camada, e só ela.
+        //
+        // Sem `cc`: o controle já sai na leva 0 pelo caminho normal, e aplicar
+        // duas vezes no mesmo frame renovaria o stun de graça.
+        if (def.burstPct > 0 && i === 0) {
+          const abertura = this._resolveOnce(player,
+            { ...tickDef, damagePct: def.burstPct, cc: null },
+            shape, tox, toz, tdx, tdz, pts, null, 0);
+          for (const h of abertura) { hits.push(h); batch.push(h); }
+        }
+
         // ── Cada leva anuncia o PRÓPRIO acerto ────────────────────────────────
         // Antes as levas só eram somadas aqui e o `monster_skill_strike` saía UMA
         // vez, depois da última — no Jato do Pescoço isso é 3,5 s depois do
@@ -772,9 +847,15 @@ class MonsterSkillManager {
     //    anunciaram leva a leva acima — repetir aqui mostraria o dano duas vezes.
     setTimeout(() => {
       if (total === 1) {
+        // Área que ANDA com o barco (`atCaster`, `rays`): o laço de levas já lê a
+        // posição viva, mas este anúncio final ficava com a do CAST. Num campo de
+        // 1,1 s de carga isso são ~50 un de diferença — a onda na água e os arcos
+        // do desenho saíam de onde o casco esteve, não de onde ele está.
+        const sx = (def.atCaster || shape === 'rays') ? player.x : ox;
+        const sz = (def.atCaster || shape === 'rays') ? player.z : oz;
         addEvent({
           type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
-          vfx: def.vfx, originX: ox, originZ: oz, points: pts, hits,
+          vfx: def.vfx, originX: sx, originZ: sz, points: pts, hits,
           radius: def.radius || def.length || 40,
         }, mapLvl);
       }
@@ -813,10 +894,21 @@ class MonsterSkillManager {
       const tSec = (castMs + index * stepMs) / 1000;
       def = { ...def, _spinNow: MonsterSkillManager.crownSpin(def, tSec, dx, dz) };
     }
-    const targets = (shape === 'chain')
+    let targets = (shape === 'chain')
       ? this._chainTargets(player, def, ox, oz)
       : this._targetsIn(player, def, shape, ox, oz, dx, dz, pts);
     if (targets.length === 0) return [];
+
+    // ── Onda que VARRE: uma parede, um acerto ────────────────────────────────
+    // O Sonar amostra a MESMA onda nove vezes enquanto ela corre (ver
+    // utils/sonar-sweep.js). Sem este conjunto, quem se afastasse junto com a
+    // parede ficava dentro dela por vários passos e pagava a onda duas ou três
+    // vezes. `_sweepSeen` é por ONDA e nasce no _runSonar.
+    if (def._sweepSeen) {
+      targets = targets.filter(t => !def._sweepSeen.has(t.e.id));
+      for (const t of targets) def._sweepSeen.add(t.e.id);
+      if (targets.length === 0) return [];
+    }
 
     // Dano do tick: `ticks.pct` substitui o damagePct quando presente.
     const pct = ticks && ticks.pct != null ? ticks.pct : def.damagePct;
@@ -861,19 +953,12 @@ class MonsterSkillManager {
       }
     });
 
-    // ── Coro dos Rostos: SILÊNCIO ────────────────────────────────────────────
-    // Trava o uso de relíquia (lido por handleUseRelic). Só faz sentido em
-    // jogador: NPC não usa relíquia, e travar um deles seria efeito invisível.
-    if (def.special === 'silence' && def.silenceMs) {
-      for (const t of targets) {
-        if (t.isNPC) continue;
-        const e = t.e;
-        e._silencedUntil = Math.max(e._silencedUntil || 0, Date.now() + def.silenceMs);
-        this.ctx.sendTo(e.ws, {
-          type: 'silenced', targetId: e.id, durationMs: def.silenceMs,
-        });
-      }
-    }
+    // O SILÊNCIO saiu daqui em 2026-09-05. Ele nunca fez sentido na mão do
+    // jogador — NPC não usa relíquia, então em PvE era uma linha de texto sem
+    // efeito — e o Coro, única skill que o tinha, convergiu para a salva de
+    // rostos. Do lado do BICHO ele continua vivo, agora como o campo
+    // `silenceMs` lido no laço de acerto do attack-manager (não mais como um
+    // `special`, porque silêncio é debuff, não forma de resolver área).
 
     // ── Sorvo sem Olhos: o golpe cobra em MANA ───────────────────────────────
     // Único efeito do jogo que ataca o recurso em vez da vida. Contra quem não
@@ -979,7 +1064,7 @@ class MonsterSkillManager {
    * — e é a mesma família do `cc.pullTo`, que o motor já aplica assim.
    */
   _castCollapsingRing(player, def, ox, oz, castMs, effectPayload) {
-    const { addEvent } = this.ctx;
+    const { addEvent, wallManager } = this.ctx;
     const mapLvl = player.mapLevel || 1;
     const ticks  = def.ticks || { count: 8, intervalMs: 500, pct: 0.2 };
     const total  = Math.max(1, ticks.count || 8);
@@ -988,6 +1073,9 @@ class MonsterSkillManager {
     const ateR   = def.collapseTo || def.finalRadius || def.eruptRadius || 30;
     const banda  = def.band || Math.max(12, (deR - ateR) / total);
     const hits   = [];
+    // Último PASSO em que a coroa de espinhos foi (re)plantada — ver a nota do
+    // `tangible` mais abaixo. -1 = ainda nenhum.
+    let passoPlantado = -1;
 
     for (let i = 0; i < total; i++) {
       setTimeout(() => {
@@ -1022,6 +1110,49 @@ class MonsterSkillManager {
         };
         const batch = this._resolveOnce(player, anelDef, 'ring', ox, oz, 0, 1, null, ticks, i);
         for (const h of batch) hits.push(h);
+
+        // ── Espinhos TANGÍVEIS ──────────────────────────────────────
+        // O empurrão por posição (logo abaixo) reposiciona quem está fora do
+        // anel UMA vez por leva. Entre uma leva e outra dava para remar de volta
+        // para fora, e a coroa que a tela mostra fechando não segurava ninguém:
+        // o desenho prometia parede e a física entregava um empurrãozinho.
+        //
+        // Com `tangible` os espinhos entram no wallManager — as MESMAS caixas
+        // que o Muro de Pedra e a Jaula usam, respeitadas por jogador e por NPC
+        // no mesmo ponto de colisão. Plantados uma vez por PASSO (4 no golpe
+        // inteiro), não por leva: reposicionar uma dúzia de caixas a cada 500 ms
+        // é o que o wallManager aguenta sem dar tranco no barco; a cada leva não
+        // seria.
+        //
+        // Os dois se completam em vez de competir: o empurrão É o aperto (ele
+        // traz quem está fora para dentro), e a parede é o que impede de sair de
+        // novo — `pushOutOfWalls` empurra para a saída MAIS PERTO, que para quem
+        // já está dentro do anel é para dentro.
+        const passoIdx = Math.floor((i * passos) / total);
+        if (def.tangible && wallManager && passoIdx !== passoPlantado) {
+          passoPlantado = passoIdx;
+          const n = Math.max(6, Math.min(18, def.spikeCount || 14));
+          // Meia-largura que SELA o anel: o arco entre dois espinhos vizinhos
+          // (2πR/n) tem de caber no comprimento de um (2·meia). O 1,06 é a folga
+          // que impede um vazamento fino na quina de duas caixas.
+          const meia = (Math.PI * raio / n) * 1.06;
+          const esp  = Math.max(3, banda * 0.25);
+          // Vale até o passo seguinte; o wallManager filtra por tempo sozinho.
+          const dura = Math.ceil((step * total) / Math.max(1, passos)) + 150;
+          const stamp = Date.now();
+          for (let k = 0; k < n; k++) {
+            const a = (k / n) * Math.PI * 2;
+            // Tangente ao círculo. O eixo do COMPRIMENTO de uma caixa é o
+            // basis.x = (cos rot, −sin rot); igualar isso a (−sin a, cos a) dá
+            // rot = −(a + π/2). Errar aqui põe os espinhos radiais e o anel vaza
+            // por toda parte.
+            wallManager.addWall(mapLvl, {
+              id: `fm_${player.id}_${stamp}_${k}`,
+              x: ox + Math.cos(a) * raio, z: oz + Math.sin(a) * raio,
+              hw: meia, hh: esp, rot: -(a + Math.PI / 2), durationMs: dura,
+            });
+          }
+        }
 
         // ── E o empurrão ────────────────────────────────────────────────────
         // Todo inimigo além do anel é trazido para a borda de dentro. Chefe
@@ -1101,224 +1232,67 @@ class MonsterSkillManager {
    * frente pulava 24 un por vez sobre uma faixa de 11: **mais da metade do raio
    * nunca era tocada**, e quem via o anel passar por cima não levava nada.
    *
-   * O passo sai da própria faixa (`expandMs × band / radius`), então a frente
-   * avança exatamente `band` por passo: a varredura fica CONTÍNUA (sem buraco)
-   * e ninguém leva a mesma onda duas vezes — o dano total continua sendo um
-   * por onda, como o desenho promete.
+   * A varredura é a do `sonarSweep`, a MESMA que o bicho usa: faixas
+   * encostadas que ladrilham [0, radius], amostradas no centro de cada uma.
+   * Ver a nota do utils/sonar-sweep.js — o relógio que estava aqui deixava a
+   * última faixa de fora, e quem estava parado na borda escapava.
+   *
+   * `_sweepSeen`: uma onda cobra UMA vez de cada alvo. Antes isso era acidente
+   * da aritmética e só valia para alvo PARADO; um NPC afastando-se junto com a
+   * parede levava a mesma onda duas ou três vezes.
    */
   _runSonar(player, def, ox, oz, castMs, gapFacing, effectPayload) {
     const { addEvent } = this.ctx;
     const mapLvl = player.mapLevel || 1;
     const rings  = def.ringCount || (def.ticks && def.ticks.count) || 4;
     const gapMs  = (def.ticks && def.ticks.intervalMs) || 1200;
-    const expand = def.expandMs || 3200;
-    const radius = def.radius || 95;
-    const band   = def.band || 11;
-    const stepMs = Math.max(60, Math.round((expand * band) / Math.max(radius, 1)));
-    const total  = (rings - 1) * gapMs + expand;
+    const { steps, stepMs, fronts, timeAt, endMs } = sonarSweep(def);
     const hits   = [];
 
-    const start = Date.now() + castMs;
-    const step = () => {
+    // Uma cadeia de timers POR ONDA: as ondas saem defasadas de `gapMs`, que
+    // não é múltiplo de `stepMs`. Num relógio único só a onda 0 cairia nos
+    // instantes certos — era o que abria o buraco na borda.
+    const sweep = (i, k, seen) => {
       if (player.dead) return;
-      const el = Date.now() - start;
-
-      for (let i = 0; i < rings; i++) {
-        const t = el - i * gapMs;
-        if (t < 0 || t > expand) continue;         // ainda não saiu / já acabou
-        const front = radius * (t / expand);
-        const tickDef = {
-          ...def, shape: 'ring',
-          _frontRadius: front, _ringIndex: i, _gapFacing: gapFacing,
-        };
-        const batch = this._resolveOnce(player, tickDef, 'ring', ox, oz, 0, 1, null, def.ticks, i);
-        if (batch.length === 0) continue;
+      const tickDef = {
+        ...def, shape: 'ring',
+        _frontRadius: fronts[k], _ringIndex: i, _gapFacing: gapFacing,
+        _sweepSeen: seen,
+      };
+      const batch = this._resolveOnce(player, tickDef, 'ring', ox, oz, 0, 1, null, def.ticks, i);
+      if (batch.length > 0) {
         for (const h of batch) hits.push(h);
         addEvent({
           type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
           vfx: def.vfx, originX: ox, originZ: oz, points: null, hits: batch,
-          radius: front, tick: i,
+          radius: fronts[k], tick: i,
         }, mapLvl);
       }
-
-      if (el >= total) {
-        const npcHits = hits.filter(h => h.isNPC).length;
-        if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
-        return;
-      }
-      setTimeout(step, stepMs);
+      if (k + 1 < steps) setTimeout(() => sweep(i, k + 1, seen), stepMs);
     };
-    setTimeout(step, castMs);
+
+    for (let i = 0; i < rings; i++) {
+      const seen = new Set();
+      setTimeout(() => sweep(i, 0, seen), castMs + i * gapMs + timeAt(0));
+    }
+    // XP uma vez só, quando a última onda acabou de varrer.
+    setTimeout(() => {
+      const npcHits = hits.filter(h => h.isNPC).length;
+      if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
+    }, castMs + (rings - 1) * gapMs + endMs);
 
     effectPayload.targetX = ox;
     effectPayload.targetZ = oz;
     effectPayload.castMs  = castMs;
   }
 
-  /**
-   * Sentença do Crânio: carimba N inimigos e a marca ANDA COM ELES.
-   *
-   * O `special: 'mark'` estava no dado desde que a skill nasceu e nunca teve
-   * implementação: a relíquia caía na resolução `multi` genérica, ou seja
-   * explodia NA HORA em pontos sorteados em volta do cursor — quase nunca em
-   * cima de alguém. Era o "não está dando o dano", e a marca também nunca
-   * andava, porque não havia marca nenhuma.
-   *
-   * Agora o carimbo é numa PESSOA: o alvo leva a explosão onde estiver quando o
-   * pavio queimar, e a única defesa é se afastar dos outros — porque a explosão
-   * ainda é uma área, e dois marcados juntos somam.
-   */
-  _castMark(player, def, cx, cz, castMs, pts, effectPayload) {
-    const { addEvent } = this.ctx;
-    const mapLvl = player.mapLevel || 1;
-    const fuse   = def.fuseMs || 4000;
-    const raio   = def.radius || 22;
-
-    setTimeout(() => {
-      if (player.dead) return;
-
-      // Os candidatos são os inimigos dentro do `spread` do cursor, os mais
-      // próximos primeiro — carimbar quem está do outro lado do mapa faria a
-      // mira não querer dizer nada.
-      const alcance = { ...def, radius: def.spread || 60 };
-      const alvos = this._targetsIn(player, alcance, 'circle', cx, cz, 0, 1, null)
-        .sort((a, b) => Math.hypot(a.e.x - cx, a.e.z - cz) - Math.hypot(b.e.x - cx, b.e.z - cz))
-        .slice(0, def.count || 3);
-
-      if (alvos.length === 0) return;
-
-      for (const t of alvos) {
-        addEvent({
-          type: 'relic_mark_set', casterId: player.id, skill: def.skill,
-          vfx: def.vfx, targetId: t.e.id, isNPC: t.isNPC,
-          fuseMs: fuse, radius: raio,
-        }, mapLvl);
-      }
-
-      setTimeout(() => {
-        if (player.dead) return;
-        const hits = [];
-        for (const t of alvos) {
-          const e = t.e;
-          if (e.dead) continue;
-          // A explosão acontece ONDE O ALVO ESTÁ — é a marca que andou com ele.
-          // E é uma ÁREA de verdade: quem estiver junto do marcado também leva.
-          const batch = this._resolveOnce(player, def, 'circle', e.x, e.z, 0, 1, null, null, 0);
-          for (const h of batch) hits.push(h);
-          addEvent({
-            type: 'relic_mark_burst', casterId: player.id, skill: def.skill,
-            vfx: def.vfx, targetId: e.id, x: e.x, z: e.z, radius: raio,
-          }, mapLvl);
-          // Golpe avulso (sem `tick`): número cheio, que é o que o pavio de
-          // 4 s promete. Sem este anúncio o dano saía e a tela ficava muda.
-          addEvent({
-            type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
-            vfx: def.vfx, originX: e.x, originZ: e.z, points: null,
-            hits: batch, radius: raio,
-          }, mapLvl);
-        }
-        const npcHits = hits.filter(h => h.isNPC).length;
-        if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
-      }, fuse);
-    }, castMs);
-
-    effectPayload.targetX = cx;
-    effectPayload.targetZ = cz;
-    effectPayload.castMs  = castMs;
-  }
-
-  /**
-   * Ninhada Pútrida: ovos que chocam sozinhos — ou PULAM em quem passar perto.
-   *
-   * Mesma história do `mark`: o `special: 'brood'` nunca existiu no motor, e a
-   * skill resolvia como um `multi` instantâneo. Não havia ovo, não havia
-   * chocagem, e o dano saía no cast em pontos sorteados.
-   *
-   * O ovo é uma ameaça PACIENTE: fica no lugar, e quem chegar a `triggerRadius`
-   * dele o faz pular. Isso dá à skill uma leitura que nenhuma outra tem — ela
-   * transforma um pedaço do mar em terreno que o inimigo tem de contornar, e
-   * quem não contorna decide a hora da própria explosão.
-   */
-  _castBrood(player, def, cx, cz, castMs, pts, effectPayload) {
-    const { addEvent } = this.ctx;
-    const mapLvl  = player.mapLevel || 1;
-    const hatch   = def.hatchMs || 6000;
-    const raio    = def.radius || 9;
-    const gatilho = def.triggerRadius || 26;
-    const puloMs  = def.jumpMs || 350;
-    const POLL_MS = 150;
-
-    setTimeout(() => {
-      if (player.dead) return;
-      const ovos = (pts || MonsterSkillManager.scatter(def.count || 5, def.spread || 65, def))
-        .map((pt, i) => ({ id: player.id + '_' + Date.now() + '_' + i, x: cx + pt.x, z: cz + pt.z, vivo: true }));
-
-      addEvent({
-        type: 'relic_brood_lay', casterId: player.id, skill: def.skill, vfx: def.vfx,
-        eggs: ovos.map(o => ({ id: o.id, x: o.x, z: o.z })),
-        radius: raio, hatchMs: hatch, triggerRadius: gatilho,
-      }, mapLvl);
-
-      const hits = [];
-      const estourar = (ovo, ex, ez) => {
-        const batch = this._resolveOnce(player, def, 'circle', ex, ez, 0, 1, null, null, 0);
-        for (const h of batch) hits.push(h);
-        addEvent({
-          type: 'relic_brood_burst', casterId: player.id, skill: def.skill, vfx: def.vfx,
-          eggId: ovo.id, x: ex, z: ez, radius: raio,
-        }, mapLvl);
-        addEvent({
-          type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
-          vfx: def.vfx, originX: ex, originZ: ez, points: null,
-          hits: batch, radius: raio,
-        }, mapLvl);
-      };
-
-      const nascidoEm = Date.now();
-      const vigiar = () => {
-        if (player.dead) return;
-        const restam = ovos.filter(o => o.vivo);
-
-        for (const ovo of restam) {
-          // O ovo procura quem chegou perto DELE — o raio de gatilho é bem
-          // maior que o de dano, senão o pulo aconteceria depois de o alvo já
-          // ter passado por cima e a mecânica não teria como ser vista.
-          const perto = this._targetsIn(player, { radius: gatilho }, 'circle', ovo.x, ovo.z, 0, 1, null);
-          if (perto.length === 0) continue;
-          perto.sort((a, b) => Math.hypot(a.e.x - ovo.x, a.e.z - ovo.z) - Math.hypot(b.e.x - ovo.x, b.e.z - ovo.z));
-          const presa = perto[0].e;
-          ovo.vivo = false;                         // reservado: não pula duas vezes
-          addEvent({
-            type: 'relic_brood_jump', casterId: player.id, skill: def.skill, vfx: def.vfx,
-            eggId: ovo.id, targetId: presa.id, x: presa.x, z: presa.z, jumpMs: puloMs,
-          }, mapLvl);
-          // O ovo estoura onde o alvo estiver quando ele CHEGAR, não onde ele
-          // estava quando pulou — o pulo persegue.
-          setTimeout(() => {
-            estourar(ovo, presa.dead ? ovo.x : presa.x, presa.dead ? ovo.z : presa.z);
-          }, puloMs);
-        }
-
-        if (Date.now() - nascidoEm >= hatch) {
-          // Fim da chocagem: o que sobrou estoura no lugar.
-          for (const ovo of ovos) {
-            if (!ovo.vivo) continue;
-            ovo.vivo = false;
-            estourar(ovo, ovo.x, ovo.z);
-          }
-          const npcHits = hits.filter(h => h.isNPC).length;
-          if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
-          return;
-        }
-        setTimeout(vigiar, POLL_MS);
-      };
-      setTimeout(vigiar, POLL_MS);
-    }, castMs);
-
-    effectPayload.targetX = cx;
-    effectPayload.targetZ = cz;
-    effectPayload.castMs  = castMs;
-  }
+  // ── O que morava aqui ──────────────────────────────────────────────────────
+  // `_castMark` (a marca que andava com a vítima) e `_castBrood` (os ovos que
+  // chocavam sozinhos). As duas skills viraram invocações em 2026-09-04, e
+  // desde então estes dois métodos não eram alcançados por dado nenhum —
+  // ninguém percebeu porque motor sem dono não dá erro, só envelhece. Saíram
+  // em 2026-09-05, quando o guarda de órfãos passou a olhar para os dois lados.
+  // Estão no git.
 
   /**
    * Bocarra Torácica: ENGOLE uma vítima. Ela é presa (mesmo `stunExpires` que o
@@ -1589,10 +1563,16 @@ class MonsterSkillManager {
         const stepDist = speed * (tickMs / 1000);
         if (d <= stepDist || d <= catchR) {        // alcançou
           orb.x = prey.x; orb.z = prey.z;
-          return burst(orb.x, orb.z);
+          // `sticky`: alcançar NÃO acaba o golpe — a coisa GRUDA no alvo e
+          // continua moendo até a vida dela terminar. É o que separa um
+          // projétil teleguiado (a Orbe) de uma tromba d'água que persegue: se
+          // ela estourasse ao encostar, "segue o alvo dando dano por tique"
+          // seria uma promessa de um tique só.
+          if (!def.sticky) return burst(orb.x, orb.z);
+        } else {
+          orb.x += (dx / d) * stepDist;
+          orb.z += (dz / d) * stepDist;
         }
-        orb.x += (dx / d) * stepDist;
-        orb.z += (dz / d) * stepDist;
       }
       addEvent({ type: 'relic_orb_move', casterId: player.id, x: orb.x, z: orb.z, radius }, mapLvl);
 
@@ -1611,6 +1591,348 @@ class MonsterSkillManager {
     effectPayload.targetX = player.x;
     effectPayload.targetZ = player.z;
     effectPayload.castMs  = castMs;
+  }
+
+  /**
+   * BICHOS INVOCADOS — quatro leituras, um motor só (`summonMode`).
+   *
+   * O que as quatro têm em comum: o golpe não é uma forma que resolve num
+   * instante, é uma ou mais CRIATURAS que existem no mar por alguns segundos,
+   * andam por conta própria e batem quando encostam. Isso muda a pergunta que a
+   * skill faz: não é mais "onde vai cair?", é "para onde eu corro agora?".
+   *
+   *   hunt    — nascem no ponto mirado e CAÇAM o inimigo mais perto desde já.
+   *   ambush  — nascem espalhadas e ficam PARADAS; só investem quando alguém
+   *             entra no `triggerRadius`. Vira campo minado com paciência.
+   *   volley  — saem do CASCO em salva e voam no alvo mais perto de uma vez.
+   *   escort  — ficam em órbita do lançador e só saltam quando ELE acerta
+   *             alguma coisa (ver `notifyPlayerHit`). Não tem relógio próprio.
+   *
+   * O alvo é reavaliado a cada leva, então matar a presa não "trava" a criatura:
+   * ela procura outra. E o cliente só DESENHA — a posição de cada criatura chega
+   * em `relic_summon_move`, a mesma divisão da Orbe e dos Faróis de Carne.
+   */
+  _castSummons(player, def, cx, cz, castMs, effectPayload) {
+    const { addEvent } = this.ctx;
+    const modo = def.summonMode || 'hunt';
+    if (modo === 'escort') return this._armSummonEscort(player, def, castMs, effectPayload);
+
+    const mapLvl  = player.mapLevel || 1;
+    const n       = Math.max(1, def.count || 3);
+    const tickMs  = def.summonTickMs || 180;
+    const life    = def.lifeMs || 5000;
+    const speed   = def.moveSpeed || 55;
+    const raio    = def.radius || 20;
+    const catchR  = def.catchRadius || 14;
+    const gatilho = def.triggerRadius || 45;
+    const spread  = def.spread || 0;
+
+    // De onde elas nascem: o mar apontado (emboscada) ou o próprio casco. A
+    // salva sempre sai de dentro do barco; a caçada também, quando o dado pede
+    // (`spawnAtCaster`) — numa skill cuja graça é a PERSEGUIÇÃO, nascer longe
+    // transforma o cursor num teste de mira que a skill nem quer cobrar.
+    const noCasco = modo === 'volley' || def.spawnAtCaster;
+    const ox = noCasco ? player.x : cx;
+    const oz = noCasco ? player.z : cz;
+
+    for (let i = 0; i < n; i++) {
+      const ang  = (i / n) * Math.PI * 2 + Math.random() * 0.5;
+      const dist = spread > 0 ? spread * Math.sqrt(0.25 + Math.random() * 0.75) : 0;
+      const cria = {
+        x: ox + Math.cos(ang) * dist,
+        z: oz + Math.sin(ang) * dist,
+        // A emboscada nasce DORMINDO — ela não persegue, ela espera.
+        acordada: modo !== 'ambush',
+        alvo: null,
+        fim: 0,
+      };
+
+      const fim = (bateu) => {
+        addEvent({
+          type: 'relic_summon_end', casterId: player.id, index: i,
+          skill: def.skill, vfx: def.vfx, x: cria.x, z: cria.z,
+          radius: raio, hit: !!bateu,
+        }, mapLvl);
+      };
+
+      const bater = () => {
+        // Chance de atordoar POR CRIATURA (o Coro): é sorteio por rosto, não um
+        // stun garantido. Entra pelo `cc` porque é o único caminho que já
+        // respeita a convenção de chefe-não-toma-stun.
+        const azar = def.stunChance > 0 && Math.random() < def.stunChance;
+        const golpe = azar
+          ? { ...def, cc: { ...(def.cc || {}), stunMs: def.stunMs || 900 } }
+          : def;
+        const hits = this._resolveOnce(player, golpe, 'circle',
+          cria.x, cria.z, 0, 1, null, null, 0);
+        if (hits.length === 0) return;
+        addEvent({
+          type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
+          vfx: def.vfx, originX: cria.x, originZ: cria.z, points: null,
+          hits, radius: raio,
+        }, mapLvl);
+        const npcHits = hits.filter(h => h.isNPC).length;
+        if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
+      };
+
+      const passo = () => {
+        if (player.dead) return;
+        if (Date.now() >= cria.fim) return fim(false);
+
+        if (!cria.alvo || cria.alvo.dead || (cria.alvo.mapLevel || 1) !== mapLvl) {
+          cria.alvo = this._nearestEnemy(player, cria.x, cria.z);
+        }
+        const alvo = cria.alvo;
+        if (alvo && !cria.acordada) {
+          // Emboscada: acorda quando alguém chega perto o bastante — e aí não
+          // dorme mais, mesmo que o sujeito se afaste.
+          if (Math.hypot(alvo.x - cria.x, alvo.z - cria.z) <= gatilho) cria.acordada = true;
+        }
+        if (alvo && cria.acordada) {
+          const dx = alvo.x - cria.x, dz = alvo.z - cria.z;
+          const d  = Math.hypot(dx, dz) || 1;
+          const avanco = speed * (tickMs / 1000);
+          if (d <= avanco || d <= catchR) {
+            cria.x = alvo.x; cria.z = alvo.z;
+            bater();
+            return fim(true);
+          }
+          cria.x += (dx / d) * avanco;
+          cria.z += (dz / d) * avanco;
+        }
+        addEvent({
+          type: 'relic_summon_move', casterId: player.id, index: i,
+          x: cria.x, z: cria.z, awake: cria.acordada,
+        }, mapLvl);
+        setTimeout(passo, tickMs);
+      };
+
+      setTimeout(() => {
+        if (player.dead) return;
+        cria.fim = Date.now() + life;
+        addEvent({
+          type: 'relic_summon_spawn', casterId: player.id, index: i,
+          skill: def.skill, vfx: def.vfx, x: cria.x, z: cria.z,
+          radius: raio, lifeMs: life, mode: modo, awake: cria.acordada,
+        }, mapLvl);
+        passo();
+      }, castMs);
+    }
+
+    effectPayload.targetX = cx;
+    effectPayload.targetZ = cz;
+    effectPayload.castMs  = castMs;
+  }
+
+  /**
+   * ESCOLTA — as criaturas ficam em órbita do lançador esperando ELE acertar
+   * alguma coisa. Não têm relógio próprio: a janela (`durationMs`) só começa a
+   * contar no PRIMEIRO salto, então guardar a escolta para a briga certa é parte
+   * da jogada em vez de desperdício.
+   *
+   * Cada criatura é uma CARGA: salta uma vez, bate e some. Três cargas, três
+   * saltos — e a recarga curta impede que uma salva de canhão de quatro balas
+   * gaste as três no mesmo instante, que seria a skill inteira num piscar.
+   */
+  _armSummonEscort(player, def, castMs, effectPayload) {
+    const { addEvent } = this.ctx;
+    const mapLvl = player.mapLevel || 1;
+    setTimeout(() => {
+      if (player.dead) return;
+      player._summonEscort = {
+        // Quantas caveiras estão em órbita. Elas NÃO são cargas gastas uma a uma:
+        // saltam todas juntas a cada salva (ver notifyPlayerHit).
+        vivas:     Math.max(1, def.count || 3),
+        janelaMs:  def.durationMs || 6000,
+        recargaMs: def.leapCooldownMs || 1500,
+        expira:    0,          // 0 = a janela ainda nem abriu
+        proximo:   0,
+        saltando:  false,
+        mapLvl, def,
+      };
+      addEvent({
+        type: 'relic_summon_spawn', casterId: player.id, index: 0,
+        skill: def.skill, vfx: def.vfx, x: player.x, z: player.z,
+        radius: def.radius || 22, orbitRadius: def.orbitRadius || 26,
+        lifeMs: 0, mode: 'escort',
+        count: player._summonEscort.vivas,
+      }, mapLvl);
+    }, castMs);
+    effectPayload.castMs = castMs;
+  }
+
+  /**
+   * O lançador acertou alguma coisa — a escolta salta.
+   *
+   * Chamado dos DOIS funis de dano do jogador: o de canhão
+   * (projectile-manager `_applyTalentOnHit`) e o de relíquia (`_damage` logo
+   * acima). Ligar num só deixaria metade da promessa de pé — "seja outra
+   * relíquia ou tiro de canhão" é literalmente o pedido.
+   *
+   * `saltando` é a trava de reentrância e não é zelo excessivo: o próprio salto
+   * causa dano, que volta em `_damage`, que chamaria aqui de novo — recursão
+   * infinita até a pilha estourar.
+   */
+  notifyPlayerHit(player, alvo) {
+    const e = player && player._summonEscort;
+    if (!e || e.saltando || e.vivas <= 0) return;
+    if (!alvo || alvo.dead) return;
+    if ((alvo.mapLevel || 1) !== (player.mapLevel || 1)) return;
+
+    const { addEvent } = this.ctx;
+    const agora = Date.now();
+    if (e.expira === 0) {
+      // A janela abre AGORA — e só agora. Antes disso a escolta espera o tempo
+      // que for, o que faz dela uma decisão de QUANDO começar a briga.
+      e.expira = agora + e.janelaMs;
+      setTimeout(() => {
+        if (player._summonEscort !== e) return;   // já acabou por outro caminho
+        player._summonEscort = null;
+        addEvent({
+          type: 'relic_summon_end', casterId: player.id, index: 0,
+          skill: e.def.skill, vfx: e.def.vfx, x: player.x, z: player.z,
+          radius: e.def.radius || 22, hit: false,
+        }, e.mapLvl);
+      }, e.janelaMs + 50);
+    } else if (agora > e.expira) {
+      player._summonEscort = null;
+      return;
+    }
+    if (agora < e.proximo) return;
+    e.proximo = agora + e.recargaMs;
+
+    const raio = e.def.radius || 22;
+    // AS TRÊS DE UMA VEZ. `count` diz ao desenho quantas saem do casco; o dano
+    // é UM golpe — o `damagePct` do dado é o da salva inteira, não o de cada
+    // caveira (ver a nota no monster_skills.js).
+    addEvent({
+      type: 'relic_summon_leap', casterId: player.id, index: 0,
+      skill: e.def.skill, vfx: e.def.vfx, x: alvo.x, z: alvo.z,
+      radius: raio, count: e.vivas,
+    }, e.mapLvl);
+
+    e.saltando = true;
+    try {
+      const hits = this._resolveOnce(player, e.def, 'circle',
+        alvo.x, alvo.z, 0, 1, null, null, 0);
+      if (hits.length > 0) {
+        addEvent({
+          type: 'monster_skill_strike', casterId: player.id, skill: e.def.skill,
+          vfx: e.def.vfx, originX: alvo.x, originZ: alvo.z, points: null,
+          hits, radius: raio,
+        }, e.mapLvl);
+        const npcHits = hits.filter(h => h.isNPC).length;
+        if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
+      }
+    } finally {
+      e.saltando = false;
+    }
+  }
+
+  /**
+   * Cardume de Torpedos (r35): `count` torpedos saem do casco um atrás do
+   * outro, cada um curvando até o que estiver à frente.
+   *
+   * Por que não cabe no laço de levas do `cast()`: lá toda leva resolve a MESMA
+   * forma no MESMO ponto. Aqui cada torpedo tem alvo próprio, origem própria (o
+   * casco no instante do disparo, que se move) e chega no próprio tempo de voo.
+   *
+   * O alvo é travado NO DISPARO, não no cast: os seis saem ao longo de ~0,9 s e
+   * cada um busca o inimigo mais perto dentro do cone de mira NAQUELE instante.
+   * É o que faz a salva "acompanhar" uma briga que se mexe em vez de despejar
+   * tudo onde o alvo estava quando se clicou. Sem ninguém no cone, o torpedo vai
+   * reto — aberto em leque, alternando um lado e outro, para seis tiros lerem
+   * como salva e não como fila indiana.
+   *
+   * A CURVA do voo é puramente do cliente: o servidor só diz de onde, para onde
+   * e em quanto tempo. Curva desenhada não muda quem é atingido — quem decide
+   * isso é o círculo de `radius` no ponto de chegada, na hora da chegada.
+   */
+  _castTorpedoes(player, def, dx, dz, castMs, effectPayload) {
+    const { addEvent } = this.ctx;
+    const mapLvl  = player.mapLevel || 1;
+    const n       = Math.max(1, def.count || 6);
+    const gapMs   = def.salvoMs || 150;
+    const flyMs   = def.travelMs || 480;
+    const alcance = def.length || 95;
+    const meio    = ((def.angle || 60) * Math.PI / 180) / 2;
+    const leque   = ((def.fanAngle || 40) * Math.PI / 180) / 2;
+    const base    = Math.atan2(dz, dx);
+
+    for (let i = 0; i < n; i++) {
+      setTimeout(() => {
+        if (player.dead) return;
+        const fx = player.x, fz = player.z;
+        const alvo = this._coneTarget(player, fx, fz, dx, dz, alcance, meio);
+
+        // Leque simétrico: 0, +1, -1, +2, -2… normalizado pelo número de tiros.
+        const lado = (i % 2 === 0 ? 1 : -1) * Math.ceil(i / 2);
+        const ang  = base + (n > 1 ? (lado / Math.ceil(n / 2)) * leque : 0);
+        const tx = alvo ? alvo.e.x : fx + Math.cos(ang) * alcance;
+        const tz = alvo ? alvo.e.z : fz + Math.sin(ang) * alcance;
+
+        addEvent({
+          type: 'relic_torpedo', casterId: player.id, skill: def.skill,
+          vfx: def.vfx, index: i, side: lado >= 0 ? 1 : -1,
+          fromX: fx, fromZ: fz, toX: tx, toZ: tz,
+          travelMs: flyMs, radius: def.radius || 15,
+          homed: !!alvo,
+          // Quem o torpedo está perseguindo. O cliente curva o desenho para a
+          // posição VIVA dele durante o voo — sem isso o torpedo desenhado iria
+          // para o ponto do disparo enquanto o estouro sai em cima do alvo.
+          targetId: alvo ? alvo.e.id : null,
+          homingRadius: def.homing ? (def.homingRadius || 55) : 0,
+        }, mapLvl);
+
+        setTimeout(() => {
+          if (player.dead) return;
+          // ── RE-MIRA na chegada ───────────────────────────────────
+          // O alvo andou durante o voo. Se ele continua vivo, no mesmo mapa e
+          // ainda perto do ponto anunciado, o estouro acontece EM CIMA dele —
+          // é um torpedo teleguiado, não um obus. O `homingRadius` é a corda que
+          // ele tem: alvo que fugiu MAIS que isso ganhou a corrida, e aí o
+          // torpedo estoura onde foi anunciado (e o desenho concorda, porque o
+          // cliente para de seguir pelo mesmo critério).
+          let ax = tx, az = tz;
+          if (def.homing && alvo && !alvo.e.dead
+              && (alvo.e.mapLevel || 1) === mapLvl
+              && Math.hypot(alvo.e.x - tx, alvo.e.z - tz) <= (def.homingRadius || 55)) {
+            ax = alvo.e.x; az = alvo.e.z;
+          }
+          const hits = this._resolveOnce(player, { ...def, count: 1 }, 'circle',
+            ax, az, dx, dz, null, null, 0);
+          addEvent({
+            type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
+            vfx: def.vfx, originX: ax, originZ: az, points: null, hits,
+            radius: def.radius || 15,
+          }, mapLvl);
+          const npcHits = hits.filter(h => h.isNPC).length;
+          if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
+        }, flyMs);
+      }, castMs + i * gapMs);
+    }
+
+    effectPayload.targetX = player.x;
+    effectPayload.targetZ = player.z;
+    effectPayload.castMs  = castMs;
+  }
+
+  /**
+   * Inimigo mais perto dentro de um cone à frente do lançador — a mira do
+   * torpedo. Reaproveita o `_enemyPool` (que já filtra mapa, morte e regra de
+   * PvP) e só acrescenta a geometria.
+   */
+  _coneTarget(player, ox, oz, dx, dz, reach, halfAngle) {
+    let best = null, bestD = Infinity;
+    for (const t of this._enemyPool(player)) {
+      const rx = t.e.x - ox, rz = t.e.z - oz;
+      const d = Math.hypot(rx, rz);
+      if (d > reach || d < 0.001 || d >= bestD) continue;
+      const cosA = (rx * dx + rz * dz) / d;
+      if (Math.acos(Math.max(-1, Math.min(1, cosA))) > halfAngle) continue;
+      bestD = d; best = t;
+    }
+    return best;
   }
 
   /** O inimigo válido mais próximo de um ponto, ou null. Mesmas regras de alvo
@@ -1632,24 +1954,34 @@ class MonsterSkillManager {
   }
 
   /**
-   * Cemitério de Naufrágios (relíquia): espelha o `_runWreckRain` do bicho —
-   * UMA queda por `dropIntervalMs`, cada uma mirada em ONDE O ALVO ESTÁ naquele
-   * instante, com `dropWarnMs` de janela de fuga.
+   * CHUVA MIRADA — uma queda por `dropIntervalMs`, cada uma em ONDE O ALVO
+   * ESTÁ naquele instante, com `dropWarnMs` de janela de fuga.
    *
-   * Antes as seis caíam juntas em pontos sorteados num disco de 75 un: virava
-   * sorteio, o alvo raramente estava debaixo de alguma, e a skill que o bicho
-   * usa como perseguição virava confete na mão do jogador. Agora a leitura é a
-   * mesma dos dois lados: quem parar, leva; e cada destroço fecha a arena.
+   * Nasceu no Cemitério de Naufrágios (espelhando o `_runWreckRain` do bicho) e
+   * hoje serve as três que largavam tudo de uma vez: Naufrágios, Salva de
+   * Morteiro e Tentáculos do Abismo. O defeito era o mesmo nas três — uma salva
+   * simultânea espalhada é SORTEIO: ou o alvo estava debaixo de alguma sub-área
+   * ou não estava, e ficar parado era a jogada mais segura porque o miolo do
+   * espalhamento é justamente o buraco. Caindo uma a uma em cima de quem está
+   * sendo caçado, a leitura vira perseguição: quem para, leva; quem anda, gasta
+   * a salva inteira correndo. É o mesmo que o anel mirado (`aimed_ring`)
+   * tentava comprar com geometria, sem depender de ler o desenho num piscar.
    *
    * O alvo é uma PESSOA, não um lugar: escolhido no cursor e reavaliado a cada
    * queda (se ele morrer, a chuva segue para o inimigo mais perto do lançador).
+   *
+   * `special: 'obstacles'` é o extra do Cemitério — além do dano, cada peça vira
+   * bloqueio real. As outras duas só batem, e a do polvo AGARRA pelo `cc`.
    */
-  _castWreckRain(player, def, cx, cz, castMs, effectPayload) {
-    const { addEvent, wallManager } = this.ctx;
+  _castAimedRain(player, def, cx, cz, castMs, effectPayload) {
+    const { addEvent, wallManager, getMapManagerFor } = this.ctx;
     const mapLvl = player.mapLevel || 1;
     const drops  = Math.max(1, def.count || 6);
     const gapMs  = def.dropIntervalMs || 1000;
     const warnMs = def.dropWarnMs || 700;
+    const raio   = def.radius || 24;
+    // So o Cemiterio planta obstaculo; morteiro e tentaculo caem e acabou.
+    const planta = def.special === 'obstacles';
     const hold   = def.holdMs || 8000;
     const r      = def.obstacleRadius || 8;
     let prey = this._nearestEnemy(player, cx, cz);
@@ -1668,14 +2000,21 @@ class MonsterSkillManager {
         // `spread_radius` e a marcação aparece longe de onde a peça cai.
         addEvent({
           type: 'monster_skill_cast', casterId: player.id, crit: player._relicCrit,
-          skill: def.skill, vfx: def.vfx, shape: 'multi', special: null,
+          skill: def.skill, vfx: def.vfx, shape: def.shape || 'multi', special: null,
           originX: dx, originZ: dz, targetX: dx, targetZ: dz, dirX: 0, dirZ: 1,
           castMs: warnMs, points: [{ x: 0, z: 0 }],
           params: {
-            radius: def.radius, count: 1, spread: 0,
+            radius: raio, count: 1, spread: 0,
             obstacleRadius: r, holdMs: hold, dropIndex: i,
           },
         }, mapLvl);
+
+        // Cada queda e uma zona de perigo de verdade. Sem isto o NPC cacado
+        // ficava parado esperando o obus e a leitura "nao pare" so valia para
+        // jogador - o cast normal avisa uma vez, mas aqui o ponto MUDA.
+        if (getMapManagerFor) {
+          getMapManagerFor(mapLvl)?.notifyDangerZone(dx, dz, raio, warnMs);
+        }
 
         setTimeout(() => {
           if (player.dead) return;
@@ -1684,21 +2023,23 @@ class MonsterSkillManager {
           addEvent({
             type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
             vfx: def.vfx, originX: dx, originZ: dz, points: null, hits,
-            radius: def.radius || 24,
+            radius: raio,
           }, mapLvl);
 
-          // E o destroço vira obstáculo de verdade (mesmo wallManager do bicho).
-          if (wallManager) {
-            wallManager.addWall(mapLvl, {
-              id: `ms_${player.id}_${Date.now()}_${i}`,
-              x: dx, z: dz, hw: r, hh: r, rot: 0, durationMs: hold,
-            });
+          if (planta) {
+            // E o destroço vira obstáculo de verdade (mesmo wallManager do bicho).
+            if (wallManager) {
+              wallManager.addWall(mapLvl, {
+                id: `ms_${player.id}_${Date.now()}_${i}`,
+                x: dx, z: dz, hw: r, hh: r, rot: 0, durationMs: hold,
+              });
+            }
+            addEvent({
+              type: 'monster_skill_obstacles', casterId: player.id, skill: def.skill,
+              vfx: def.vfx, originX: dx, originZ: dz,
+              points: [{ x: 0, z: 0 }], radius: r, holdMs: hold,
+            }, mapLvl);
           }
-          addEvent({
-            type: 'monster_skill_obstacles', casterId: player.id, skill: def.skill,
-            vfx: def.vfx, originX: dx, originZ: dz,
-            points: [{ x: 0, z: 0 }], radius: r, holdMs: hold,
-          }, mapLvl);
 
           const npcHits = hits.filter(h => h.isNPC).length;
           if (npcHits > 0) this.ctx.grantSkillXp(player, 'reliquia', npcHits * 14);
@@ -1725,7 +2066,8 @@ class MonsterSkillManager {
     const { projectileManager, players, relicCanHitPlayer } = this.ctx;
     const pool = [];
     projectileManager.npcs.forEach(npc => {
-      if (!npc.dead && (npc.mapLevel || 1) === (player.mapLevel || 1)) pool.push({ e: npc, isNPC: true });
+      if (npc.dead || !this._podeAcertarNpc(player, npc)) return;
+      if ((npc.mapLevel || 1) === (player.mapLevel || 1)) pool.push({ e: npc, isNPC: true });
     });
     players.forEach(p => { if (relicCanHitPlayer(player, p)) pool.push({ e: p, isNPC: false }); });
     return pool;
@@ -1772,7 +2114,6 @@ class MonsterSkillManager {
         type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
         vfx: def.vfx, originX: player.x, originZ: player.z,
         points: marcas, hits, radius: def.radius || 24,
-        ...effectPayload,
       }, mapLvl);
     }, castMs);
   }
@@ -1822,7 +2163,7 @@ class MonsterSkillManager {
           addEvent({
             type: 'monster_skill_strike', casterId: player.id, skill: def.skill,
             vfx: def.vfx, originX: bx, originZ: bz,
-            hits, radius: raio, ...effectPayload,
+            hits, radius: raio,
           }, mapLvl);
         }
       };
@@ -1905,7 +2246,6 @@ class MonsterSkillManager {
         vfx: def.vfx, originX: cx, originZ: cz, points: pontos,
         radius: def.radius, holdMs: hold,
         wallLength: def.wallLength, wallThickness: def.wallThickness,
-        ...effectPayload,
       }, mapLvl);
     }, castMs);
   }

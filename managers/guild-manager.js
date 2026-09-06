@@ -38,6 +38,7 @@
 
 const {
   GUILD_CREATE_COST, GUILD_MAX_LEVEL, GUILD_XP_SHARE, GUILD_GOLD_SHARE,
+  RETIRED_GUILD_SKILLS, retiredRefund,
   TAX_MAX_PCT, TAX_INTERVAL_MS,
   NAME_MIN, NAME_MAX, TAG_MIN, TAG_MAX, NAME_RE, TAG_RE,
   DONATE_MIN_DOBROES,
@@ -57,8 +58,8 @@ const SEARCH_LIMIT = 30;
 /** Bônus zerado — devolvido para quem não tem guilda. Congelado para não haver
  *  como alguém escrever nele por engano e "dar" bônus a um sem-guilda. */
 const NO_BONUS = Object.freeze({
-  gold_pct: 0, dobrao_pct: 0, xp_pct: 0,
-  member_hp_pct: 0, tower_hp_pct: 0, tower_dmg_pct: 0,
+  guild_xp_pct: 0, guild_gold_pct: 0,
+  tower_hp_pct: 0, tower_dmg_pct: 0, tower_repair_pct: 0,
   tax_boat_pct: 0,
 });
 
@@ -104,6 +105,7 @@ class GuildManager {
     for (const g of this.guilds.values()) {
       for (const name of g.members.keys()) this.byPlayer.set(name, g.id);
     }
+    this._devolverSkillsAposentadas();
 
     this._xpInterval = setInterval(() => {
       try { this._sweepContrib(); }
@@ -153,8 +155,52 @@ class GuildManager {
   }
 
   /**
+   * Devolve ao cofre o que foi gasto nas skills APOSENTADAS (2026-09-06) e apaga
+   * a chave delas.
+   *
+   * Quatro skills que davam poder direto ao jogador saíram do catálogo. O nível
+   * comprado continua salvo na coluna JSON `skills`, e sem esta passada ele
+   * viraria uma chave que `bonusFor` ignora em silêncio — ou seja, o cofre que
+   * a guilda gastou nelas simplesmente sumiria. Devolver é o mínimo: elas foram
+   * compradas com as regras de ontem.
+   *
+   * Roda UMA vez por guilda, porque ela mesma apaga a chave que a dispara.
+   * Guilda que nunca comprou nenhuma nem é tocada.
+   */
+  _devolverSkillsAposentadas() {
+    for (const g of this.guilds.values()) {
+      const skills = g.skills || {};
+      let ouro = 0, dobroes = 0;
+      const devolvidas = [];
+      for (const id of Object.keys(RETIRED_GUILD_SKILLS)) {
+        const volta = retiredRefund(id, skills[id]);
+        delete skills[id];
+        if (!volta) continue;
+        ouro    += volta.gold;
+        dobroes += volta.dobroes;
+        devolvidas.push(`${volta.name} nível ${volta.level}`);
+      }
+      if (!devolvidas.length) continue;
+      g.skills   = skills;
+      g.gold     = (g.gold || 0) + ouro;
+      g.dobroes  = (g.dobroes || 0) + dobroes;
+      this.db.upsertGuild(g).catch(() => {});
+      console.log(`🏴 [${g.tag}] devolvido ao cofre: ${ouro.toLocaleString('pt-BR')} 🪙 + `
+                + `${dobroes.toLocaleString('pt-BR')} 💰 (${devolvidas.join(', ')})`);
+    }
+  }
+
+  /** Nível de uma skill da guilda como FRAÇÃO (nível 3 de 10%/nv = 0,30). */
+  _skillPct(g, id) {
+    const def = GUILD_SKILL_BY_ID[id];
+    if (!def || !g) return 0;
+    const lvl = Math.max(0, Math.floor(Number(g.skills?.[id] || 0)));
+    return lvl * def.pctPerLevel;
+  }
+
+  /**
    * Bônus somados das skills, na forma que os leitores esperam (fração, não
-   * porcentagem). Guilda nível 10 com Butim Farto 4 devolve gold_pct 0,40.
+   * porcentagem). Guilda com Muralha da Ilha 4 devolve tower_hp_pct 0,40.
    */
   bonusFor(player) {
     const g = this.guildOf(player);
@@ -774,7 +820,10 @@ class GuildManager {
     const g = this.guildOf(player);
     if (!g) return null;
 
-    const share = Math.floor(delta * GUILD_XP_SHARE);
+    // Crônica da Irmandade: a FATIA cresce, o XP do membro não muda. É o que
+    // separa uma skill de guilda de um talento — ela acelera a bandeira, não
+    // o barco de quem a comprou.
+    const share = Math.floor(delta * GUILD_XP_SHARE * (1 + this._skillPct(g, 'guild_xp_pct')));
     if (share <= 0) return null;
 
     const m = g.members.get(player.name);
@@ -812,7 +861,9 @@ class GuildManager {
     const g = this.guildOf(player);
     if (!g) return null;
 
-    const share = Math.floor(pend * GUILD_GOLD_SHARE);
+    // Quinhão do Cofre: mesma história do XP. O ouro do cofre continua sendo
+    // criado pelo abate, e não descontado do bolso de quem abateu.
+    const share = Math.floor(pend * GUILD_GOLD_SHARE * (1 + this._skillPct(g, 'guild_gold_pct')));
     if (share <= 0) return null;
 
     const m = g.members.get(player.name);

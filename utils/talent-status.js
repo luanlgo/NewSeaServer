@@ -45,6 +45,10 @@ const STATUS_STATS = {
   killstreak_pct:          'stack',
   reduction_after_hit_pct: 'stack',
   crit_chain_pct:          'stack',
+  // As duas sequências de acerto (Cadência Mortal e Broca Corsária) leem a
+  // MESMA pilha — `_streakStacks` —, então as duas mostram o mesmo número.
+  streak_damage_stacks:    'stack',
+  streak_pen_stacks:       'stack',
   // ── janelas com relógio ──
   burst_speed_pct:      'window',
   speed_on_kill_pct:    'window',
@@ -55,10 +59,9 @@ const STATUS_STATS = {
   speed_in_combat_pct:     'cond',
   speed_out_combat_pct:    'cond',
   speed_low_hp_pct:        'cond',
-  weather_speed_pct:       'cond',
   crit_damage_high_hp:     'cond',
   damage_low_hp_pct:       'cond',
-  repair_out_combat_pct:   'cond',
+  healing_out_combat_pct:  'cond',
   hp_regen_low_pct:        'cond',
   mana_out_combat_pct:     'cond',
   reduction_still_pct:     'cond',
@@ -76,10 +79,15 @@ const STATUS_STATS = {
   salvo_damage_pct:        'hit',
   ammo_damage_pct:         'hit',
   aoe_damage_pct:          'hit',
-  ram_damage_pct:          'hit',
   crit_chance:             'hit',
   crit_damage_pct:         'hit',
   armor_pen_pct:           'hit',
+  armor_pen_pct_2:         'hit',
+  cannon_accuracy_pct:     'hit',
+  block_chance:            'hit',
+  low_hp_shield_pct:       'hit',
+  shield_on_relic_pct:     'hit',
+  fragment_extra_chance:   'hit',
   pierce_chance:           'hit',
   double_shot_chance:      'hit',
   burn_pct:                'hit',
@@ -91,7 +99,8 @@ const STATUS_STATS = {
   relic_crit_chance:       'hit',
   reduction_vs_npc_pct:    'hit',
   reduction_vs_player_pct: 'hit',
-  reduction_aoe_pct:       'hit',
+  reduction_vs_tower_pct:  'hit',
+  reduction_vs_npc_ship_pct: 'hit',
   reduction_relic_pct:     'hit',
   dot_reduction_pct:       'hit',
   crit_taken_reduction:    'hit',
@@ -173,6 +182,14 @@ function activeStatuses(player, ctx = {}, now = Date.now()) {
 
   if ((player._critChainBonus || 0) > 0) push('crit_chain_pct', 1, 0);
 
+  // Sequência de acertos: uma pilha só, dois ícones. Cada nó mostra o que
+  // REALMENTE conta para ele (o teto é 2 × nível), e não a pilha crua — senão
+  // quem tem 3 níveis de Cadência Mortal veria "20" e ganharia 6.
+  for (const stat of ['streak_damage_stacks', 'streak_pen_stacks']) {
+    const n = fx.streakStacks(player, stat);
+    if (n > 0) push(stat, n, 0);
+  }
+
   // ── Recarga: Segundo Fôlego só aparece ENQUANTO está indisponível ──
   if (_lvl(player, 'second_wind_pct') > 0) {
     const readyAt = (player._secondWindAt || 0) + fx.SECOND_WIND_CD_MS;
@@ -191,10 +208,8 @@ function activeStatuses(player, ctx = {}, now = Date.now()) {
   fx.outgoingDamageMult(player, { attackerHpFrac: _hpFrac(player) }, procs);
   fx.hpRegenPerSec(player, now, procs);
   fx.manaRegenMult(player, now, procs);
+  fx.healingReceivedMult(player, now, procs);
   fx.dodgeChance(player, !!ctx.isMoving, procs);
-
-  // Vento Próprio só conta quando existe penalidade de clima para ignorar.
-  if (ctx.badWeather && _lvl(player, 'weather_speed_pct') > 0) procs.push('weather_speed_pct');
 
   const seen = new Set(out.map(e => e[0]));
   for (const stat of procs) {

@@ -17,7 +17,10 @@ const require = createRequire(import.meta.url);
 const AttackManager = require('../../managers/attack-manager.js');
 const { ATTACK_DEFS, RELIC_DEFS } = require('../../constants/index.js');
 
-const CHAIN = 'drake_chain_arc';
+// A cadeia ficou sem dono quando o Rastilho convergiu (2026-09-05) — nenhuma
+// skill do jogo usa `shape: 'chain'` hoje. O def sintético do chain-fixture
+// mantém a geometria coberta em vez de deixar o motor apodrecer calado.
+const { CHAIN_ID: CHAIN } = require('./chain-fixture.js');
 const ORB   = 'drake_hunter_orb';
 
 function makeNpc() {

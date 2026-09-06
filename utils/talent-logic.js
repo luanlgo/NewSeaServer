@@ -197,12 +197,10 @@ function recalcMaxHp(player, shipDefs, talentDefs, baseHpOverride = null) {
                     + sumTalentStat(player, talentDefs, 'abyssal_heart_pct')) / 100;
   const hpLevel    = player.shipIslandUpgrades?.hp ?? 0;
   const islandHp   = Math.round(hpLevel * shipDef.hp * 0.05); // +5% do HP base do navio por nível
-  // Casco da Irmandade (skill de guilda) entra na MESMA soma percentual da vida
-  // base do navio, pela mesma razão que o Casco Reforçado: multiplicar por fora
-  // faria o flat do Casco de Ferro ser contado duas vezes. O valor é carimbado
-  // em `_guildBonus` pelo managers/guild-manager.js; sem guilda, é 0.
-  const guildPct   = Math.max(0, Number(player._guildBonus?.member_hp_pct || 0));
-  player.maxHp = Math.floor(shipDef.hp * (1 + skillHpPct + talentPct + guildPct)) + talentFlat + islandHp;
+  // O Casco da Irmandade (skill de guilda que somava vida máxima a todo membro)
+  // foi aposentado em 2026-09-06: as skills da guilda passaram a fortalecer a
+  // GUILDA, não a ficha de quem entra nela. Ver constants/guilds.js.
+  player.maxHp = Math.floor(shipDef.hp * (1 + skillHpPct + talentPct)) + talentFlat + islandHp;
 }
 
 /**

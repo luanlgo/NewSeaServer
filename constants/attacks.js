@@ -507,7 +507,11 @@ const ATTACK_DEFS = {
     name: 'Chamado de Fogo',
     rangeMin: 0,
     rangeMax: 300,
-    castTime: 1700,
+    // Cast 1700 → 1300 (2026-09-06). O raio de 90 já pedia 2 s de fuga a 45
+    // un/s, então esta era das mais justas do conjunto — encurtar aqui é tempo
+    // de tela, não dificuldade: 1,7 s parado no meio de uma rotação de sete
+    // skills fazia o arauto parecer lento mesmo quando o golpe era bom.
+    castTime: 1300,
     cooldown: 13000,
     damageMult: 2.8,
     shape: 'circle', radius: 90,

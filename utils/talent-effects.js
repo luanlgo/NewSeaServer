@@ -63,6 +63,28 @@ const FRENZY_MAX_STACKS   = 5;   // atk_frenesi
 const KILLSTREAK_MAX      = 3;   // atk_carnificina
 const SENTINEL_MAX_STACKS = 5;   // def_sentinela
 
+// ── Sequência de acertos (atk_rastro + atk_bordolivre) ───────────────────────
+// Os dois talentos leem a MESMA pilha (`player._streakStacks`): a sequência é
+// uma só, o que muda é o que cada nó faz com ela. O `perLevel` dos dois é o
+// TETO de pilhas (2 por nível); o valor de cada pilha é fixo e mora aqui.
+//
+// Fixo de propósito: se a pilha valesse também por nível, o nó cheio daria
+// 20% × 20 pilhas = +400% de dano. Com o valor fixo, o teto é +40% — alto,
+// mas do tamanho de um capstone, e só para quem encadeia 20 acertos sem errar.
+const STREAK_PCT_PER_STACK = 0.02;
+// Errar zera a sequência. É o que amarra estes dois no Pulso Firme (precisão):
+// com 50% de mira, chegar a 20 pilhas é loteria; com 80%, é rotina.
+const BLOCK_MAX = 0.50;
+
+// Escudos (absorção de dano de verdade, não cura disfarçada).
+const RELIC_SHIELD_MS     = 8000;   // def_barreira
+const LOW_HP_SHIELD_MS    = 10000;  // def_cascoliso
+const LOW_HP_SHIELD_CD_MS = 20000;  // piso entre dois disparos do Casco Duplo
+const LOW_HP_SHIELD_AT    = 0.20;   // a vida que precisa ser cruzada para baixo
+
+// Fração da vida com que se renasce sem nenhum talento (server.js usa a mesma).
+const RESPAWN_HP_BASE = 0.10;
+
 // ── Acesso cru ───────────────────────────────────────────────────────────────
 
 /** Total do stat em pontos percentuais → fração (20 → 0.20). */
@@ -135,7 +157,6 @@ function outgoingDamageMult(attacker, ctx = {}, procs = null) {
   if (ctx.isFirstHit)     add += _pc(attacker, 'opener_pct', procs);
   if (ctx.isFullSalvo)    add += _pc(attacker, 'salvo_damage_pct', procs);
   if (ctx.isSpecialAmmo)  add += _pc(attacker, 'ammo_damage_pct', procs);
-  if (ctx.isRam)          add += _pc(attacker, 'ram_damage_pct', procs);
   if (ctx.isAoe)          add += _pc(attacker, 'aoe_damage_pct', procs);
 
   if (typeof ctx.targetHpFrac === 'number' && ctx.targetHpFrac <= 0.30) {
@@ -156,12 +177,62 @@ function outgoingDamageMult(attacker, ctx = {}, procs = null) {
   add += _p(attacker, 'frenzy_pct')     * (attacker._frenzyStacks     || 0);
   add += _p(attacker, 'killstreak_pct') * (attacker._killstreakStacks || 0);
 
+  // Cadência Mortal: a sequência de acertos, limitada pelo teto do próprio nó.
+  const streakDmg = streakStacks(attacker, 'streak_damage_stacks');
+  if (streakDmg > 0) {
+    add += STREAK_PCT_PER_STACK * streakDmg;
+    if (procs) procs.push('streak_damage_stacks');
+  }
+
   return Math.max(0.05, 1 + add);
 }
 
-/** Fração da defesa do alvo que o atacante ignora (atk_perfurante). */
+/**
+ * Pilhas de sequência que VALEM para um dos dois nós.
+ *
+ * A pilha é compartilhada e cresce sem teto no atacante; cada nó só conta até
+ * o próprio limite (`perLevel` 2 × nível). Guardar uma pilha por nó faria a
+ * Broca Corsária e a Cadência Mortal contarem acertos separados — e o jogador
+ * vê UMA sequência na tela.
+ */
+function streakStacks(player, key) {
+  const teto = _f(player, key);
+  if (teto <= 0) return 0;
+  return Math.min(teto, player._streakStacks || 0);
+}
+
+/**
+ * Registra o resultado de um tiro para a sequência (atk_rastro/atk_bordolivre).
+ * Acertou soma uma pilha; errou zera. Chamado do projectile-manager, no mesmo
+ * lugar em que a precisão do canhão é sorteada.
+ */
+function noteStreakShot(player, acertou) {
+  if (!player) return;
+  player._streakStacks = acertou ? (player._streakStacks || 0) + 1 : 0;
+}
+
+/**
+ * Fração da defesa do alvo que o atacante ignora.
+ *
+ * Três fontes, todas aditivas: Bala Perfurante (`armor_pen_pct`), Ponta de Aço
+ * (`armor_pen_pct_2`) e a sequência da Broca Corsária.
+ */
 function armorPen(attacker) {
-  return _clamp(_p(attacker, 'armor_pen_pct'), 0, 0.95);
+  let pen = _p(attacker, 'armor_pen_pct') + _p(attacker, 'armor_pen_pct_2');
+  pen += STREAK_PCT_PER_STACK * streakStacks(attacker, 'streak_pen_stacks');
+  return _clamp(pen, 0, 0.95);
+}
+
+/**
+ * Pontos percentuais de PRECISÃO que o talento soma ao canhão (atk_deriva).
+ *
+ * Em fração, para somar direto no `cannonAccuracy`. O teto do canhão mais a
+ * pesquisa continua sendo o CANNON_ACCURACY_MAX (0,70) e este bônus entra
+ * DEPOIS dele — quem já pesquisou a Mira Calibrada precisa ver o nó fazer
+ * alguma coisa. O teto final é do recalcCannons (0,95).
+ */
+function cannonAccuracyBonus(player) {
+  return _p(player, 'cannon_accuracy_pct');
 }
 
 // ── Crítico ──────────────────────────────────────────────────────────────────
@@ -220,7 +291,8 @@ function burnDot(attacker, dmg) {
  * @param {object} ctx
  * @param {boolean} [ctx.fromNPC]
  * @param {boolean} [ctx.fromPlayer]
- * @param {boolean} [ctx.isAoe]
+ * @param {boolean} [ctx.fromTower]    torre de ilha (def_ancoragem)
+ * @param {boolean} [ctx.fromNpcShip]  NPC que atira de canhão (def_marchare)
  * @param {boolean} [ctx.isRelic]
  * @param {boolean} [ctx.isCrit]
  * @param {boolean} [ctx.isDot]
@@ -234,10 +306,11 @@ function damageReduction(target, ctx = {}, procs = null) {
 
   let dr = _p(target, 'damage_reduction_pct') + _p(target, 'damage_reduction_pct_2');
 
-  if (ctx.fromNPC)    dr += _pc(target, 'reduction_vs_npc_pct', procs);
-  if (ctx.fromPlayer) dr += _pc(target, 'reduction_vs_player_pct', procs);
-  if (ctx.isAoe)      dr += _pc(target, 'reduction_aoe_pct', procs);
-  if (ctx.isRelic)    dr += _pc(target, 'reduction_relic_pct', procs);
+  if (ctx.fromNPC)     dr += _pc(target, 'reduction_vs_npc_pct', procs);
+  if (ctx.fromPlayer)  dr += _pc(target, 'reduction_vs_player_pct', procs);
+  if (ctx.fromTower)   dr += _pc(target, 'reduction_vs_tower_pct', procs);
+  if (ctx.fromNpcShip) dr += _pc(target, 'reduction_vs_npc_ship_pct', procs);
+  if (ctx.isRelic)     dr += _pc(target, 'reduction_relic_pct', procs);
   if (ctx.isCrit)     dr += _pc(target, 'crit_taken_reduction', procs);
   if (ctx.isDot)      dr += _pc(target, 'dot_reduction_pct', procs);
   if (ctx.isStill)    dr += _pc(target, 'reduction_still_pct', procs);
@@ -302,6 +375,18 @@ function dodgeChance(target, isMoving = false, procs = null) {
   return _clamp(c, 0, MAX_DODGE);
 }
 
+/**
+ * Chance de BLOQUEAR o golpe inteiro (def_anteparo).
+ *
+ * Anulação, como a esquiva — e sorteada depois dela, com aviso próprio, para
+ * o jogador conseguir dizer qual das duas o salvou. O teto de 50% é só
+ * sanidade: o nó cheio vale 5%.
+ */
+function blockChance(target) {
+  if (!target || !target.tal) return 0;
+  return _clamp(_p(target, 'block_chance'), 0, BLOCK_MAX);
+}
+
 /** Dano devolvido ao atacante (def_espinhos). */
 function thornsDamage(target, dmgTaken) {
   const pct = _p(target, 'thorns_pct');
@@ -351,23 +436,37 @@ function maxHpPctBonus(player) {
   return _p(player, 'max_hp_pct') + _p(player, 'abyssal_heart_pct');
 }
 
-/** Multiplicador de cura recebida (def_recuperacao). */
-function healingReceivedMult(player) {
-  return 1 + _p(player, 'healing_received_pct');
+/**
+ * Multiplicador de TODA cura recebida — curandeiro, bala de cura, relíquia,
+ * Segundo Fôlego, regeneração.
+ *
+ * Três nós na mesma família, aditivos: Calafate (`_2`, sempre), Recuperação
+ * (sempre) e Reparos de Emergência (só fora de combate). Os três eram outra
+ * coisa até 09/2026 — regeneração plana e regeneração fora de combate — e
+ * viraram multiplicador por decisão do Luang: a regeneração envelhecia (0,4 de
+ * vida por segundo não se percebe num casco de 70k) e nada na árvore
+ * valorizava quem investia em cura.
+ */
+function healingReceivedMult(player, now = Date.now(), procs = null) {
+  if (!player || !player.tal) return 1;
+  let add = _p(player, 'healing_received_pct') + _p(player, 'healing_received_pct_2');
+  if (!inCombat(player, now)) add += _pc(player, 'healing_out_combat_pct', procs);
+  return 1 + add;
 }
 
 /**
- * Vida regenerada por segundo, somando as três fontes contextuais.
- * def_calafate é flat; def_bombeamento só abaixo de 40%; def_reparo só fora
- * de combate — e os dois últimos são percentuais da vida máxima.
+ * Vida regenerada por segundo.
+ *
+ * Sobrou UMA fonte: as Bombas de Porão, abaixo de 40% de vida. O Calafate
+ * (regen plana) e os Reparos de Emergência (regen fora de combate) viraram
+ * multiplicadores de cura — o jogo perdeu de propósito a regeneração passiva
+ * acima de 40%, que era a moeda de troca da mudança.
  */
 function hpRegenPerSec(player, now = Date.now(), procs = null) {
   if (!player || !player.tal || !player.maxHp) return 0;
-  let regen = _f(player, 'hp_regen_flat');
   const frac = player.hp / player.maxHp;
-  if (frac < 0.40) regen += player.maxHp * _pc(player, 'hp_regen_low_pct', procs);
-  if (!inCombat(player, now)) regen += player.maxHp * _pc(player, 'repair_out_combat_pct', procs);
-  return regen;
+  if (frac >= 0.40) return 0;
+  return player.maxHp * _pc(player, 'hp_regen_low_pct', procs);
 }
 
 // ── Mana ─────────────────────────────────────────────────────────────────────
@@ -384,10 +483,6 @@ function manaRegenMult(player, now = Date.now(), procs = null) {
   return m;
 }
 
-/** Mana ganha por abate (res_colheita). */
-function manaOnKill(player) {
-  return _f(player, 'mana_on_kill');
-}
 
 // ── Relíquias ────────────────────────────────────────────────────────────────
 
@@ -425,10 +520,38 @@ function relicRangeMult(player) {
   return 1 + _p(player, 'relic_range_pct');
 }
 
-/** Escudo concedido ao usar uma relíquia (def_barreira), em pontos de vida. */
+/**
+ * Escudo concedido ao usar uma relíquia (def_barreira), em pontos de vida.
+ *
+ * ⚠️ Até 09/2026 o server.js somava isto direto no `hp`: era CURA, não escudo.
+ * Quem estava com a vida cheia não ganhava nada, nada aparecia na tela e o
+ * playtest resumiu em "nem percebi esse escudo". Hoje o valor vai para
+ * `player.shield`, que absorve dano antes da vida e vence em RELIC_SHIELD_MS.
+ */
 function relicShieldAmount(player) {
   const pct = _p(player, 'shield_on_relic_pct');
   return pct > 0 && player.maxHp ? Math.round(player.maxHp * pct) : 0;
+}
+
+/**
+ * Casco Duplo (def_cascoliso): escudo ao CRUZAR 20% de vida para baixo.
+ *
+ * Rearma quando a vida volta acima do limiar (`_lowShieldArmed`) e ainda tem um
+ * piso de tempo, senão quem fica oscilando em torno de 20% ganharia escudo
+ * infinito. Mesma forma do Segundo Fôlego, que já resolvia este problema.
+ *
+ * @returns {number} quanto de escudo erguer (0 = não dispara agora)
+ */
+function lowHpShieldAmount(target, now = Date.now()) {
+  const pct = _p(target, 'low_hp_shield_pct');
+  if (pct <= 0 || !target.maxHp || target.hp <= 0) return 0;
+  const frac = target.hp / target.maxHp;
+  if (frac > LOW_HP_SHIELD_AT) { target._lowShieldArmed = true; return 0; }
+  if (target._lowShieldArmed === false) return 0;
+  if (now - (target._lowShieldAt || 0) < LOW_HP_SHIELD_CD_MS) return 0;
+  target._lowShieldArmed = false;
+  target._lowShieldAt    = now;
+  return Math.round(target.maxHp * pct);
 }
 
 // ── Canhão ───────────────────────────────────────────────────────────────────
@@ -486,37 +609,23 @@ function partySpeedAura(player) {
   return _p(player, 'party_speed_pct');
 }
 
-/** Multiplicador da velocidade de giro (def_leme + atk_deriva em alta). */
-function turnRateMult(player, atFullSpeed = false) {
-  let add = _p(player, 'turn_speed_pct');
-  if (atFullSpeed) add += _p(player, 'turn_while_fast_pct');
-  return 1 + add;
+/**
+ * Multiplicador da velocidade de giro (def_leme).
+ *
+ * O `atFullSpeed` sobrou do atk_deriva, que somava manobra em velocidade
+ * máxima e virou precisão de canhão. Ficou no argumento porque o
+ * player-manager já sabe calcular a condição e um talento futuro pode querer
+ * de novo — hoje ele não muda nada.
+ */
+function turnRateMult(player, _atFullSpeed = false) {
+  return 1 + _p(player, 'turn_speed_pct');
 }
 
-/** Fração da perda de velocidade em curva que o casco liso evita (def_cascoliso). */
-function dragReduction(player) {
-  return _clamp(_p(player, 'drag_reduction_pct'), 0, 0.95);
-}
-
-/** Multiplicador da aceleração (res_impulso). */
-function accelMult(player) {
-  return 1 + _p(player, 'accel_pct');
-}
-
-/** Multiplicador do tempo de frenagem (def_ancoragem) — menor é mais rápido. */
-function stopTimeMult(player) {
-  return Math.max(0.20, 1 - _p(player, 'stop_time_pct'));
-}
-
-/** Multiplicador da velocidade de ré (def_marchare). */
-function reverseSpeedMult(player) {
-  return 1 + _p(player, 'reverse_speed_pct');
-}
-
-/** Fração da penalidade de velocidade do clima que o jogador ignora (res_ventoproprio). */
-function weatherResist(player) {
-  return _clamp(_p(player, 'weather_speed_pct'), 0, 1);
-}
+// Saíram daqui quatro funções cujos talentos trocaram de função em 09/2026:
+// dragReduction (def_cascoliso → escudo), accelMult (res_impulso → XP de pet),
+// stopTimeMult (def_ancoragem → dano de torre) e reverseSpeedMult
+// (def_marchare → dano de navio NPC). Junto foi a weatherResist, que nunca teve
+// talento nem consumidor. O player-manager passou a usar as constantes cruas.
 
 // ── Controle de grupo ────────────────────────────────────────────────────────
 
@@ -530,40 +639,20 @@ function slowStrengthMult(player) {
   return Math.max(1 - MAX_SLOW_RESIST, 1 - _p(player, 'slow_resist_pct'));
 }
 
-/** Lentidão aplicada em quem navega no rastro deste jogador (atk_rastro). */
-function wakeSlow(player) {
-  return _clamp(_p(player, 'slow_pursuers_pct'), 0, 0.75);
-}
-
 // ── Espólio e economia ───────────────────────────────────────────────────────
 
 // Tesouro do Abismo soma em ouro, dobrão e XP de uma vez.
 const _ABYSSAL = new Set(['gold', 'dobrao', 'xp']);
 
 /**
- * Bônus das skills da GUILDA que afetam espólio. Carimbado em
- * `player._guildBonus` pelo managers/guild-manager.js — aqui só se lê.
+ * ── O bônus de espólio da GUILDA saiu daqui (2026-09-06) ─────────────────────
+ * Três skills da irmandade (+% de ouro, de dobrão e de XP para todo membro)
+ * eram somadas neste funil. Elas foram aposentadas: as skills de guilda
+ * passaram a fortalecer a GUILDA — nível, cofre e ilha — em vez de colar número
+ * na ficha de quem entrasse numa guilda grande. Ver constants/guilds.js.
  *
- * Mora dentro do lootMult porque é o funil por onde ouro, dobrão e XP de TODA
- * fonte já passam (abate a tiro, abate por DoT, chefe de mapa, boss mundial).
- * Pendurar a multiplicação em cada local de recompensa seria repetir o erro que
- * já deixou talento sem efeito em silêncio.
- *
- * Soma com os talentos em vez de multiplicar: percentuais da mesma família
- * somam neste jogo (ver o comentário do calcKillGold no projectile-manager).
- * XP de chefe recebe o mesmo bônus de XP — ele já é XP.
+ * O que continua chegando aqui é só talento, que é decisão de quem joga.
  */
-const _GUILD_KEY = {
-  gold:    'gold_pct',
-  dobrao:  'dobrao_pct',
-  xp:      'xp_pct',
-  xp_boss: 'xp_pct',
-};
-function _guildLootAdd(player, kind) {
-  const key = _GUILD_KEY[kind];
-  if (!key) return 0;
-  return Math.max(0, Number(player?._guildBonus?.[key] || 0));
-}
 
 /**
  * Multiplicador de um tipo de ganho.
@@ -571,10 +660,8 @@ function _guildLootAdd(player, kind) {
  *                      mission|bounty|pet_food|party_loot
  */
 function lootMult(player, kind) {
-  // Sem talentos ainda pode haver guilda — o retorno seco de 1.0 que morava
-  // aqui apagava o bônus da irmandade de quem nunca comprou um talento.
   if (!player) return 1.0;
-  if (!player.tal) return 1 + _guildLootAdd(player, kind);
+  if (!player.tal) return 1.0;
   const KEY = {
     gold:         'gold_drop_pct',
     dobrao:       'dobrao_drop_pct',
@@ -595,7 +682,6 @@ function lootMult(player, kind) {
   if (_ABYSSAL.has(kind)) add += _p(player, 'abyssal_treasure_pct');
   // XP de chefe recebe também o bônus geral de XP.
   if (kind === 'xp_boss') add += _p(player, 'xp_drop_pct') + _p(player, 'abyssal_treasure_pct');
-  add += _guildLootAdd(player, kind);
   return Math.max(0, 1 + add);
 }
 
@@ -619,9 +705,19 @@ function deathPenaltyMult(player) {
   return Math.max(0, 1 - _p(player, 'death_penalty_pct'));
 }
 
-/** Espaços extras de porão (res_porao). */
-function inventorySlotBonus(player) {
-  return _f(player, 'inventory_slots');
+/** Multiplicador do que a Mesa de Exploração devolve (res_colheita). */
+function explorationLootMult(player) {
+  return Math.max(1, 1 + _p(player, 'exploration_loot_pct'));
+}
+
+/** Chance de a Mesa de Exploração render uma rolagem extra (res_porao). */
+function explorationDoubleChance(player) {
+  return _clamp(_p(player, 'exploration_double_chance'), 0, 1);
+}
+
+/** Chance de um fragmento de mapa extra por abate (res_ventoproprio). */
+function fragmentExtraChance(player) {
+  return _clamp(_p(player, 'fragment_extra_chance'), 0, 1);
 }
 
 // ── Piratas e espólio ────────────────────────────────────────────────────────
@@ -690,14 +786,36 @@ function piratePriceMult(player) {
 
 // ── Diversos ─────────────────────────────────────────────────────────────────
 
-/** Multiplicador do tempo de renascimento (def_retorno). */
-function respawnTimeMult(player) {
-  return Math.max(0.20, 1 - _p(player, 'respawn_time_pct'));
-}
-
 /** Milissegundos EXTRA de invulnerabilidade após renascer (def_tregua). */
 function respawnImmunityBonus(player) {
   return _f(player, 'respawn_immunity_ms');
+}
+
+/**
+ * Fração da vida máxima com que se renasce (def_retorno).
+ *
+ * O nó prometia "−3% no tempo de renascimento" e não há tempo de renascimento:
+ * o painel de morte tem um botão e o `request_respawn` devolve o jogador na
+ * hora. A promessa vizinha — voltar pronto para brigar — tinha onde caber: a
+ * fração de vida do renascimento, que era 10% fixos.
+ */
+function respawnHpFrac(player) {
+  return _clamp(RESPAWN_HP_BASE + _p(player, 'respawn_hp_pct'), RESPAWN_HP_BASE, 1);
+}
+
+/** Multiplicador do XP que o mascote ganha (res_impulso). */
+function petXpMult(player) {
+  return Math.max(1, 1 + _p(player, 'pet_xp_pct'));
+}
+
+/**
+ * Desconto, em MILISSEGUNDOS, na recarga das relíquias do mascote
+ * (res_lamparina). Valor plano em vez de percentual porque a recarga do pet já
+ * é curta: −5 s no nó cheio se lê igual em toda relíquia, enquanto −50%
+ * valeria quase nada nas baratas e demais nas caras.
+ */
+function petRelicCooldownReduction(player) {
+  return Math.max(0, _f(player, 'pet_relic_cooldown_ms'));
 }
 
 /** Multiplicador do alcance de visão (res_nevoa / res_noturno). */
@@ -712,30 +830,9 @@ function stealthRangeMult(player) {
   return Math.max(0.20, 1 - _p(player, 'stealth_range_pct'));
 }
 
-/**
- * Unidades EXTRA de visão do barco (res_lamparina). O MESMO número é somado
- * duas vezes no cliente: no alcance da lamparina e no raio de clareira que abre
- * a névoa em volta do casco. Nó cheio (nível 10) = +100 em cada.
- *
- * Diferente de todo o resto deste arquivo, ninguém no servidor chama isto:
- * lamparina é um OmniLight3D e a clareira é um uniform de shader, ambos coisa
- * de render. A função existe mesmo assim por duas razões — dar ao stat o mesmo
- * leitor nomeado que os outros 119 têm (o índice de talent-callsites.test.js
- * exige isso), e deixar o valor pronto caso algum dia o servidor precise dele,
- * por exemplo para decidir o que a névoa deixa você enxergar de verdade.
- */
-function visionBoostBonus(player) {
-  return _f(player, 'vision_boost_flat');
-}
-
 /** Multiplicador da recarga das passagens antigas (res_passagem). */
 function archCooldownMult(player) {
   return Math.max(0.10, 1 - _p(player, 'arch_cooldown_pct'));
-}
-
-/** Multiplicador da recarga do impulso/dash (atk_bordolivre). */
-function dashCooldownMult(player) {
-  return Math.max(0.10, 1 - _p(player, 'dash_cooldown_pct'));
 }
 
 // ── Estado de combate (os acúmulos) ──────────────────────────────────────────
@@ -812,33 +909,38 @@ module.exports = {
   OUT_OF_COMBAT_MS, MAX_DR, MAX_DODGE, FRENZY_MAX_STACKS, KILLSTREAK_MAX,
   SENTINEL_MAX_STACKS, SECOND_WIND_CD_MS, SLOW_ON_HIT_MS,
   BURST_MS, KILL_SPEED_MS, RELIC_SPEED_MS, SENTINEL_MS,
+  STREAK_PCT_PER_STACK, RELIC_SHIELD_MS, LOW_HP_SHIELD_MS, RESPAWN_HP_BASE,
   inCombat,
   // dano causado
-  outgoingDamageMult, armorPen, critChance, critMult, noteCritRoll,
-  pierceChance, doubleShotChance, burnDot,
+  outgoingDamageMult, armorPen, cannonAccuracyBonus, critChance, critMult,
+  noteCritRoll, pierceChance, doubleShotChance, burnDot,
+  streakStacks, noteStreakShot,
   // dano recebido
-  damageReduction, applyDamageReduction, dodgeChance, thornsDamage,
+  damageReduction, applyDamageReduction, dodgeChance, blockChance, thornsDamage,
   lifestealAmount, manaOnHit, deathSaveChance, secondWindHeal, flatReduction,
+  lowHpShieldAmount,
   // vida e mana
   maxHpPctBonus, healingReceivedMult, hpRegenPerSec,
-  maxManaBonus, manaRegenMult, manaOnKill,
+  maxManaBonus, manaRegenMult,
   // relíquias e canhão
   relicDamageMult, relicCritBonus, relicManaCostMult, relicCooldownMult,
   relicCastMult, relicRangeMult, relicShieldAmount, reloadMult,
   // movimento
-  speedMult, partySpeedAura, turnRateMult, dragReduction, accelMult,
-  stopTimeMult, reverseSpeedMult, weatherResist,
+  speedMult, partySpeedAura, turnRateMult,
   // CC
-  ccDurationMult, slowStrengthMult, wakeSlow, slowOnHit,
+  ccDurationMult, slowStrengthMult, slowOnHit,
   // economia
   lootMult, goldDoubleChance, dobraoDoubleChance, shopPriceMult,
-  deathPenaltyMult, inventorySlotBonus,
+  deathPenaltyMult, explorationLootMult, explorationDoubleChance,
+  fragmentExtraChance,
   // piratas e espólio
   pirateCapacityBonus, pirateBattlePowerPct, pirateDefensePct,
   pirateCasualtyReductionPct, runUpkeepMult, spoilLootPct, piratePriceMult,
+  // mascote
+  petXpMult, petRelicCooldownReduction,
   // diversos
-  respawnTimeMult, respawnImmunityBonus, visionMult, stealthRangeMult,
-  archCooldownMult, dashCooldownMult, visionBoostBonus,
+  respawnImmunityBonus, respawnHpFrac, visionMult, stealthRangeMult,
+  archCooldownMult,
   // estado
   onHitDealt, onKill, onHitTaken, onRelicUsed, onMoveStart,
   tickCombatState, consumeOpener,

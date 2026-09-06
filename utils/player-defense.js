@@ -56,6 +56,8 @@ const { isInvincible }    = require('./invincibility');
  * @param {Object} [ctx]
  * @param {boolean} [ctx.fromNPC=true]    golpe de bicho/torre/ambiente
  * @param {boolean} [ctx.fromPlayer=false] golpe de outro jogador
+ * @param {boolean} [ctx.fromTower=false]  torre de ilha (Escudo de Assédio)
+ * @param {boolean} [ctx.fromNpcShip=false] NPC de canhão (Guarda de Bordada)
  * @param {boolean} [ctx.isCrit=false]
  * @param {boolean} [ctx.isAoe=false]
  * @param {number}  [ctx.pen=0]           penetração de armadura do atacante
@@ -77,6 +79,14 @@ function mitigateForPlayer(target, raw, ctx = {}) {
     return { ...zero, dodged: true };
   }
 
+  // 1b. Anteparo — bloqueio é anulação, como a esquiva, e é sorteado logo
+  //     depois dela: o jogador precisa conseguir dizer qual das duas o salvou.
+  const block = fx.blockChance(target);
+  if (block > 0 && Math.random() < block) {
+    status.noteHit(target, 'block_chance', now);
+    return { ...zero, blocked: true };
+  }
+
   // 2. Invencibilidade (r2 e a Névoa do bestiário).
   if (isInvincible(target, now)) return { ...zero, blocked: true };
 
@@ -85,8 +95,10 @@ function mitigateForPlayer(target, raw, ctx = {}) {
   const procDef = [];
   const skillDef = target.skillDefense ? (1 - target.skillDefense) : 1.0;
   const talentDef = 1 - fx.damageReduction(target, {
-    fromNPC:    ctx.fromNPC !== false,
-    fromPlayer: !!ctx.fromPlayer,
+    fromNPC:     ctx.fromNPC !== false,
+    fromPlayer:  !!ctx.fromPlayer,
+    fromTower:   !!ctx.fromTower,
+    fromNpcShip: !!ctx.fromNpcShip,
     isCrit:     !!ctx.isCrit,
     isAoe:      !!ctx.isAoe,
     isStill:    !target.speed,

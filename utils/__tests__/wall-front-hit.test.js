@@ -178,8 +178,14 @@ describe('as outras formas não foram afetadas', () => {
 describe('Sonar simulado — a onda varre TUDO no caminho', () => {
   const AttackManager = require('../../managers/attack-manager.js');
 
-  /** Enfileira um jogador a cada 10 un, todos no mesmo ângulo, e conta acertos. */
-  function varrer() {
+  /**
+   * Enfileira um jogador a cada 10 un e conta acertos.
+   *
+   * `angulo(i, n)` decide onde cada um fica: o padrão é 0 para todos (uma fila
+   * radial, que é o que interessa para medir COBERTURA). Quem for medir o VÃO
+   * precisa espalhá-los — ver a nota no teste do vão.
+   */
+  function varrer(angulo = () => 0) {
     const dists = [];
     for (let d = 10; d <= SONAR.radius; d += 10) dists.push(d);
     const npc = {
@@ -187,9 +193,13 @@ describe('Sonar simulado — a onda varre TUDO no caminho', () => {
       dmgMult: 1, attacks: ['drake_boss_sonar_rings'], _attackCooldowns: {},
     };
     const alvo = { id: 'alvo', x: 0, z: 0, dead: false, hp: 1e12, maxHp: 1e12, mapLevel: 1 };
-    const povo = dists.map((d, i) => ({
-      id: 'p' + i, x: d, z: 0, dead: false, hp: 1e12, maxHp: 1e12, mapLevel: 1,
-    }));
+    const povo = dists.map((d, i) => {
+      const a = angulo(i, dists.length);
+      return {
+        id: 'p' + i, x: Math.cos(a) * d, z: Math.sin(a) * d,
+        dead: false, hp: 1e12, maxHp: 1e12, mapLevel: 1,
+      };
+    });
     const ev = [];
     const am = new AttackManager(e => ev.push(e), null);
     am.tryAttack(npc, alvo, [alvo, ...povo], 1);
@@ -223,7 +233,14 @@ describe('Sonar simulado — a onda varre TUDO no caminho', () => {
   });
 
   it('o vão poupa: alguém escapa de pelo menos uma onda', () => {
-    const { povo, conta } = varrer();
+    // Espalhados EM VOLTA, não na fila radial dos testes acima: o vão é um
+    // setor ANGULAR de 60° que gira `gapStep` por onda, então uma fila num
+    // ângulo só ou é poupada inteira ou não é poupada por ninguém — quem
+    // decidia o teste era o sorteio do `_gapFacing`. (Ele passava fixo antes
+    // porque a onda tinha um BURACO na borda: os 260 escapavam sempre, e não
+    // por causa do vão.) Com 26 barcos em ângulos uniformes, um setor de 60°
+    // sempre cobre alguns deles, saia o `_gapFacing` que sair.
+    const { povo, conta } = varrer((i, n) => (i * Math.PI * 2) / n);
     const poupados = povo.filter(p => (conta[p.id] || 0) < SONAR.ringCount);
     expect(poupados.length, 'o vão tem de valer para alguém').toBeGreaterThan(0);
   });
@@ -247,149 +264,65 @@ describe('Sonar simulado — a onda varre TUDO no caminho', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Salva de Bombordo: setores ALTERNADOS. A promessa da skill é "ache o RITMO,
-// não o lugar" — metade do disco dispara por leva e a outra metade é abrigo.
-// O `circle` do servidor ignorava os setores e batia o disco inteiro: correr
-// para a metade segura não adiantava absolutamente nada.
+// O LADRILHO da onda (utils/sonar-sweep.js). O bloco acima mede o resultado com
+// o simulador inteiro rodando; este mede a ARITMÉTICA, que é onde o buraco
+// nascia: a varredura era amostrada por um relógio e a leva que passasse de
+// `expandMs` era DESCARTADA, então a última faixa de cada onda parava onde a
+// divisão deixasse (239,9 na onda 0 de um raio de 260) e quem ficava parado na
+// borda só era alcançado por duas das quatro ondas. Bastava o vão girar para
+// esse lado nas duas e o golpe inteiro passava por cima sem cobrar nada.
 // ─────────────────────────────────────────────────────────────────────────────
-describe('Salva de Bombordo — só a metade que dispara machuca', () => {
-  const SALVA = ATTACK_DEFS.turtle_boss_broadside;
+describe('sonarSweep — as faixas ladrilham o raio inteiro', () => {
+  const { sonarSweep } = require('../sonar-sweep.js');
+  const { MONSTER_SKILLS } = require('../../constants/monster_skills.js');
+  const CRU = MONSTER_SKILLS.drake_boss_sonar_rings;
+  const SONAR_RELIC = { ...CRU, ...CRU.relic };
 
-  /** Ponto no centro do setor `i`, a meio raio. */
-  function noSetor(i) {
-    const a = (SALVA.sectorOffset || 0)
-            + (Math.PI * 2 * (i + 0.5)) / SALVA.sectorCount;
-    const r = SALVA.radius * 0.5;
-    return { x: Math.cos(a) * r, z: Math.sin(a) * r, id: 'p' };
-  }
-  const naLeva = (k, e) =>
-    M.inShape({ ...SALVA, _tickIndex: k }, 'circle', 0, 0, 0, 0, null, e);
+  const casos = [
+    ['bicho',    SONAR],
+    ['relíquia', SONAR_RELIC],
+    // Faixa que não divide o raio: aqui a última é APARADA em `radius`, e a
+    // única coisa que continua valendo é a cobertura.
+    ['aparado',  { expandMs: 1000, radius: 100, band: 7 }],
+  ];
 
-  it('a skill declara os setores', () => {
-    expect(SALVA.sectorCount).toBeGreaterThan(1);
-    expect(SALVA.sectorCount % 2).toBe(0);   // alternar exige par
-  });
-
-  it('leva PAR acerta os setores pares e poupa os ímpares', () => {
-    for (let i = 0; i < SALVA.sectorCount; i++) {
-      expect(naLeva(0, noSetor(i)), `setor ${i}`).toBe(i % 2 === 0);
-    }
-  });
-
-  it('leva ÍMPAR inverte — o abrigo troca de lado', () => {
-    for (let i = 0; i < SALVA.sectorCount; i++) {
-      expect(naLeva(1, noSetor(i)), `setor ${i}`).toBe(i % 2 === 1);
-    }
-  });
-
-  it('existe abrigo em TODA leva (senão a mecânica é mentira)', () => {
-    for (let k = 0; k < SALVA.ticks.count; k++) {
-      const seguros = [];
-      for (let i = 0; i < SALVA.sectorCount; i++) {
-        if (!naLeva(k, noSetor(i))) seguros.push(i);
+  for (const [rotulo, def] of casos) {
+    it(`${rotulo}: a união das faixas cobre [0, ${def.radius}]`, () => {
+      const { fronts, steps } = sonarSweep(def);
+      expect(fronts).toHaveLength(steps);
+      expect(fronts[0] - def.band / 2, 'a 1ª faixa tem de encostar no lançador')
+        .toBeLessThanOrEqual(0);
+      expect(fronts[steps - 1] + def.band / 2, 'a última tem de passar da borda')
+        .toBeGreaterThanOrEqual(def.radius);
+      expect(fronts[steps - 1], 'nenhuma parede além do que o desenho mostra')
+        .toBeLessThanOrEqual(def.radius);
+      for (let k = 1; k < steps; k++) {
+        expect(fronts[k] - fronts[k - 1], `buraco entre a faixa ${k - 1} e a ${k}`)
+          .toBeLessThanOrEqual(def.band);
       }
-      expect(seguros.length, `leva ${k} não tem abrigo`).toBeGreaterThan(0);
-    }
-  });
+    });
+  }
 
-  it('fora do raio ninguém leva, esteja no setor que estiver', () => {
-    for (let i = 0; i < SALVA.sectorCount; i++) {
-      const p = noSetor(i);
-      const longe = { x: p.x * 4, z: p.z * 4, id: 'p' };
-      expect(naLeva(0, longe)).toBe(false);
+  it('nos dados de hoje as faixas se encostam SEM sobrepor e seguem o desenho', () => {
+    for (const def of [SONAR, SONAR_RELIC]) {
+      const { fronts, steps, timeAt } = sonarSweep(def);
+      for (let k = 1; k < steps; k++) {
+        expect(fronts[k] - fronts[k - 1]).toBeCloseTo(def.band, 6);
+      }
+      // A amostra k sai quando a frente DESENHADA está no centro da faixa k —
+      // é isso que mantém o dano em cima da parede que o jogador vê passar.
+      for (let k = 0; k < steps; k++) {
+        expect(def.radius * (timeAt(k) / def.expandMs)).toBeCloseTo(fronts[k], 0);
+      }
     }
-  });
-
-  it('as outras skills `circle` não foram afetadas', () => {
-    const frenzy = ATTACK_DEFS.crab_tidal_frenzy;
-    expect(frenzy.sectorCount, 'a Fúria não tem setores').toBeUndefined();
-    expect(M.inShape(frenzy, 'circle', 0, 0, 0, 0, null,
-      { x: frenzy.radius * 0.5, z: 0, id: 'p' })).toBe(true);
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// `atCaster`: a Salva nasce no lançador e ANDA com ele. Antes ficava plantada
-// onde o alvo estava no cast — o boss podia sair de dentro da própria salva, e
-// a leitura era "saia do círculo" em vez de "circule o boss no setor certo".
-// ─────────────────────────────────────────────────────────────────────────────
-describe('Salva de Bombordo acompanha o lançador', () => {
-  const AttackManager = require('../../managers/attack-manager.js');
-  const SALVA = ATTACK_DEFS.turtle_boss_broadside;
-
-  it('a skill está marcada como presa ao lançador', () => {
-    expect(SALVA.atCaster).toBe(true);
-  });
-
-  it('o telegraph avisa o cliente para ancorar no bicho', () => {
-    const npc = { id: 'n1', x: 0, z: 0, dead: false, hp: 1e9, maxHp: 1e9,
-                  cannonDmg: 100, dmgMult: 1,
-                  attacks: ['turtle_boss_broadside'], _attackCooldowns: {} };
-    const alvo = { id: 'p1', x: 0, z: 150, dead: false, hp: 1e9, maxHp: 1e9, mapLevel: 1 };
-    const ev = [];
-    new AttackManager(e => ev.push(e), null).tryAttack(npc, alvo, [alvo], 1);
-    const tel = ev.find(e => e.type === 'npc_telegraph');
-    expect(tel.atCaster).toBe(true);
-  });
-
-  it('quem colar no bicho leva; quem ficar onde o cast mirou, não', () => {
-    const npc = { id: 'n1', x: 0, z: 0, dead: false, hp: 1e9, maxHp: 1e9,
-                  cannonDmg: 100, dmgMult: 1,
-                  attacks: ['turtle_boss_broadside'], _attackCooldowns: {} };
-    // O alvo do cast fica no limite do alcance; a área tem de nascer no BICHO.
-    // `rangeMax` limita onde o cast pode mirar, então o alvo precisa caber nele
-    // — mirar além disso não gera cast nenhum e o teste passaria por engano.
-    const mira = Math.min(SALVA.radius, SALVA.rangeMax) * 0.85;
-    const alvo = { id: 'alvo', x: 0, z: mira, dead: false,
-                   hp: 1e12, maxHp: 1e12, mapLevel: 1 };
-    // Sonda plantada onde a área ficaria se ainda fosse centrada no ALVO:
-    // dentro do círculo antigo, fora do novo.
-    const soFora = { id: 'soFora', x: 0, z: mira + SALVA.radius * 0.8,
-                     dead: false, hp: 1e12, maxHp: 1e12, mapLevel: 1 };
-    // Colado no bicho, num setor que dispara na leva 0 (centro do setor 0).
-    const meio = (Math.PI * 2 * 0.5) / SALVA.sectorCount;
-    const perto = { id: 'perto', x: Math.cos(meio) * SALVA.radius * 0.4,
-                    z: Math.sin(meio) * SALVA.radius * 0.4,
-                    dead: false, hp: 1e12, maxHp: 1e12, mapLevel: 1 };
-
-    const ev = [];
-    const am = new AttackManager(e => ev.push(e), null);
-    am.tryAttack(npc, alvo, [alvo, perto, soFora], 1);
-    vi.runAllTimers();
-
-    const acertos = ev.filter(e => e.type === 'npc_attack_hit').flatMap(e => e.hits || []);
-    expect(acertos.some(h => h.id === 'perto'), 'colado no bicho tem de levar').toBe(true);
-    expect(acertos.some(h => h.id === 'soFora'),
-      'fora do raio CONTADO DO BICHO não pode levar').toBe(false);
-  });
-
-  it('a área ANDA: o bicho se move e a salva vai junto', () => {
-    const npc = { id: 'n1', x: 0, z: 0, dead: false, hp: 1e9, maxHp: 1e9,
-                  cannonDmg: 100, dmgMult: 1,
-                  attacks: ['turtle_boss_broadside'], _attackCooldowns: {} };
-    // Fica parado bem longe da origem, mas no caminho para onde o bicho vai.
-    const destino = { x: 600, z: 0 };
-    const meio = (Math.PI * 2 * 0.5) / SALVA.sectorCount;
-    const parado = { id: 'parado',
-                     x: destino.x + Math.cos(meio) * SALVA.radius * 0.4,
-                     z: destino.z + Math.sin(meio) * SALVA.radius * 0.4,
-                     dead: false, hp: 1e12, maxHp: 1e12, mapLevel: 1 };
-    const alvo = { id: 'alvo', x: 0, z: 50, dead: false, hp: 1e12, maxHp: 1e12, mapLevel: 1 };
-
-    const ev = [];
-    const am = new AttackManager(e => ev.push(e), null);
-    am.tryAttack(npc, alvo, [alvo, parado], 1);
-    // Deixa o cast resolver a 1ª leva e então NAVEGA o bicho até o destino.
-    vi.advanceTimersByTime(SALVA.castTime + 1);
-    const antes = ev.filter(e => e.type === 'npc_attack_hit')
-      .flatMap(e => e.hits || []).filter(h => h.id === 'parado').length;
-    expect(antes, 'longe do bicho, ainda não levou').toBe(0);
-
-    npc.x = destino.x; npc.z = destino.z;
-    vi.runAllTimers();
-
-    const depois = ev.filter(e => e.type === 'npc_attack_hit')
-      .flatMap(e => e.hits || []).filter(h => h.id === 'parado').length;
-    expect(depois, 'o bicho chegou perto: a salva veio junto').toBeGreaterThan(0);
-  });
-});
+// ────────────────────────────────────────────────────────────────────────────────
+// A Salva de Bombordo (setores alternados em volta do casco, "ache o RITMO,
+// não o lugar") vivia aqui — duas suítes cobrindo os setores e o `atCaster`.
+// Ela saiu do jogo em 2026-09-05: a face do bicho convergiu para o Cardume de
+// Torpedos, que é o que a relíquia sempre entregou. Os testes foram embora
+// junto com a skill (estão no git); o que a substitui é a cobertura do
+// `special: torpedo` em npc-special-parity.test.js.
+// ────────────────────────────────────────────────────────────────────────────────

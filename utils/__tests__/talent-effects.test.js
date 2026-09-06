@@ -245,17 +245,30 @@ describe('dano recebido', () => {
 // ── Vida, mana e regeneração ─────────────────────────────────────────────────
 
 describe('vida e mana', () => {
-  it('regen soma as três fontes conforme o contexto', () => {
+  it('sobrou UMA fonte de regeneração: as Bombas de Porão', () => {
+    // O Calafate (regen plana) e os Reparos de Emergência (regen fora de
+    // combate) viraram multiplicadores de CURA em 09/2026. O jogo perdeu de
+    // propósito a regeneração passiva acima de 40% de vida — foi a moeda de
+    // troca da mudança, e este teste é onde ela fica registrada.
     const p = mk({ def_calafate: 10, def_bombeamento: 10, def_reparo: 10 },
       { hp: 300, maxHp: 1000, ...IDLE });
-    // 4 flat + 3% de 1000 (abaixo de 40%) + 1% de 1000 (fora de combate)
-    expect(fx.hpRegenPerSec(p, NOW)).toBeCloseTo(4 + 30 + 10, 6);
+    expect(fx.hpRegenPerSec(p, NOW)).toBeCloseTo(30, 6);      // 3% de 1000
 
     p.lastCombatTime = NOW;                                   // entrou em combate
-    expect(fx.hpRegenPerSec(p, NOW)).toBeCloseTo(4 + 30, 6);
+    expect(fx.hpRegenPerSec(p, NOW), 'as Bombas não dependem de estar fora de combate')
+      .toBeCloseTo(30, 6);
 
     p.hp = 900;                                               // acima de 40%
-    expect(fx.hpRegenPerSec(p, NOW)).toBeCloseTo(4, 6);
+    expect(fx.hpRegenPerSec(p, NOW)).toBeCloseTo(0, 6);
+  });
+
+  it('a cura recebida soma os três nós, e o de fora de combate só fora dele', () => {
+    const p = mk({ def_calafate: 10, def_recuperacao: 10, def_reparo: 10 },
+      { hp: 300, maxHp: 1000, ...IDLE });
+    // Calafate +10% · Recuperação +20% · Reparos +20% (fora de combate)
+    expect(fx.healingReceivedMult(p, NOW)).toBeCloseTo(1.50, 6);
+    p.lastCombatTime = NOW;
+    expect(fx.healingReceivedMult(p, NOW)).toBeCloseTo(1.30, 6);
   });
 
   it('concentração só conta fora de combate', () => {
@@ -319,10 +332,14 @@ describe('movimento', () => {
     expect(fx.speedMult(p, { now: NOW + 5001 })).toBeCloseTo(1.00, 6);
   });
 
-  it('deriva só entra em velocidade máxima', () => {
+  it('a manobra vem só do Leme Leve', () => {
+    // A Deriva somava manobra em velocidade máxima e virou PRECISÃO de canhão
+    // (atk_deriva → Pulso Firme). O `atFullSpeed` continua no argumento, e hoje
+    // não muda nada — é o que este teste trava.
     const p = mk({ def_leme: 10, atk_deriva: 10 });
-    expect(fx.turnRateMult(p, false)).toBeCloseTo(1.20, 6);
-    expect(fx.turnRateMult(p, true)).toBeCloseTo(1.50, 6);
+    expect(fx.turnRateMult(p, false)).toBeCloseTo(1.10, 6);
+    expect(fx.turnRateMult(p, true)).toBeCloseTo(1.10, 6);
+    expect(fx.cannonAccuracyBonus(p)).toBeCloseTo(0.10, 6);
   });
 
   it('vontade de ferro e casco escorregadio mexem em coisas diferentes', () => {
@@ -381,8 +398,10 @@ describe('robustez', () => {
     const nums = [
       fx.outgoingDamageMult(p, { targetIsNPC: true, targetIsBoss: true, dist: 10, targetHpFrac: 0.1 }),
       fx.speedMult(p, { now: NOW }), fx.relicManaCostMult(p), fx.relicCooldownMult(p),
-      fx.reloadMult(p), fx.shopPriceMult(p), fx.respawnTimeMult(p), fx.ccDurationMult(p),
-      fx.slowStrengthMult(p), fx.stopTimeMult(p), fx.deathPenaltyMult(p),
+      fx.reloadMult(p), fx.shopPriceMult(p), fx.ccDurationMult(p),
+      fx.slowStrengthMult(p), fx.deathPenaltyMult(p), fx.respawnHpFrac(p),
+      fx.healingReceivedMult(p, NOW), fx.explorationLootMult(p), fx.petXpMult(p),
+      fx.archCooldownMult(p), fx.armorPen(p) + 1, fx.blockChance(p) + 1,
       fx.applyDamageReduction(p, 1000, { fromNPC: true }),
     ];
     for (const n of nums) {

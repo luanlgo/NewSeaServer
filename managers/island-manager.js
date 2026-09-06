@@ -33,6 +33,8 @@
 'use strict';
 
 const { mitigateForPlayer } = require('../utils/player-defense');
+const shield = require('../utils/shield');
+const { isSafeAfterRespawn } = require('../utils/invincibility');
 const {
   TOWER_TYPES, TOWER_SLOTS, TOWER_RANGE, TOWER_FIRE_MS, TOWER_RESPAWN_MS,
   towerSlotPos, rollTowerType,
@@ -365,7 +367,7 @@ class IslandManager {
       for (const p of candidatos) {
         // Dona da ilha não leva tiro da própria muralha.
         if (torre.ownerGuildId && this._guildIdOf(p) === torre.ownerGuildId) continue;
-        if (p.safeUntil && now < p.safeUntil) continue;   // imunidade pós-respawn
+        if (isSafeAfterRespawn(p, now)) continue;   // imunidade pós-respawn
         const dx = p.x - torre.x, dz = p.z - torre.z;
         const d2 = dx * dx + dz * dz;
         if (d2 < melhor) { melhor = d2; alvo = p; }
@@ -406,6 +408,7 @@ class IslandManager {
 
     const def = mitigateForPlayer(alvo, bruto, {
       fromNPC:     true,          // a torre é do lado do bicho, não do jogador
+      fromTower:   true,          // e é torre: liga o Escudo de Assédio
       allyCount:   this.partyManager
         ? this.partyManager.getPartyMembersInZone(alvo.id, alvo.mapLevel || 1, this.players).length
         : 0,
@@ -439,7 +442,7 @@ class IslandManager {
     const dano = def.damage;
     if (dano <= 0) return;
 
-    alvo.hp = Math.max(0, alvo.hp - dano);
+    alvo.hp = Math.max(0, alvo.hp - shield.absorb(alvo, dano).dmg);
     alvo.lastCombatTime = now;
 
     // O cliente já sabe desenhar `tower_shot` (a torre do campo de treino usa a
@@ -521,7 +524,11 @@ class IslandManager {
         if (slot.dead || slot.hp >= slot.maxHp) continue;
         if (now - (slot.lastDamageAt || 0) < REPAIR_CALM_MS) continue;
 
-        const cura   = Math.max(1, Math.round(slot.maxHp * REPAIR_PCT_PER_MIN));
+        // Estaleiro da Ilha: acelera o conserto, e SÓ ele — o ouro por ponto de
+        // vida continua o mesmo, então consertar mais rápido custa mais caro
+        // por minuto. A skill compra tempo, não desconto.
+        const acel   = 1 + Math.max(0, Number(this.guilds?._skillPct?.(guilda, 'tower_repair_pct') || 0));
+        const cura   = Math.max(1, Math.round(slot.maxHp * REPAIR_PCT_PER_MIN * acel));
         const falta  = slot.maxHp - slot.hp;
         const real   = Math.min(cura, falta);
         const custo  = Math.ceil(real * repairGoldPerHp(slot.type));

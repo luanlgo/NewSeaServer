@@ -5,6 +5,7 @@ const { isInvincible } = require('../utils/invincibility');
 const { MAX_HP, SHIP_SPEED, CANNON_DEFS, MAP_DEFS } = require('../constants');
 const fx = require('../utils/talent-effects');
 const status = require('../utils/talent-status');
+const shield = require('../utils/shield');
 
 // Giro base por tique (o valor que existia solto como 0.3 dentro do update).
 const TURN_RATE = 0.3;
@@ -83,7 +84,7 @@ class PlayerManager {
       cannonCooldown: 0,
       cannonCooldownMax: 5000,
       cannonRange: 80,
-      cannonLifesteal: 0,
+      cannonAccuracy: 0,
       pirates: [],
       currentAmmo: 'bala_ferro',
       homingCharges: 0,
@@ -319,7 +320,9 @@ class PlayerManager {
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
 
-        // Leme Leve gira mais rápido sempre; Deriva só perto da velocidade máxima.
+        // Leme Leve gira mais rápido. (A Deriva somava manobra em velocidade
+        // máxima e virou precisão de canhão — o `atFullSpeed` segue calculado
+        // porque o turnRateMult ainda aceita o argumento, mas hoje é inerte.)
         const atFullSpeed = (player._velFrac || 0) > 0.85;
         player.rotation += diff * Math.min(1, TURN_RATE * fx.turnRateMult(player, atFullSpeed));
 
@@ -330,31 +333,31 @@ class PlayerManager {
         const slowMult  = player.slowMult || 1;
         const castMult  = hasCast ? Math.min(0.50, slowMult) : 1.0; // 50% during cast, or slower if already debuffed
 
-        // Curva fechada custa velocidade; o Casco Liso devolve parte da perda.
-        const turnDrag = 1 - (Math.abs(diff) / Math.PI) * TURN_DRAG * (1 - fx.dragReduction(player));
-        // Marcha à Ré só vale quando o barco anda mesmo para trás.
-        const reverse  = (player.input?.s && !player.input?.w) ? fx.reverseSpeedMult(player) : 1.0;
+        // Curva fechada custa velocidade. (O Casco Liso devolvia parte da perda
+        // e virou escudo de vida baixa; a ré tinha bônus da Marcha à Ré, que
+        // virou resistência a navio de NPC. Os dois eixos continuam existindo,
+        // agora sem talento em cima.)
+        const turnDrag = 1 - (Math.abs(diff) / Math.PI) * TURN_DRAG;
 
         const target = SHIP_SPEED * slowMult * (player.shipSpeedMult || 1.0) *
                       (player.skillSpeedMult || 1.0) * (player.sailSpeedMult || 1.0) *
-                      relicSpeed * castMult * turnDrag * reverse *
+                      relicSpeed * castMult * turnDrag *
                       fx.speedMult(player, { now, partyBonus: player._partySpeedBonus || 0 });
 
         // Rampa de aceleração — `_velFrac` é a fração da velocidade-alvo já
-        // atingida. Impulso encurta a subida.
-        const rate = ACCEL_PER_SEC * fx.accelMult(player);
+        // atingida. (O Impulso encurtava a subida e virou XP de mascote.)
+        const rate = ACCEL_PER_SEC;
         player._velFrac = Math.min(1, (player._velFrac || 0) + rate * dt);
         player.speed = target * player._velFrac;
 
         player.x += dx * player.speed * dt * 30;
         player.z += dz * player.speed * dt * 30;
       } else {
-        // Sem comando o navio DESLIZA até parar, em vez de travar no lugar —
-        // é isso que dá sentido a "tempo para parar" (def_ancoragem). A rampa
-        // padrão é curta de propósito (~0,12s), então quem não tem o talento
-        // sente praticamente o mesmo de antes.
+        // Sem comando o navio DESLIZA até parar, em vez de travar no lugar. A
+        // rampa é curta de propósito (~0,12s). (A Ancoragem Rápida encurtava
+        // este tempo e virou redução de dano de torre.)
         player._wasMoving = false;
-        const brake = BRAKE_PER_SEC / fx.stopTimeMult(player);
+        const brake = BRAKE_PER_SEC;
         player._velFrac = Math.max(0, (player._velFrac || 0) - brake * dt);
         if (player._velFrac > 0.01) {
           const coast = SHIP_SPEED * (player.slowMult || 1) * (player.shipSpeedMult || 1.0) *
@@ -421,7 +424,7 @@ class PlayerManager {
     // Dot (Damage over Time) — invencível (Névoa do jogador ou do pet) pausa o
     // tick, mas NÃO gasta a carga do escudo: ver utils/invincibility.js.
     if (player.dot && now >= player.dot.next && !isInvincible(player, now)) {
-      player.hp = Math.max(0, player.hp - player.dot.dmg);
+      player.hp = Math.max(0, player.hp - shield.absorb(player, player.dot.dmg).dmg);
       player.dot.dur -= player.dot.tick;
       
       if (player.dot.dur <= 0) {
@@ -512,6 +515,11 @@ class PlayerManager {
         cannonCooldown: p.cannonCooldown,
         cannonCooldownMax: p.cannonCooldownMax,
         cannonRange: p.cannonRange,
+        // Patente do ranking PVP (0 = sem medalha). Vai no registro completo,
+        // que o AOI só manda quando a entidade entra na visão — é de graça para
+        // quem já está na tela, e a faixa muda no máximo uma vez por minuto.
+        // Quem mantém o campo atualizado é sweepPvpRank() no server.js.
+        pvpTier: p._pvpTier || 0,
       });
     }
     
