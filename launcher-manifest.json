@@ -1,23 +1,23 @@
 {
-    "version":  "0.1.29",
+    "version":  "0.1.30",
     "date":  "2026-09-06",
     "changelog":  [
-                      "[v0.1.29] - 2026-09-06",
+                      "[v0.1.30] - 2026-09-06",
+                      "balance(masmorra): as tres faixas de navio bonus desceram",
+                      "balance(bichos): dano de NPC do mapa 4 em diante pela metade",
+                      "release: v0.1.29",
                       "feat(bestiario,talentos,chefe,missoes): a leva acumulada do servidor",
                       "release: v0.1.28",
                       "release: v0.1.27",
                       "feat(ilhas,guildas): conquista, imposto e a coleta semanal — e a escala de producao de volta",
                       "release: v0.1.26",
                       "release: v0.1.25",
-                      "fix(chefes,chat): um bolo so por chefe, e o canal de balao",
-                      "fix(reliquias,bestiario): a leva do playtest de 2026-08-22",
-                      "release: v0.1.24",
-                      "feat(espolio,piratas,diario,leilao): a leva acumulada do servidor"
+                      "fix(chefes,chat): um bolo so por chefe, e o canal de balao"
                   ],
     "files":  [
                   {
                       "name":  "SeaOfCode.exe",
-                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.29/SeaOfCode.exe",
+                      "url":  "https://github.com/luanlgo/NewSeaGodot/releases/download/v0.1.30/SeaOfCode.exe",
                       "sha256":  "050179a38a61d8f9520c36c984c14d164fc161aba91e071c0fffb7ce4d88765b",
                       "size":  842192600
                   }
