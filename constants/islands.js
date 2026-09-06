@@ -112,6 +112,25 @@ const TOWER_RANGE = 150;
 const TOWER_FIRE_MS = 2000;
 /** Torre neutra derrubada volta em 30 min — só enquanto a ilha não tem dono. */
 const TOWER_RESPAWN_MS = 30 * 60 * 1000;
+/**
+ * Janela do ASSALTO: quanto tempo as cinco têm para cair JUNTAS.
+ *
+ * Relato de 2026-09-06: "ao eliminar 2 das 5 torres ele já disse que eu tinha
+ * conquistado". Estava certo pelo código e errado pelo jogo — a conquista só
+ * olhava `towers.filter(t => !t.dead).length === 0`, e torre em respawn conta
+ * como caída. Com 30 min de respawn, isso dava meia hora para ir lascando: três
+ * hoje de manhã, duas à tarde, ilha tomada com duas quedas.
+ *
+ * Agora cada slot guarda o `deadAt` e a conquista exige que a MAIS ANTIGA das
+ * cinco tenha caído dentro desta janela. Passou do prazo, as vencidas voltam de
+ * pé na hora e a disputa recomeça limpa — em vez de ficar num limbo de "as
+ * cinco estão no chão e não acontece nada".
+ *
+ * 15 min é metade do respawn de propósito: dá tempo de um cerco de verdade
+ * (cinco torres, duas delas de 40 M e 80 M) sem deixar a janela virar o dia
+ * inteiro. É o número a mexer se o cerco ficar apertado demais no playtest.
+ */
+const ASSAULT_WINDOW_MS = 15 * 60 * 1000;
 
 /** Posição fixa do slot `i` em torno do centro da ilha. */
 function towerSlotPos(i, cx = 0, cz = 0) {
@@ -461,7 +480,7 @@ function nextEventAt(islandId, from = Date.now()) {
 
 module.exports = {
   TOWER_TYPES, TOWER_ORDER, TOWER_SLOTS, TOWER_RING_RADIUS, TOWER_PROD,
-  TOWER_RANGE, TOWER_FIRE_MS, TOWER_RESPAWN_MS,
+  TOWER_RANGE, TOWER_FIRE_MS, TOWER_RESPAWN_MS, ASSAULT_WINDOW_MS,
   towerSlotPos, rollTowerType,
   REPAIR_CALM_MS, REPAIR_PCT_PER_MIN, REPAIR_COST_FRACTION, DOBRAO_TO_GOLD,
   repairGoldPerHp,

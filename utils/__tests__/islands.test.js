@@ -8,7 +8,7 @@ import { NPC_SHIP_HULLS } from '../../constants/npc_ships.js';
 import {
   TOWER_TYPES, TOWER_PROD, TOWER_SLOTS, TOWER_RANGE, TOWER_FIRE_MS, TOWER_RESPAWN_MS,
   REPAIR_CALM_MS, REPAIR_PCT_PER_MIN, repairGoldPerHp,
-  GRACE_MS, taxPctFor, towerSlotPos, rollTowerType,
+  GRACE_MS, ASSAULT_WINDOW_MS, taxPctFor, towerSlotPos, rollTowerType,
   ISLAND_DEFS, ACTION_VENUE, TAX_BOAT_HP, weekKey, nextEventAt,
   FORCE_EVENT_TEST_POT, islandHull,
 } from '../../constants/islands.js';
@@ -506,6 +506,75 @@ describe('Ilhas — conquista', () => {
 // continuava mostrando o número da versão anterior, sem pista nenhuma do
 // motivo.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// O CERCO tem de ser um só — relato de playtest de 2026-09-06
+//
+//   "tentando conquistar, em 2 jogadores, ao eliminar 2 das 5 torres ele já
+//    disse que eu tinha conquistado, mas não podia fazer nada; e ao eliminar as
+//    5 torres, não conquistei a ilha"
+//
+// O gatilho olhava só `towers.filter(t => !t.dead).length === 0`, e torre em
+// respawn conta como caída — com 30 min de respawn, dava meia hora para ir
+// lascando a ilha e levar a conquista com duas quedas. O resto do relato é
+// consequência: a ilha entrou em graça com ZERO torres, ninguém conseguiu
+// erguer nada (o cofre novo não tinha o 1 M da torre fraca, e só o líder ergue),
+// a graça venceu, e a segunda investida caiu na mesma armadilha.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Ilhas — o cerco tem de ser um só', () => {
+  let w, ilha, ana;
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    w = await makeWorld();
+    w.guilds.criar('g1', 'BAG', 'Bagunça', 'ana');
+    ana  = addPlayer(w, 1, 'ana');
+    ilha = ilhaDe(w);
+  });
+  afterEach(() => { w.im.destroy(); w.tb.destroy(); vi.useRealTimers(); });
+
+  it('derrubar as cinco de uma vez conquista', () => {
+    for (let s = 0; s < TOWER_SLOTS; s++) derrubar(w, ilha, s, ana);
+    expect(ilha.ownerGuildId, 'o cerco legítimo deixou de conquistar').toBe('g1');
+    expect(ilha.state).toBe('grace');
+  });
+
+  it('lascar ao longo da tarde NÃO conquista — e as vencidas voltam de pé', () => {
+    // Três agora…
+    for (const s of [0, 1, 2]) derrubar(w, ilha, s, ana);
+    expect(ilha.towers.filter(t => !t.dead).length).toBe(2);
+
+    // …e as duas últimas depois da janela do assalto.
+    vi.advanceTimersByTime(ASSAULT_WINDOW_MS + 60_000);
+    for (const s of [3, 4]) derrubar(w, ilha, s, ana);
+
+    expect(ilha.ownerGuildId, 'conquistou lascando').toBeNull();
+    expect(ilha.state).toBe('neutral');
+    // As três antigas voltaram na hora, em vez de deixar a ilha num limbo de
+    // "as cinco no chão e nada acontece" até o respawn de 30 min.
+    expect(ilha.towers.filter(t => !t.dead).length,
+      'as vencidas não foram reerguidas').toBe(3);
+    expect(ultimo(w.sent, 'island_notice')?.message ?? '')
+      .toMatch(/cerco/i);
+  });
+
+  it('dentro da janela ainda é UM cerco, mesmo com pausa', () => {
+    // A regra não é "sem pausa" — é "dentro do prazo". Um cerco de verdade tem
+    // recuo, reagrupamento e volta.
+    for (const s of [0, 1, 2]) derrubar(w, ilha, s, ana);
+    vi.advanceTimersByTime(ASSAULT_WINDOW_MS - 60_000);
+    for (const s of [3, 4]) derrubar(w, ilha, s, ana);
+    expect(ilha.ownerGuildId, 'o cerco dentro do prazo foi recusado').toBe('g1');
+  });
+
+  it('slot salvo ANTES desta mudança não entrega conquista de graça', () => {
+    // Os slots gravados no banco não têm `deadAt`. Tratá-los como recentes
+    // daria a ilha no primeiro tiro depois do deploy.
+    for (const s of [0, 1, 2, 3]) derrubar(w, ilha, s, ana);
+    for (const t of ilha.towers) if (t.dead) delete t.deadAt;
+    derrubar(w, ilha, 4, ana);
+    expect(ilha.ownerGuildId, 'slot sem deadAt entregou a ilha').toBeNull();
+  });
+});
+
 describe('Ilhas — a tabela manda sobre o que está salvo', () => {
   let w;
   afterEach(() => { w?.im.destroy(); w?.tb.destroy(); });

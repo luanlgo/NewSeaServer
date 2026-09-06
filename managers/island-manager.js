@@ -37,6 +37,7 @@ const shield = require('../utils/shield');
 const { isSafeAfterRespawn } = require('../utils/invincibility');
 const {
   TOWER_TYPES, TOWER_SLOTS, TOWER_RANGE, TOWER_FIRE_MS, TOWER_RESPAWN_MS,
+  ASSAULT_WINDOW_MS,
   towerSlotPos, rollTowerType,
   REPAIR_CALM_MS, REPAIR_PCT_PER_MIN, repairGoldPerHp,
   GRACE_MS, MAX_ISLANDS_PER_GUILD_PER_WEEK,
@@ -598,6 +599,9 @@ class IslandManager {
       slot.hp = 0;
       slot.dead = true;
       slot.built = false;
+      // QUANDO ela caiu. É o que separa "as cinco caíram neste cerco" de "as
+      // cinco estão no chão", que era a leitura antiga — ver _assaltoValido.
+      slot.deadAt = agora;
       // Torre de ilha DOMINADA não renasce sozinha — a guilda ergue outra.
       slot.respawnAt = ilha.ownerGuildId ? 0 : agora + TOWER_RESPAWN_MS;
     }
@@ -614,10 +618,67 @@ class IslandManager {
       message: `🗼 Torre ${torre.slot + 1} de ${ilha.def.name} caiu! Restam ${restantes}.`,
     });
 
-    if (restantes === 0) this._resolverConquista(ilha, agora, matador);
+    if (restantes === 0) {
+      // As cinco no chão não bastam: elas têm de ter caído no MESMO cerco. Ver
+      // _assaltoValido — e a nota de ASSAULT_WINDOW_MS em constants/islands.js.
+      if (this._assaltoValido(ilha, agora)) {
+        this._resolverConquista(ilha, agora, matador);
+      } else {
+        this._reerguerVencidas(ilha, agora);
+      }
+    }
 
     this._save(ilha);
     this._broadcastIsland(ilha);
+  }
+
+  /**
+   * As cinco caíram no MESMO cerco?
+   *
+   * A conta é a mais antiga contra a mais nova: se a primeira a cair já estava
+   * no chão há mais de `ASSAULT_WINDOW_MS` quando a última caiu, isto não foi
+   * um cerco — foi lascar a ilha ao longo da tarde, aproveitando os 30 min de
+   * respawn como se fossem uma janela de conquista.
+   *
+   * `deadAt` ausente é tratado como VENCIDO de propósito: os slots gravados
+   * antes desta mudança não têm o campo, e considerá-los recentes entregaria
+   * uma conquista de graça no primeiro tiro depois do deploy.
+   */
+  _assaltoValido(ilha, agora) {
+    let maisAntiga = Infinity;
+    for (const t of ilha.towers) {
+      if (!t.dead) continue;
+      if (!t.deadAt) return false;
+      if (t.deadAt < maisAntiga) maisAntiga = t.deadAt;
+    }
+    return maisAntiga !== Infinity && (agora - maisAntiga) <= ASSAULT_WINDOW_MS;
+  }
+
+  /**
+   * O cerco demorou demais: as torres que passaram da janela voltam de pé AGORA
+   * em vez de esperar o respawn.
+   *
+   * Sem isto o refém seria o jogador: as cinco no chão, a conquista recusada, e
+   * nada acontecendo até o respawn de 30 min vencer uma a uma. Reerguendo na
+   * hora, a disputa recomeça limpa e a mensagem diz por quê.
+   */
+  _reerguerVencidas(ilha, agora) {
+    const limite = agora - ASSAULT_WINDOW_MS;
+    let voltaram = 0;
+    for (const slot of ilha.towers) {
+      if (!slot.dead) continue;
+      if (slot.deadAt && slot.deadAt > limite) continue;
+      this._renascerSlot(ilha, slot, agora);
+      voltaram++;
+    }
+    if (voltaram === 0) return;
+    const minutos = Math.round(ASSAULT_WINDOW_MS / 60000);
+    this._broadcastMap(ilha, {
+      type: 'island_notice',
+      message: `⌛ O cerco a ${ilha.def.name} passou de ${minutos} min: `
+             + `${voltaram} torre(s) foram reerguidas. As cinco têm de cair juntas.`,
+    });
+    this._syncTowers(ilha, agora);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
