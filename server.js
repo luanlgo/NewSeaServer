@@ -48,6 +48,7 @@ const { sendTo, sendRaw, uid } = require('./utils/helpers');
 const stateBuilder = require('./utils/state-builder');
 const { isInvincible, isSafeAfterRespawn } = require('./utils/invincibility');
 const shield = require('./utils/shield');
+const { isAlly } = require('./utils/allies');
 const { applyAuraBurn } = require('./utils/aura-burn');
 // Posição no ranking PVP → faixa de patente (a medalha do HUD).
 const pvpRank = require('./utils/pvp-rank');
@@ -453,6 +454,11 @@ const monsterSkillManager = new MonsterSkillManager({});
 // 1. ProjectileManager first (no npcs yet — injected after)
 const projectileManager = new ProjectileManager(wss, players, null, null, null, MAP_DEFS);
 projectileManager.partyManager = partyManager;
+// Fogo amigo do CANHÃO: o portão de aliado consulta grupo E guilda, e só o
+// grupo estava injetado aqui. Sem a guilda o tiro continuaria acertando
+// companheiro de irmandade — em silêncio, porque `isAlly` trata manager
+// ausente como "sem lado". O guildManager nasce mais abaixo (precisa do
+// journalManager), então a injeção dele fica lá, junto da criação.
 // Livro-caixa: o abate de NPC é a maior fonte de ouro e XP do jogo, e entra no
 // Diário AGREGADO (ver accrue no journal-manager) — uma linha por minuto, não
 // uma por abate. A injeção acontece mais abaixo, junto do journalManager.
@@ -495,6 +501,11 @@ const auctionManager = new AuctionManager(sendTo, players, db, journalManager, J
 // mundo, e um jogador que logasse nessa janela veria a tela de "fundar guilda"
 // tendo uma. Por isso é aguardado no boot, antes do "DB pronto".
 const guildManager   = new GuildManager(sendTo, players, db, journalManager, JOURNAL_SRC);
+// Fogo amigo do canhão — o par da injeção do partyManager lá em cima. O
+// projectile-manager pergunta `isAlly(atirador, alvo, partyManager,
+// guildManager)`, e sem esta linha o lado da guilda respondia sempre "não são
+// aliados", sem erro nenhum. Ver utils/allies.js.
+projectileManager.guildManager = guildManager;
 // Subir a skill de casco muda a vida máxima de quem está online agora. O
 // manager não conhece talento nem navio: ele avisa, e quem sabe recalcular
 // é o servidor (refreshTalentDerived já é o caminho único desses derivados).
@@ -6114,6 +6125,16 @@ function relicCanHitPlayer(caster, target) {
   if (target.id === caster.id) return false;
   if ((target.mapLevel || 1) !== (caster.mapLevel || 1)) return false;
   if (isSafeAfterRespawn(target)) return false;
+  // ── Fogo amigo: grupo e guilda ────────────────────────────────────────────
+  // Este portão faz DUAS coisas — libera o dano e ESCOLHE alvo (o arpão varre a
+  // linha e fica com o primeiro que ele aprova; as áreas montam a lista por
+  // aqui). Recusar o aliado aqui, então, não é "bater por zero": ele deixa de
+  // existir para a relíquia. O arpão passa por cima do companheiro e fisga
+  // quem está atrás, e nenhuma área o conta.
+  //
+  // Vale em TODA zona, não só nas de PvP: o pedido é que companheiro não seja
+  // alvo, e não que ele deixe de sê-lo onde já não era.
+  if (isAlly(caster, target, partyManager, guildManager)) return false;
   return getPvpZone(target.mapLevel || 1) !== 'green';
 }
 

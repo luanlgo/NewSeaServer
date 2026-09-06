@@ -27,6 +27,7 @@ const MISS_SPREAD    = 5;    // quanto ela ainda pode abrir além da folga
 const { SKILLS_BY_SOURCE, MONSTER_SKILLS } = require('../constants/monster_skills');
 const { partyRewardMult } = require('./party-manager');
 const shield = require('../utils/shield');
+const { isAlly } = require('../utils/allies');
 const { starDropAllowed } = require('../utils/star-gate');
 const { isInvincible, isSafeAfterRespawn } = require('../utils/invincibility');
 const { applyGoldShield } = require('../utils/gold-shield');
@@ -642,6 +643,17 @@ class ProjectileManager {
     if (!isNPC && !proj.ownerIsNPC && proj.ammoType !== 'bala_cura') {
       const _zone = (MAP_DEFS[target.mapLevel || 1] || {}).pvpZone || 'yellow';
       if (_zone === 'green') return;
+
+      // ── Fogo amigo: grupo e guilda ────────────────────────────────────────
+      // Mesma saída da zona verde, e de propósito: `return` ANTES de consumir
+      // o projétil, então a salva ATRAVESSA o companheiro em vez de morrer
+      // nele. Consumir aqui seria pior que o dano — numa briga em linha, o
+      // aliado na frente viraria um escudo que come os seus próprios tiros.
+      //
+      // A bala de cura está fora por construção (o `!==` acima): mirar no
+      // aliado é justamente o uso dela, e o ramo próprio dela vem logo abaixo.
+      const _atirador = this.players.get(proj.ownerId);
+      if (isAlly(_atirador, target, this.partyManager, this.guildManager)) return;
     }
 
     // ── A escolta da coleta: a guilda dona PROTEGE a nau ────────────────────
