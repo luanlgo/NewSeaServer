@@ -600,12 +600,12 @@ MAP_DEFS[7] = {
   npc: {
     count:           5,
     noNpcRespawn:    true,
-    baseHp:          10000,
-    // ÷2 (2026-09-06, tarde, pedido do Luang): desfaz o ×2 da mesma manhã. O
-    // dobro durou uma sessão e o valor voltou ao que era antes dela. Bosses
-    // continuam fora da conta nos DOIS sentidos — não subiram no ×2 e não
-    // descem aqui, então a distância bicho→chefe agora é a original.
-    baseDamage:      1200,
+    baseHp:          5000,
+    // ÷2 de novo (2026-09-06, noite, pedido do Luang): agora SÓ nas masmorras
+    // bônus, vida e dano juntos. O chefe da masmorra fica de fora por
+    // construção — ele não sai daqui, e sim de BONUS_NPC_DEFS
+    // (constants/bonus_dungeons.js), que este bloco não toca.
+    baseDamage:      600,
     fireInterval:    3000,
     cannonCount:     2,
     cannonRange:     120,
@@ -662,12 +662,12 @@ MAP_DEFS[8] = {
   npc: {
     count:           5,
     noNpcRespawn:    true,
-    baseHp:          25000,
-    // ÷2 (2026-09-06, tarde, pedido do Luang): desfaz o ×2 da mesma manhã. O
-    // dobro durou uma sessão e o valor voltou ao que era antes dela. Bosses
-    // continuam fora da conta nos DOIS sentidos — não subiram no ×2 e não
-    // descem aqui, então a distância bicho→chefe agora é a original.
-    baseDamage:      2500,
+    baseHp:          12500,
+    // ÷2 de novo (2026-09-06, noite, pedido do Luang): agora SÓ nas masmorras
+    // bônus, vida e dano juntos. O chefe da masmorra fica de fora por
+    // construção — ele não sai daqui, e sim de BONUS_NPC_DEFS
+    // (constants/bonus_dungeons.js), que este bloco não toca.
+    baseDamage:      1250,
     fireInterval:    3000,
     cannonCount:     4,
     cannonRange:     120,
@@ -757,12 +757,12 @@ MAP_DEFS[9] = {
   npc: {
     count:           5,
     noNpcRespawn:    true,
-    baseHp:          40000,
-    // ÷2 (2026-09-06, tarde, pedido do Luang): desfaz o ×2 da mesma manhã. O
-    // dobro durou uma sessão e o valor voltou ao que era antes dela. Bosses
-    // continuam fora da conta nos DOIS sentidos — não subiram no ×2 e não
-    // descem aqui, então a distância bicho→chefe agora é a original.
-    baseDamage:      3500,
+    baseHp:          20000,
+    // ÷2 de novo (2026-09-06, noite, pedido do Luang): agora SÓ nas masmorras
+    // bônus, vida e dano juntos. O chefe da masmorra fica de fora por
+    // construção — ele não sai daqui, e sim de BONUS_NPC_DEFS
+    // (constants/bonus_dungeons.js), que este bloco não toca.
+    baseDamage:      1750,
     fireInterval:    3000,
     cannonCount:     6,
     cannonRange:     120,

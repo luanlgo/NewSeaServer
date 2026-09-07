@@ -776,3 +776,68 @@ describe('Fase 7 — Re-entrada após Completar Dungeon', () => {
     expect(newMgr.snapshot()).toHaveLength(5);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A ESCADA das três masmorras — 2026-09-06
+//
+// "o bônus de conclusão de mapa bônus tem que ser diferente entre eles, o mapa 3
+//  é muito mais difícil; mesmo do mapa 2 para o mapa 1."
+//
+// O cabeçalho do bonus_dungeons.js prometia a escada desde sempre (tier 2 ×1,5,
+// tier 3 ×2,25), o `WAVE_REWARD_MULT` e o parâmetro de computeWaveRewards
+// existiam só para ela — e as três chamavam `computeWaveRewards(0)`. As três
+// pagavam 20.000. Nada dava erro: a promessa estava no comentário, não no dado.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('o prêmio de conclusão sobe com o tier', () => {
+  const { BONUS_DUNGEON_DEFS: DEFS, WAVE_REWARD_MULT: MULT } =
+    require('../../constants/bonus_dungeons.js');
+  const ORDEM = ['bonus_map_1', 'bonus_map_2', 'bonus_map_3'];
+  const premio = (id) => DEFS[id].waves[0].rewards;
+
+  it('cada masmorra paga MAIS que a anterior, em todo recurso', () => {
+    for (let i = 1; i < ORDEM.length; i++) {
+      const antes = premio(ORDEM[i - 1]);
+      const agora = premio(ORDEM[i]);
+      for (const k of Object.keys(antes)) {
+        expect(agora[k], `${ORDEM[i]} paga o mesmo (ou menos) ${k} que ${ORDEM[i - 1]}`)
+          .toBeGreaterThan(antes[k]);
+      }
+    }
+  });
+
+  it('a razão é a documentada — ×1,5 por tier', () => {
+    for (let i = 1; i < ORDEM.length; i++) {
+      const r = premio(ORDEM[i]).gold / premio(ORDEM[i - 1]).gold;
+      expect(r).toBeCloseTo(MULT, 5);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vida e dano dos BICHOS da leva vêm de MAP_DEFS; o CHEFE vem de
+// BONUS_NPC_DEFS. Foi isso que permitiu cortar a leva pela metade sem tocar no
+// chefe (pedido de 2026-09-06) — e é uma separação fácil de desfazer sem querer.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('leva e chefe têm fontes separadas', () => {
+  const { BONUS_DUNGEON_DEFS: DEFS, BONUS_NPC_DEFS: NPCS } =
+    require('../../constants/bonus_dungeons.js');
+  const { MAP_DEFS } = require('../../constants/maps.js');
+
+  it('o chefe é MUITO mais duro que o bicho da leva do mesmo mapa', () => {
+    for (const lvl of [7, 8, 9]) {
+      const leva  = MAP_DEFS[lvl].npc;
+      const chefe = NPCS[DEFS[MAP_DEFS[lvl].bonusMapId].npcId];
+      expect(chefe.stats.hpMin, `o chefe do mapa ${lvl} não é mais duro que a leva`)
+        .toBeGreaterThan(leva.baseHp * 2);
+    }
+  });
+
+  it('o corte de 50% da leva não encostou no chefe', () => {
+    expect(MAP_DEFS[7].npc).toMatchObject({ baseHp:  5000, baseDamage:  600 });
+    expect(MAP_DEFS[8].npc).toMatchObject({ baseHp: 12500, baseDamage: 1250 });
+    expect(MAP_DEFS[9].npc).toMatchObject({ baseHp: 20000, baseDamage: 1750 });
+    // Os chefes seguem nos valores da tarde (60-65k / 65-70k / 70-75k).
+    expect(NPCS.colossal_ghost_pirate_galleon.stats.hpMin).toBe(60000);
+    expect(NPCS.gigantic_mechanical_pirate_ship.stats.hpMin).toBe(70000);
+  });
+});

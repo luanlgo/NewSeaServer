@@ -105,12 +105,22 @@ const BONUS_NPC_DEFS = {
   },
 };
 
-// ── WAVE REWARD STRUCTURE ──────────────────────────────────────────────────
-// Wave 0 base values; each subsequent wave multiplies by WAVE_REWARD_MULT.
-// ≈500× mapa-1 base por wave (mapa-1: gold≈35/kill, dobroes≈0, xp≈12/kill)
-// Tier 1 (bonus_map_1): este valor base
-// Tier 2 (bonus_map_2): ×1.5 = 750× mapa-1
-// Tier 3 (bonus_map_3): ×1.5² = 1125× mapa-1
+// ── PRÊMIO DE CONCLUSÃO ────────────────────────────────────────────────────
+// Pago UMA vez, ao vencer a masmorra (ver sendBonusDungeonComplete), e ainda
+// multiplicado pela dificuldade da entrada (fácil 1× … extremo 5×).
+//
+// O índice é o TIER DA MASMORRA, não a leva:
+//   Tier 1 (bonus_map_1): computeWaveRewards(0) — este valor base
+//   Tier 2 (bonus_map_2): computeWaveRewards(1) — ×1,5
+//   Tier 3 (bonus_map_3): computeWaveRewards(2) — ×2,25
+//
+// ⚠️ Até 2026-09-06 as TRÊS chamavam `computeWaveRewards(0)`: o comentário
+// prometia a escada desde sempre, o `WAVE_REWARD_MULT` e o parâmetro existiam
+// só para ela, e ninguém a ligou. As três pagavam os mesmos 20.000 de ouro —
+// o Abismo dos Afundados, que é a masmorra mais dura do jogo, rendia o mesmo
+// que a Baía dos Naufragados. Achado ao investigar o relato do ouro inflado.
+//
+// ≈500× mapa-1 base (mapa-1: gold≈35/kill, dobroes≈0, xp≈12/kill)
 const WAVE_REWARD_BASE = {
   dobroes:    3000,    // 500× referência (mapa-2 dá ~6/kill)
   gold:       20000,   // ≈500× mapa-1 (35 avg × 500 ≈ 17.500, arredondado)
@@ -154,7 +164,7 @@ const BONUS_DUNGEON_DEFS = {
     pieceId:        'mapa_fortaleza',
     npcId:          'massive_imperial_warship',
     waves: [
-      { waveIndex: 0, npcCount: 1, npcId: 'massive_imperial_warship', rewards: computeWaveRewards(0) },
+      { waveIndex: 0, npcCount: 1, npcId: 'massive_imperial_warship', rewards: computeWaveRewards(1) },
     ],
   },
 
@@ -166,7 +176,7 @@ const BONUS_DUNGEON_DEFS = {
     pieceId:        'mapa_abismo',
     npcId:          'gigantic_mechanical_pirate_ship',
     waves: [
-      { waveIndex: 0, npcCount: 1, npcId: 'gigantic_mechanical_pirate_ship', rewards: computeWaveRewards(0) },
+      { waveIndex: 0, npcCount: 1, npcId: 'gigantic_mechanical_pirate_ship', rewards: computeWaveRewards(2) },
     ],
   },
 };
