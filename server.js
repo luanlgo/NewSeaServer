@@ -216,7 +216,11 @@ const {
 } = require('./utils/talent-logic');
 const fxTal = require('./utils/talent-effects');
 const { calcMaxCannons: _calcMaxCannons, trimCannons: _trimCannons,
-        filterOwnedCannons: _filterOwnedCannons, hasSpareCannon: _hasSpareCannon } = require('./utils/combat-calc');
+        filterOwnedCannons: _filterOwnedCannons, hasSpareCannon: _hasSpareCannon,
+        // O abate por DoT paga pela MESMA conta do abate a tiro — ver a nota no
+        // bloco do DoT. Ter duas contas foi o que deixou o tier sem teto de um
+        // lado só.
+        calcKillGold, calcKillXp } = require('./utils/combat-calc');
 const worldState = require('./utils/world-state');
 // Missões do dia: lógica pura (sorteio, saneamento e a montagem do bloco do
 // jogador). Fora do server.js para poder ser testada — e porque o pool GRAVADO
@@ -2260,11 +2264,30 @@ setInterval(() => {
             const baseGold  = Math.floor(Math.random() * (dotGoldMax - dotGoldMin + 1) + dotGoldMin);
             if (killer) {
               killer.npcKills = (killer.npcKills || 0) + 1;
-              const tier = Math.floor(killer.npcKills / 10);
-              // Multiplicador de dificuldade travado no NPC (kills por DoT também
-              // escalam) — recompensa usa a METADE dos atributos (difficultyRewardMult)
-              const dotDiff = difficultyRewardMult(e.diffMult || 1);
-              const gold = Math.round(Math.floor(baseGold * (1 + (killer.dropBonus||0)) * (1 + tier*0.01)) * dotDiff);
+              // ── O abate por DoT paga IGUAL ao abate a tiro ────────────────
+              // Relato de 2026-09-06, com o extrato na mão: 4 abates rendendo
+              // 6,98 M de ouro e 1,34 M de XP. A causa era este bloco, que
+              // tinha uma conta PRÓPRIA em vez de usar a do projectile-manager,
+              // e nela um fator `(1 + tier * 0.01)` com `tier = abates / 10` e
+              // SEM TETO. Numa conta com ~336 mil abates isso é ×336 — o
+              // mesmo bicho pagando 6.250 de ouro se morresse de tiro e
+              // 2.100.000 se morresse queimando.
+              //
+              // Não havia teto e não havia par: o caminho do canhão nunca teve
+              // esse termo (ver calcKillGold/calcKillXp, que só conhecem
+              // dropBonus e talento). Então isto não é "nerf do tier" — é o DoT
+              // deixando de ter uma tabela paralela.
+              //
+              // `bloodMult` entra separado pelo mesmo motivo do outro caminho:
+              // difficultyRewardMult satura no último tier, e passar o total
+              // por ela anularia a Lua de Sangue nas dificuldades altas.
+              const dotBlood = e.bloodMult || 1;
+              const dotDiff  = difficultyRewardMult((e.diffMult || 1) / dotBlood) * dotBlood;
+              const gold = Math.round(calcKillGold({
+                baseGold,
+                dropBonus:       killer.dropBonus || 0,
+                talentGoldBonus: fx.lootMult(killer, 'gold') - 1,
+              }) * dotDiff);
               killer.gold += gold;
               // Dobrao drop
               let dotDobrao = 0;
@@ -2275,7 +2298,10 @@ setInterval(() => {
               }
               // XP grant on DOT kill — use e.mapLevel (NPC zone), not killer.mapLevel
               const dotXpMapDef = MAP_DEFS[e.mapLevel || 1] || MAP_DEFS[1];
-              const xpGained = Math.round(Math.floor((dotXpMapDef.npc?.xpPerKill || 12) * (1 + tier * 0.01)) * dotDiff);
+              const xpGained = Math.round(calcKillXp({
+                xpPerKill:     dotXpMapDef.npc?.xpPerKill || 12,
+                talentXpBonus: fx.lootMult(killer, 'xp') - 1,
+              }) * dotDiff);
               killer.mapXp = (killer.mapXp || 0) + xpGained;
               // Mesma fonte do abate a tiro: o jogador não distingue quem deu o
               // golpe final, e separar em duas linhas só picotaria o extrato.
